@@ -505,7 +505,6 @@ Resources:
     Type: AWS::Scheduler::Schedule
     Properties:
       Name: workflow-control-center-development-replacement-guard
-      GroupName: !Ref SchedulerGroup
       FlexibleTimeWindow:
         Mode: 'OFF'
       ScheduleExpression: !Ref ReplacementGuardScheduleExpression

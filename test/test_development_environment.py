@@ -198,6 +198,7 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
         }
     ]
     replacement_guard = resource_by_name_map["ReplacementGuardSchedule"]["Properties"]
+    assert "GroupName" not in replacement_guard
     assert replacement_guard["State"] == {"Ref": "ReplacementGuardScheduleState"}
     assert replacement_guard["Target"]["Arn"] == {
         "Fn::GetAtt": ["LeaseStopFunction", "Arn"]
