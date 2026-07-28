@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 import hashlib
@@ -20,6 +20,13 @@ AWS_ACCOUNT_ID = "463564115167"
 AWS_PROFILE = "workflow-control-center-devel"
 AWS_REGION = "us-east-1"
 COMPUTE_STACK_NAME = "workflow-control-center-development-compute"
+COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET = frozenset(
+    {
+        "DevelopmentInstance",
+        "RetainedVolume",
+        "RetainedVolumeAttachment",
+    }
+)
 DATA_PLANE_STACK_NAME = "workflow-control-center-development"
 HOST_CONTROL_CURRENT_SOURCE_PATH = Path("/opt/workflow-infrastructure/control/current")
 HOST_CONTROL_RELEASE_ROOT_PATH = Path("/opt/workflow-infrastructure/control/releases")
@@ -193,9 +200,10 @@ class DevelopmentEnvironment:
             / "cloudformation/workflow-control-center-development-compute.yaml",
             parameter_by_name_map={},
             must_preserve_resource=False,
+            protected_identity_logical_id_set=COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET,
         )
-        self._stop_lease_upsert()
-        self._instance_online_wait()
+        self._retained_volume_attachment_validate()
+        self.start()
         self._infrastructure_source_publish()
         self._stack_drift_validate(DATA_PLANE_STACK_NAME)
         self._stack_drift_validate(COMPUTE_STACK_NAME)
@@ -439,7 +447,7 @@ class DevelopmentEnvironment:
             if is_busy:
                 idle_start_path.unlink(missing_ok=True)
                 if t_now - t_last_lease_renew >= LEASE_RENEW_INTERVAL:
-                    self._stop_lease_upsert(instance_id=instance_id)
+                    self._stop_lease_upsert()
                     t_last_lease_renew = t_now
             else:
                 if not idle_start_path.exists():
@@ -544,13 +552,13 @@ WantedBy=multi-user.target
         self._source_repository_validate(
             self._project_root_path, "workflow-infrastructure"
         )
+        replacement_parameter_by_name_map = (
+            self._replacement_parameter_by_name_map_prepare()
+        )
+        replacement_parameter_by_name_map["RetainedVolumeSnapshotId"] = snapshot_id
         self.stop()
-        self._stack_apply(
-            stack_name=COMPUTE_STACK_NAME,
-            template_path=self._project_root_path
-            / "cloudformation/workflow-control-center-development-compute.yaml",
-            parameter_by_name_map={"RetainedVolumeSnapshotId": snapshot_id},
-            must_preserve_resource=False,
+        self._replacement_stack_apply(
+            parameter_by_name_map=replacement_parameter_by_name_map
         )
         self.start()
         self._infrastructure_source_publish()
@@ -564,17 +572,13 @@ WantedBy=multi-user.target
         self._source_repository_validate(
             self._project_root_path, "workflow-infrastructure"
         )
-        current_slot = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)[
-            "InstanceSlot"
-        ]
-        replacement_slot = "b" if current_slot == "a" else "a"
+        replacement_parameter_by_name_map = (
+            self._replacement_parameter_by_name_map_prepare()
+        )
+        replacement_slot = replacement_parameter_by_name_map["InstanceSlot"]
         self.stop()
-        self._stack_apply(
-            stack_name=COMPUTE_STACK_NAME,
-            template_path=self._project_root_path
-            / "cloudformation/workflow-control-center-development-compute.yaml",
-            parameter_by_name_map={"InstanceSlot": replacement_slot},
-            must_preserve_resource=False,
+        self._replacement_stack_apply(
+            parameter_by_name_map=replacement_parameter_by_name_map
         )
         self.start()
         self._infrastructure_source_publish()
@@ -582,6 +586,109 @@ WantedBy=multi-user.target
         print(
             f"OK: replacement instance in slot {replacement_slot} accepted the retained volume"
         )
+
+    def _replacement_parameter_by_name_map_prepare(self) -> dict[str, str]:
+        """Prepare and return one exact replacement launch-template version.
+
+        Returns:
+            Parameter overrides that deliberately replace the current instance.
+        """
+
+        output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
+        try:
+            current_instance_id = output_by_name_map["InstanceId"]
+            current_retained_volume_id = output_by_name_map["RetainedVolumeId"]
+            current_slot = output_by_name_map["InstanceSlot"]
+            current_launch_template_version = output_by_name_map[
+                "InstanceLaunchTemplateVersion"
+            ]
+        except KeyError as error:
+            raise DevelopmentEnvironmentError(
+                "Compute stack replacement outputs are incomplete"
+            ) from error
+        if (
+            current_slot not in {"a", "b"}
+            or not current_launch_template_version.isdigit()
+        ):
+            raise DevelopmentEnvironmentError(
+                "Compute stack replacement outputs are malformed"
+            )
+        replacement_slot = "b" if current_slot == "a" else "a"
+        self._stack_apply(
+            stack_name=COMPUTE_STACK_NAME,
+            template_path=self._project_root_path
+            / "cloudformation/workflow-control-center-development-compute.yaml",
+            parameter_by_name_map={"InstanceSlot": replacement_slot},
+            must_preserve_resource=False,
+            protected_identity_logical_id_set=COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET,
+        )
+        prepared_output_by_name_map = self._stack_output_by_name_map_get(
+            COMPUTE_STACK_NAME
+        )
+        try:
+            prepared_instance_id = prepared_output_by_name_map["InstanceId"]
+            prepared_retained_volume_id = prepared_output_by_name_map[
+                "RetainedVolumeId"
+            ]
+            prepared_slot = prepared_output_by_name_map["InstanceSlot"]
+            latest_launch_template_version = prepared_output_by_name_map[
+                "LatestLaunchTemplateVersion"
+            ]
+        except KeyError as error:
+            raise DevelopmentEnvironmentError(
+                "Prepared compute stack replacement outputs are incomplete"
+            ) from error
+        if (
+            prepared_instance_id != current_instance_id
+            or prepared_retained_volume_id != current_retained_volume_id
+            or prepared_slot != replacement_slot
+            or not latest_launch_template_version.isdigit()
+            or int(latest_launch_template_version)
+            <= int(current_launch_template_version)
+        ):
+            raise DevelopmentEnvironmentError(
+                "Replacement launch-template preparation did not preserve stable identities "
+                "and produce a newer exact version"
+            )
+        return {
+            "InstanceLaunchTemplateVersion": latest_launch_template_version,
+            "InstanceSlot": replacement_slot,
+        }
+
+    def _replacement_stack_apply(
+        self, *, parameter_by_name_map: dict[str, str]
+    ) -> None:
+        """Apply one explicit replacement after proving the retained volume detached.
+
+        Args:
+            parameter_by_name_map: Exact replacement and optional restore parameters.
+        """
+
+        self._stop_lease_upsert()
+        try:
+            self._retained_volume_detach_for_replacement()
+        except Exception:
+            self._stop_lease_delete()
+            raise
+        try:
+            self._stack_apply(
+                stack_name=COMPUTE_STACK_NAME,
+                template_path=self._project_root_path
+                / "cloudformation/workflow-control-center-development-compute.yaml",
+                parameter_by_name_map=parameter_by_name_map,
+                must_preserve_resource=False,
+            )
+        except Exception as error:
+            try:
+                self._retained_volume_attachment_ensure()
+            except Exception as recovery_error:
+                raise DevelopmentEnvironmentError(
+                    "Compute replacement failed and retained-volume attachment recovery failed: "
+                    f"{recovery_error}"
+                ) from error
+            self._stop_lease_delete()
+            raise
+        self._retained_volume_attachment_validate()
 
     def ssh(self, ssh_argument_list: list[str]) -> int:
         """Run one SSH client command through an ephemeral SSH-over-SSM session.
@@ -606,7 +713,7 @@ WantedBy=multi-user.target
 
         self._local_operator_context_validate()
         instance_id = self._instance_id_get()
-        self._stop_lease_upsert(instance_id=instance_id)
+        self._stop_lease_upsert()
         state = self._instance_state_get(instance_id)
         if state == "stopped":
             self._aws_run(["ec2", "start-instances", "--instance-ids", instance_id])
@@ -985,6 +1092,133 @@ WantedBy=multi-user.target
         if not isinstance(state, str):
             raise DevelopmentEnvironmentError("EC2 instance state is not text")
         return state
+
+    def _retained_volume_state_get(
+        self, *, volume_id: str
+    ) -> tuple[str, list[dict[str, object]]]:
+        """Return exact EBS state and validated attachment records.
+
+        Args:
+            volume_id: Retained EBS volume identity.
+
+        Returns:
+            Volume state and attachment payload list.
+        """
+
+        payload = self._aws_json_get(
+            ["ec2", "describe-volumes", "--volume-ids", volume_id]
+        )
+        volume_list = payload.get("Volumes", [])
+        if (
+            not isinstance(volume_list, list)
+            or len(volume_list) != 1
+            or not isinstance(volume_list[0], dict)
+        ):
+            raise DevelopmentEnvironmentError(
+                "Retained EBS volume response is malformed"
+            )
+        volume = volume_list[0]
+        state = volume.get("State")
+        attachment_list = volume.get("Attachments", [])
+        if (
+            not isinstance(state, str)
+            or not isinstance(attachment_list, list)
+            or any(not isinstance(attachment, dict) for attachment in attachment_list)
+        ):
+            raise DevelopmentEnvironmentError("Retained EBS volume state is malformed")
+        return state, list(attachment_list)
+
+    def _retained_volume_attachment_validate(self) -> None:
+        """Prove the current retained volume is attached only to the stack instance."""
+
+        output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
+        instance_id = output_by_name_map["InstanceId"]
+        volume_id = output_by_name_map["RetainedVolumeId"]
+        state, attachment_list = self._retained_volume_state_get(volume_id=volume_id)
+        if (
+            state != "in-use"
+            or len(attachment_list) != 1
+            or attachment_list[0].get("DeleteOnTermination") is not False
+            or attachment_list[0].get("Device") != "/dev/sdf"
+            or attachment_list[0].get("InstanceId") != instance_id
+            or attachment_list[0].get("State") != "attached"
+            or attachment_list[0].get("VolumeId") != volume_id
+        ):
+            raise DevelopmentEnvironmentError(
+                "Retained EBS volume is not exactly attached to the current stack instance"
+            )
+
+    def _retained_volume_detach_for_replacement(self) -> None:
+        """Detach the retained volume only after the old instance is proven stopped."""
+
+        output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
+        instance_id = output_by_name_map["InstanceId"]
+        volume_id = output_by_name_map["RetainedVolumeId"]
+        if self._instance_state_get(instance_id) != "stopped":
+            raise DevelopmentEnvironmentError(
+                "Retained EBS volume can be detached only from a stopped instance"
+            )
+        state, attachment_list = self._retained_volume_state_get(volume_id=volume_id)
+        if not attachment_list and state == "available":
+            return
+        if (
+            state != "in-use"
+            or len(attachment_list) != 1
+            or attachment_list[0].get("InstanceId") != instance_id
+            or attachment_list[0].get("Device") != "/dev/sdf"
+            or attachment_list[0].get("State") != "attached"
+            or attachment_list[0].get("DeleteOnTermination") is not False
+        ):
+            raise DevelopmentEnvironmentError(
+                "Retained EBS volume has an unexpected attachment boundary"
+            )
+        self._aws_run(
+            [
+                "ec2",
+                "detach-volume",
+                "--device",
+                "/dev/sdf",
+                "--instance-id",
+                instance_id,
+                "--volume-id",
+                volume_id,
+            ]
+        )
+        self._aws_run(["ec2", "wait", "volume-available", "--volume-ids", volume_id])
+        state, attachment_list = self._retained_volume_state_get(volume_id=volume_id)
+        if state != "available" or attachment_list:
+            raise DevelopmentEnvironmentError(
+                "Retained EBS volume detachment was not proven"
+            )
+
+    def _retained_volume_attachment_ensure(self) -> None:
+        """Recover the stack-declared attachment after a failed replacement."""
+
+        output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
+        instance_id = output_by_name_map["InstanceId"]
+        volume_id = output_by_name_map["RetainedVolumeId"]
+        state, attachment_list = self._retained_volume_state_get(volume_id=volume_id)
+        if attachment_list:
+            self._retained_volume_attachment_validate()
+            return
+        if state != "available":
+            raise DevelopmentEnvironmentError(
+                "Retained EBS volume cannot be reattached from its current state"
+            )
+        self._aws_run(
+            [
+                "ec2",
+                "attach-volume",
+                "--device",
+                "/dev/sdf",
+                "--instance-id",
+                instance_id,
+                "--volume-id",
+                volume_id,
+            ]
+        )
+        self._aws_run(["ec2", "wait", "volume-in-use", "--volume-ids", volume_id])
+        self._retained_volume_attachment_validate()
 
     def _latest_snapshot_id_get(self, volume_id: str) -> str:
         payload = self._aws_json_get(
@@ -1520,6 +1754,7 @@ shutil.rmtree(root_path)
         template_path: Path,
         parameter_by_name_map: dict[str, str],
         must_preserve_resource: bool,
+        protected_identity_logical_id_set: Collection[str] = (),
     ) -> None:
         stack_payload = self._stack_payload_get(stack_name, is_required=False)
         change_set_type = "UPDATE" if stack_payload else "CREATE"
@@ -1643,6 +1878,27 @@ shutil.rmtree(root_path)
                     "Stable data-plane change would remove or replace "
                     + ", ".join(violation_logical_id_list)
                 )
+        protected_identity_violation_list = (
+            self._protected_identity_change_violation_list_get(
+                change_summary_list=change_summary_list,
+                protected_identity_logical_id_set=protected_identity_logical_id_set,
+            )
+        )
+        if protected_identity_violation_list:
+            self._aws_run(
+                [
+                    "cloudformation",
+                    "delete-change-set",
+                    "--stack-name",
+                    stack_name,
+                    "--change-set-name",
+                    change_set_name,
+                ]
+            )
+            raise DevelopmentEnvironmentError(
+                "Ordinary compute apply would replace a protected identity: "
+                + ", ".join(protected_identity_violation_list)
+            )
         self._aws_run(
             [
                 "cloudformation",
@@ -1668,6 +1924,32 @@ shutil.rmtree(root_path)
             raise DevelopmentEnvironmentError(
                 f"Stack {stack_name} did not reach a complete state"
             )
+
+    @staticmethod
+    def _protected_identity_change_violation_list_get(
+        *,
+        change_summary_list: Sequence[Mapping[str, object]],
+        protected_identity_logical_id_set: Collection[str],
+    ) -> list[str]:
+        """Return protected identities whose planned action can change physical ID.
+
+        Args:
+            change_summary_list: Complete CloudFormation change summaries.
+            protected_identity_logical_id_set: Identities forbidden to replace in this path.
+
+        Returns:
+            Sorted violating logical resource identities.
+        """
+
+        return sorted(
+            str(summary.get("logical_resource_id"))
+            for summary in change_summary_list
+            if summary.get("logical_resource_id") in protected_identity_logical_id_set
+            and (
+                summary.get("action") == "Remove"
+                or summary.get("replacement") != "False"
+            )
+        )
 
     def _stable_data_change_violation_list_get(
         self,
@@ -1974,20 +2256,26 @@ shutil.rmtree(root_path)
             ) from error
         if not isinstance(payload, dict):
             raise DevelopmentEnvironmentError("Stop lease response is malformed")
+        target_payload = payload.get("Target")
+        if not isinstance(target_payload, dict):
+            raise DevelopmentEnvironmentError("Stop lease target is malformed")
         return {
             "action_after_completion": payload.get("ActionAfterCompletion"),
             "schedule_expression": payload.get("ScheduleExpression"),
             "state": payload.get("State"),
+            "target_arn": target_payload.get("Arn"),
         }
 
-    def _stop_lease_upsert(self, instance_id: str | None = None) -> None:
-        if instance_id is None:
-            instance_id = self._instance_id_get()
+    def _stop_lease_upsert(self) -> None:
+        """Create or renew a lease that resolves the current instance at expiry."""
+
         output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
         t_stop = self._clock.now() + LEASE_DURATION
+        schedule_expression = f"at({t_stop.strftime('%Y-%m-%dT%H:%M:%S')})"
+        target_arn = output_by_name_map["StopLeaseTargetArn"]
         target_payload = {
-            "Arn": "arn:aws:scheduler:::aws-sdk:ec2:stopInstances",
-            "Input": json.dumps({"InstanceIds": [instance_id]}, separators=(",", ":")),
+            "Arn": target_arn,
+            "Input": "{}",
             "RetryPolicy": {
                 "MaximumEventAgeInSeconds": 3600,
                 "MaximumRetryAttempts": 3,
@@ -2004,7 +2292,7 @@ shutil.rmtree(root_path)
             "--name",
             LEASE_NAME,
             "--schedule-expression",
-            f"at({t_stop.strftime('%Y-%m-%dT%H:%M:%S')})",
+            schedule_expression,
             "--schedule-expression-timezone",
             "UTC",
             "--state",
@@ -2027,7 +2315,12 @@ shutil.rmtree(root_path)
         create_argument_list = ["scheduler", operation, *common_argument_list]
         self._aws_run(create_argument_list)
         lease_payload = self._stop_lease_payload_get()
-        if lease_payload.get("state") != "ENABLED":
+        if (
+            lease_payload.get("action_after_completion") != "DELETE"
+            or lease_payload.get("schedule_expression") != schedule_expression
+            or lease_payload.get("state") != "ENABLED"
+            or lease_payload.get("target_arn") != target_arn
+        ):
             raise DevelopmentEnvironmentError("Stop lease was not proven enabled")
 
     def _template_validate(self, template_path: Path) -> None:

@@ -42,6 +42,10 @@ Root credentials дочернего account не создаются и не во
 
 Новый stack `workflow-control-center-development-compute` владеет VPC, subnet, routing, security group, instance profile, EC2 instance, retained EBS volume, snapshot automation, Session Manager lifecycle и внешним stop lease. Compute replacement не изменяет data-plane resources.
 
+EC2 instance всегда ссылается на exact immutable launch-template version через stack parameter. Ordinary `apply` может создать новую latest version, но не продвигает её и отклоняет change set с `Remove`, `Conditional` или `True` replacement для instance, retained volume или attachment. Explicit `replace`/`restore` сначала отдельным identity-preserving change set переключает alternating slot и получает созданную exact version, затем доказывает остановку старого instance, создаёт stop lease, отсоединяет retained EBS и только после этого разрешает CloudFormation replacement. Mutable `LatestVersionNumber` никогда не является неявным selector работающего instance.
+
+При неуспешном replacement stack обязан завершить rollback, после чего orchestrator повторно подключает stack-declared retained volume к восстановленному остановленному instance и доказывает exact attachment до возврата ошибки. CloudFormation replacement не используется как механизм одновременного подключения одного EBS к старому и новому instance.
+
 Отдельный stack AWS Budget в management account `227373271916` удаляется в рамках утверждённого cutover. Новый AWS Budget не создаётся.
 
 Все CloudFormation resources разработки используют tags `Project=workflow-control-center`, `Environment=development` и `ManagedBy=CloudFormation`, когда resource type поддерживает tags. Stacks development account не изменяют production или management-account resources, кроме отдельно утверждённого удаления obsolete Budget.
@@ -149,7 +153,9 @@ Early stop разрешён после непрерывных 30 минут, в 
 
 CPU, load average и network counters не участвуют в решении. Ошибка probe, AWS API или controller считается `busy`. Перед stop controller повторно проверяет условия, cordon-ит node, выполняет graceful drain, останавливает Product containers и k3s и вызывает poweroff. Failure снимает cordon и оставляет instance работающим.
 
-Перед каждым start внешний controller создаёт one-time EventBridge Scheduler action `StopInstances` на `now + 2 hours`. Host обновляет lease каждые 30 минут, пока доказывает активную SSM session или полезную WCC работу. Healthy длительный run не имеет hard deadline и продолжает renew. Если host или controller перестал renew, AWS останавливает instance не позднее двух часов после последнего успешного lease.
+Перед каждым start и до запуска replacement внешний controller создаёт one-time EventBridge Scheduler action на `now + 2 hours`. Target является стабильной stack-owned Lambda, которая при expiry находит все running `DevelopmentInstance` этого exact CloudFormation stack по системным и project tags и вызывает `StopInstances`. Поэтому lease уже защищает replacement, хотя его будущий EC2 instance ID заранее неизвестен. Lambda не получает Product credentials или данные и имеет только tag-limited `StopInstances`, read-only instance discovery и собственные logs.
+
+Host обновляет lease каждые 30 минут, пока доказывает активную SSM session или полезную WCC работу. Healthy длительный run не имеет hard deadline и продолжает renew. Если host или controller перестал renew, AWS останавливает instance не позднее двух часов после последнего успешного lease.
 
 Scheduler action использует `ActionAfterCompletion=DELETE`. Ordinary stop удаляет pending schedule. Если initial schedule не создан, instance не запускается.
 

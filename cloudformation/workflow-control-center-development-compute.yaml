@@ -28,6 +28,12 @@ Parameters:
       - b
     Description: Alternating logical slot used for explicit replacement-instance recovery.
 
+  InstanceLaunchTemplateVersion:
+    Type: String
+    Default: '1'
+    AllowedPattern: '[1-9][0-9]*'
+    Description: Exact launch-template version used by the current instance until explicit replacement.
+
   InstanceType:
     Type: String
     Default: m7g.xlarge
@@ -331,16 +337,141 @@ Resources:
               StringEquals:
                 aws:SourceAccount: !Ref AWS::AccountId
       Policies:
-        - PolicyName: workflow-control-center-development-stop
+        - PolicyName: workflow-control-center-development-invoke-stop-lease
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
               - Effect: Allow
-                Action: ec2:StopInstances
-                Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${DevelopmentInstance}
+                Action: lambda:InvokeFunction
+                Resource: !GetAtt LeaseStopFunction.Arn
       Tags:
         - Key: Name
           Value: workflow-control-center-development-scheduler
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  LeaseStopFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /aws/lambda/workflow-control-center-development-stop-current-instance
+      RetentionInDays: 30
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development-stop-current-instance
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  LeaseStopFunctionExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: workflow-control-center-development-stop-current-instance
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: workflow-control-center-development-stop-current-instance
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ec2:DescribeInstances
+                Resource: '*'
+              - Effect: Allow
+                Action: ec2:StopInstances
+                Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+                Condition:
+                  StringEquals:
+                    ec2:ResourceTag/Environment: development
+                    ec2:ResourceTag/ManagedBy: CloudFormation
+                    ec2:ResourceTag/Project: !Ref NotificationTagValue
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/workflow-control-center-development-stop-current-instance:*
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development-stop-current-instance
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  LeaseStopFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: LeaseStopFunctionLogGroup
+    Properties:
+      FunctionName: workflow-control-center-development-stop-current-instance
+      Architectures:
+        - arm64
+      Code:
+        ZipFile: |
+          import os
+
+          import boto3
+
+
+          def handler(event, context):
+              del event, context
+              ec2 = boto3.client("ec2")
+              response = ec2.describe_instances(
+                  Filters=[
+                      {
+                          "Name": "tag:aws:cloudformation:stack-name",
+                          "Values": [os.environ["STACK_NAME"]],
+                      },
+                      {
+                          "Name": "tag:aws:cloudformation:logical-id",
+                          "Values": ["DevelopmentInstance"],
+                      },
+                      {
+                          "Name": "tag:Project",
+                          "Values": [os.environ["PROJECT_TAG_VALUE"]],
+                      },
+                      {
+                          "Name": "tag:Environment",
+                          "Values": ["development"],
+                      },
+                      {
+                          "Name": "instance-state-name",
+                          "Values": ["running"],
+                      },
+                  ]
+              )
+              instance_ids = sorted(
+                  instance["InstanceId"]
+                  for reservation in response["Reservations"]
+                  for instance in reservation["Instances"]
+              )
+              if instance_ids:
+                  ec2.stop_instances(InstanceIds=instance_ids)
+              return {"stopped_instance_count": len(instance_ids)}
+      Environment:
+        Variables:
+          PROJECT_TAG_VALUE: !Ref NotificationTagValue
+          STACK_NAME: !Ref AWS::StackName
+      Handler: index.handler
+      MemorySize: 128
+      Role: !GetAtt LeaseStopFunctionExecutionRole.Arn
+      Runtime: python3.14
+      Timeout: 30
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development-stop-current-instance
         - Key: Project
           Value: !Ref NotificationTagValue
         - Key: Environment
@@ -532,7 +663,7 @@ Resources:
     Properties:
       LaunchTemplate:
         LaunchTemplateId: !Ref DevelopmentLaunchTemplate
-        Version: !GetAtt DevelopmentLaunchTemplate.LatestVersionNumber
+        Version: !Ref InstanceLaunchTemplateVersion
 
   RetainedVolumeAttachment:
     Type: AWS::EC2::VolumeAttachment
@@ -548,12 +679,16 @@ Outputs:
     Value: !Ref ComputeArchitecture
   InstanceId:
     Value: !Ref DevelopmentInstance
+  InstanceLaunchTemplateVersion:
+    Value: !Ref InstanceLaunchTemplateVersion
   InstanceSlot:
     Value: !Ref InstanceSlot
   InstanceType:
     Value: !Ref InstanceType
   K3sVersion:
     Value: !Ref K3sVersion
+  LatestLaunchTemplateVersion:
+    Value: !GetAtt DevelopmentLaunchTemplate.LatestVersionNumber
   Region:
     Value: !Ref AWS::Region
   RetainedVolumeId:
@@ -562,6 +697,8 @@ Outputs:
     Value: !GetAtt SchedulerExecutionRole.Arn
   SchedulerGroupName:
     Value: !Ref SchedulerGroup
+  StopLeaseTargetArn:
+    Value: !GetAtt LeaseStopFunction.Arn
   SecurityGroupId:
     Value: !Ref DevelopmentSecurityGroup
   SubnetId:

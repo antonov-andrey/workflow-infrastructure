@@ -30,7 +30,7 @@ python tool/development_environment_manage.py <command>
 python tool/development_environment_manage.py apply
 ```
 
-`apply` проверяет оба шаблона, создаёт и инспектирует change sets data-plane и compute stacks, применяет разрешённые изменения и проверяет outputs, retained-resource identities, Session Manager readiness и host bootstrap. Existing stable data-plane stack обновляется in place; compute stack управляется отдельно.
+`apply` проверяет оба шаблона, создаёт и инспектирует change sets data-plane и compute stacks, применяет разрешённые изменения и проверяет outputs, retained-resource identities, Session Manager readiness и host bootstrap. Existing stable data-plane stack обновляется in place; compute stack управляется отдельно. Ordinary compute change set не имеет права заменить instance, retained volume или attachment: изменённый launch template сохраняется новой immutable version, а работающий instance остаётся закреплён за своей exact version до отдельной команды `replace` или `restore`.
 
 ## Запуск И Остановка
 
@@ -40,7 +40,7 @@ python tool/development_environment_manage.py stop
 python tool/development_environment_manage.py status
 ```
 
-`start` сначала создаёт one-time external stop schedule на два часа и не запускает instance, если schedule не создан. После start команда ждёт EC2, SSM, retained mount, k3s и host controller readiness.
+`start` сначала создаёт one-time external stop schedule на два часа и не запускает instance, если schedule не создан. Schedule вызывает stack-owned tag-resolving stop function, поэтому тот же lease защищает future replacement без заранее известного instance ID. После start команда ждёт EC2, SSM, retained mount, k3s и host controller readiness.
 
 `stop` выполняет тот же graceful cordon/drain/service-stop path, что и idle controller, затем удаляет pending schedule после доказанной остановки. `status` показывает instance, SSM sessions, stop lease, retained volume, latest snapshot, k3s, current release и безопасный WCC activity summary без secret values.
 
@@ -94,6 +94,8 @@ python tool/development_environment_manage.py restore --snapshot-id <snapshot-id
 ```
 
 `restore` создаёт новый encrypted retained volume из exact snapshot, не изменяя source snapshot и старый retained volume, подключает его к replacement instance и запускает полный recovery acceptance. Переключение current retained volume происходит только после успешной проверки Product и обязательного состояния.
+
+`replace` и `restore` сначала создают отдельным безопасным change set новую launch-template version для следующего alternating slot. Затем они gracefully останавливают старый instance, заранее создают generic stop lease, доказывают detachment retained EBS и продвигают exact подготовленную version. При rollback старый volume повторно подключается к stack-declared остановленному instance до возврата ошибки; обычный `apply` этот lifecycle не выполняет.
 
 Обычная проверка recovery выполняет:
 

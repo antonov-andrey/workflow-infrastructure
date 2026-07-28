@@ -165,7 +165,7 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
 
     launch_template_reference = {
         "LaunchTemplateId": {"Ref": "DevelopmentLaunchTemplate"},
-        "Version": {"Fn::GetAtt": ["DevelopmentLaunchTemplate", "LatestVersionNumber"]},
+        "Version": {"Ref": "InstanceLaunchTemplateVersion"},
     }
     assert (
         resource_by_name_map["DevelopmentInstance"]["Properties"]["LaunchTemplate"]
@@ -176,6 +176,35 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
         "InstanceId": {"Ref": "DevelopmentInstance"},
         "VolumeId": {"Ref": "RetainedVolume"},
     }
+    assert template["Parameters"]["InstanceLaunchTemplateVersion"] == {
+        "AllowedPattern": "[1-9][0-9]*",
+        "Default": "1",
+        "Description": (
+            "Exact launch-template version used by the current instance until explicit replacement."
+        ),
+        "Type": "String",
+    }
+    assert template["Outputs"]["LatestLaunchTemplateVersion"]["Value"] == {
+        "Fn::GetAtt": ["DevelopmentLaunchTemplate", "LatestVersionNumber"]
+    }
+    lease_stop_function = resource_by_name_map["LeaseStopFunction"]["Properties"]
+    assert lease_stop_function["Runtime"] == "python3.14"
+    assert lease_stop_function["Architectures"] == ["arm64"]
+    assert lease_stop_function["Timeout"] == 30
+    lease_stop_code = lease_stop_function["Code"]["ZipFile"]
+    assert '"tag:aws:cloudformation:stack-name"' in lease_stop_code
+    assert '"tag:aws:cloudformation:logical-id"' in lease_stop_code
+    assert "ec2.stop_instances(InstanceIds=instance_ids)" in lease_stop_code
+    scheduler_policy_statement = resource_by_name_map["SchedulerExecutionRole"][
+        "Properties"
+    ]["Policies"][0]["PolicyDocument"]["Statement"]
+    assert scheduler_policy_statement == [
+        {
+            "Action": "lambda:InvokeFunction",
+            "Effect": "Allow",
+            "Resource": {"Fn::GetAtt": ["LeaseStopFunction", "Arn"]},
+        }
+    ]
 
 
 def test_data_plane_template_adds_compute_trust_without_narrowing_platform_permissions() -> (
@@ -499,6 +528,306 @@ def test_stable_data_change_allows_only_identity_preserving_conditional_dependen
     ]
 
 
+def test_ordinary_compute_apply_rejects_every_possible_stable_identity_replacement(
+    tmp_path: Path,
+) -> None:
+    """Only the explicit replacement workflow may change instance or retained attachment identity."""
+
+    environment = _environment_get(tmp_path)
+    change_summary_list = [
+        {
+            "action": "Modify",
+            "logical_resource_id": "DevelopmentLaunchTemplate",
+            "replacement": "False",
+        },
+        {
+            "action": "Modify",
+            "logical_resource_id": "DevelopmentInstance",
+            "replacement": "Conditional",
+        },
+        {
+            "action": "Remove",
+            "logical_resource_id": "RetainedVolumeAttachment",
+            "replacement": "False",
+        },
+    ]
+
+    assert environment._protected_identity_change_violation_list_get(
+        change_summary_list=change_summary_list,
+        protected_identity_logical_id_set=(
+            development_environment.COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET
+        ),
+    ) == ["DevelopmentInstance", "RetainedVolumeAttachment"]
+
+
+def test_replacement_parameters_select_next_slot_and_latest_launch_template(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Explicit replacement promotes one exact prepared template version."""
+
+    environment = _environment_get(tmp_path)
+    output_by_name_map_list = [
+        {
+            "InstanceId": "i-old",
+            "InstanceLaunchTemplateVersion": "3",
+            "InstanceSlot": "a",
+            "RetainedVolumeId": "vol-retained",
+        },
+        {
+            "InstanceId": "i-old",
+            "InstanceSlot": "b",
+            "LatestLaunchTemplateVersion": "7",
+            "RetainedVolumeId": "vol-retained",
+        },
+    ]
+    stack_apply_keyword_by_name_map: dict[str, object] = {}
+    monkeypatch.setattr(
+        environment,
+        "_stack_output_by_name_map_get",
+        lambda stack_name: output_by_name_map_list.pop(0),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stack_apply",
+        lambda **kwargs: stack_apply_keyword_by_name_map.update(kwargs),
+    )
+
+    assert environment._replacement_parameter_by_name_map_prepare() == {
+        "InstanceLaunchTemplateVersion": "7",
+        "InstanceSlot": "b",
+    }
+    assert stack_apply_keyword_by_name_map["parameter_by_name_map"] == {
+        "InstanceSlot": "b"
+    }
+    assert (
+        stack_apply_keyword_by_name_map["protected_identity_logical_id_set"]
+        == development_environment.COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET
+    )
+
+
+def test_replacement_detaches_retained_volume_only_after_proven_stop(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The old stopped instance releases retained EBS before CloudFormation creates its successor."""
+
+    environment = _environment_get(tmp_path)
+    attachment = {
+        "DeleteOnTermination": False,
+        "Device": "/dev/sdf",
+        "InstanceId": "i-old",
+        "State": "attached",
+        "VolumeId": "vol-retained",
+    }
+    state_list = [("in-use", [attachment]), ("available", [])]
+    aws_argument_list_list: list[list[str]] = []
+    monkeypatch.setattr(
+        environment,
+        "_stack_output_by_name_map_get",
+        lambda stack_name: {
+            "InstanceId": "i-old",
+            "RetainedVolumeId": "vol-retained",
+        },
+    )
+    monkeypatch.setattr(
+        environment,
+        "_instance_state_get",
+        lambda instance_id: "stopped",
+    )
+    monkeypatch.setattr(
+        environment,
+        "_retained_volume_state_get",
+        lambda **kwargs: state_list.pop(0),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_aws_run",
+        lambda argument_list, **kwargs: (
+            aws_argument_list_list.append(argument_list)
+            or subprocess.CompletedProcess(argument_list, 0, "{}", "")
+        ),
+    )
+
+    environment._retained_volume_detach_for_replacement()
+
+    assert aws_argument_list_list == [
+        [
+            "ec2",
+            "detach-volume",
+            "--device",
+            "/dev/sdf",
+            "--instance-id",
+            "i-old",
+            "--volume-id",
+            "vol-retained",
+        ],
+        [
+            "ec2",
+            "wait",
+            "volume-available",
+            "--volume-ids",
+            "vol-retained",
+        ],
+    ]
+
+
+def test_failed_replacement_recovers_the_stack_declared_volume_attachment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A rolled-back replacement leaves the old volume attached before returning failure."""
+
+    environment = _environment_get(tmp_path)
+    operation_list: list[str] = []
+    monkeypatch.setattr(
+        environment,
+        "_stop_lease_upsert",
+        lambda: operation_list.append("lease"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_retained_volume_detach_for_replacement",
+        lambda: operation_list.append("detach"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stack_apply",
+        lambda **kwargs: (_ for _ in ()).throw(
+            DevelopmentEnvironmentError("replacement failed")
+        ),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_retained_volume_attachment_ensure",
+        lambda: operation_list.append("recover"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stop_lease_delete",
+        lambda: operation_list.append("delete-lease"),
+    )
+
+    with pytest.raises(DevelopmentEnvironmentError, match="replacement failed"):
+        environment._replacement_stack_apply(
+            parameter_by_name_map={
+                "InstanceLaunchTemplateVersion": "7",
+                "InstanceSlot": "b",
+            }
+        )
+
+    assert operation_list == ["lease", "detach", "recover", "delete-lease"]
+
+
+def test_replace_uses_controlled_detach_and_exact_prepared_version(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Public replace never asks ordinary apply to follow mutable latest implicitly."""
+
+    environment = _environment_get(tmp_path)
+    operation_list: list[object] = []
+    monkeypatch.setattr(environment, "_local_operator_context_validate", lambda: None)
+    monkeypatch.setattr(
+        environment,
+        "_source_repository_validate",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        environment,
+        "_replacement_parameter_by_name_map_prepare",
+        lambda: {
+            "InstanceLaunchTemplateVersion": "7",
+            "InstanceSlot": "b",
+        },
+    )
+    monkeypatch.setattr(environment, "stop", lambda: operation_list.append("stop"))
+    monkeypatch.setattr(
+        environment,
+        "_replacement_stack_apply",
+        lambda **kwargs: operation_list.append(kwargs["parameter_by_name_map"]),
+    )
+    monkeypatch.setattr(environment, "start", lambda: operation_list.append("start"))
+    monkeypatch.setattr(
+        environment,
+        "_infrastructure_source_publish",
+        lambda: operation_list.append("publish"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_product_recovery_acceptance_run",
+        lambda: operation_list.append("accept"),
+    )
+
+    environment.replace()
+
+    assert operation_list == [
+        "stop",
+        {
+            "InstanceLaunchTemplateVersion": "7",
+            "InstanceSlot": "b",
+        },
+        "start",
+        "publish",
+        "accept",
+    ]
+
+
+def test_restore_prepares_exact_version_and_snapshot_before_controlled_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Snapshot restore uses the same exact replacement boundary as retained-volume reuse."""
+
+    environment = _environment_get(tmp_path)
+    operation_list: list[object] = []
+    monkeypatch.setattr(environment, "_local_operator_context_validate", lambda: None)
+    monkeypatch.setattr(
+        environment,
+        "_source_repository_validate",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        environment,
+        "_replacement_parameter_by_name_map_prepare",
+        lambda: {
+            "InstanceLaunchTemplateVersion": "7",
+            "InstanceSlot": "b",
+        },
+    )
+    monkeypatch.setattr(environment, "stop", lambda: operation_list.append("stop"))
+    monkeypatch.setattr(
+        environment,
+        "_replacement_stack_apply",
+        lambda **kwargs: operation_list.append(kwargs["parameter_by_name_map"]),
+    )
+    monkeypatch.setattr(environment, "start", lambda: operation_list.append("start"))
+    monkeypatch.setattr(
+        environment,
+        "_infrastructure_source_publish",
+        lambda: operation_list.append("publish"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_product_recovery_acceptance_run",
+        lambda: operation_list.append("accept"),
+    )
+
+    environment.restore("snap-0123456789abcdef0")
+
+    assert operation_list == [
+        "stop",
+        {
+            "InstanceLaunchTemplateVersion": "7",
+            "InstanceSlot": "b",
+            "RetainedVolumeSnapshotId": "snap-0123456789abcdef0",
+        },
+        "start",
+        "publish",
+        "accept",
+    ]
+
+
 def test_ssh_remote_arguments_are_shell_quoted_once(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -579,7 +908,7 @@ def test_start_creates_stop_lease_before_ec2_start(
     monkeypatch.setattr(
         environment,
         "_stop_lease_upsert",
-        lambda instance_id: operation_list.append("lease"),
+        lambda: operation_list.append("lease"),
     )
     monkeypatch.setattr(environment, "_aws_run", aws_run)
 
@@ -589,11 +918,11 @@ def test_start_creates_stop_lease_before_ec2_start(
     assert operation_list[2] == "online"
 
 
-def test_stop_lease_uses_renewable_direct_stop_instances_target(
+def test_stop_lease_uses_renewable_tag_resolving_target(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Lease renewal must create the approved two-hour one-time direct EC2 stop target."""
+    """Lease target must protect a future replacement whose instance ID is not known yet."""
 
     environment = _environment_get(tmp_path)
     aws_argument_list_list: list[list[str]] = []
@@ -623,17 +952,29 @@ def test_stop_lease_uses_renewable_direct_stop_instances_target(
         environment,
         "_stack_output_by_name_map_get",
         lambda stack_name: {
-            "SchedulerExecutionRoleArn": "arn:aws:iam::463564115167:role/scheduler"
+            "SchedulerExecutionRoleArn": "arn:aws:iam::463564115167:role/scheduler",
+            "StopLeaseTargetArn": (
+                "arn:aws:lambda:us-east-1:463564115167:"
+                "function:workflow-control-center-development-stop-current-instance"
+            ),
         },
     )
     monkeypatch.setattr(environment, "_aws_run", aws_run)
     monkeypatch.setattr(
         environment,
         "_stop_lease_payload_get",
-        lambda: {"state": "ENABLED"},
+        lambda: {
+            "action_after_completion": "DELETE",
+            "schedule_expression": "at(2026-07-28T14:00:00)",
+            "state": "ENABLED",
+            "target_arn": (
+                "arn:aws:lambda:us-east-1:463564115167:"
+                "function:workflow-control-center-development-stop-current-instance"
+            ),
+        },
     )
 
-    environment._stop_lease_upsert(instance_id="i-0123456789abcdef0")
+    environment._stop_lease_upsert()
     create_argument_list = aws_argument_list_list[-1]
     assert create_argument_list[:2] == ["scheduler", "create-schedule"]
     assert "at(2026-07-28T14:00:00)" in create_argument_list
@@ -641,10 +982,10 @@ def test_stop_lease_uses_renewable_direct_stop_instances_target(
     target_payload = json.loads(
         create_argument_list[create_argument_list.index("--target") + 1]
     )
-    assert target_payload["Arn"] == "arn:aws:scheduler:::aws-sdk:ec2:stopInstances"
-    assert json.loads(target_payload["Input"]) == {
-        "InstanceIds": ["i-0123456789abcdef0"]
-    }
+    assert target_payload["Arn"].endswith(
+        ":function:workflow-control-center-development-stop-current-instance"
+    )
+    assert json.loads(target_payload["Input"]) == {}
 
 
 def test_connect_forwards_the_remote_ingress_port_to_local_8080(
@@ -825,7 +1166,7 @@ def test_host_controller_renews_beyond_two_hours_then_stops_after_proven_idle(
     monkeypatch.setattr(
         environment,
         "_stop_lease_upsert",
-        lambda instance_id: lease_time_list.append(clock.t_now),
+        lambda: lease_time_list.append(clock.t_now),
     )
     monkeypatch.setattr(
         environment,
@@ -916,7 +1257,7 @@ def test_start_never_calls_ec2_when_initial_stop_lease_fails(
     monkeypatch.setattr(
         environment,
         "_stop_lease_upsert",
-        lambda instance_id: (_ for _ in ()).throw(
+        lambda: (_ for _ in ()).throw(
             DevelopmentEnvironmentError("scheduler unavailable")
         ),
     )
