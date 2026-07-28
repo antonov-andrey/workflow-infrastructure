@@ -387,6 +387,43 @@ def test_service_readiness_checks_every_required_aws_control_plane(
     ]
 
 
+def test_stable_data_change_allows_only_identity_preserving_conditional_dependencies(
+    tmp_path: Path,
+) -> None:
+    """Conditional dependent updates are safe only when their source cannot be replaced."""
+
+    environment = _environment_get(tmp_path)
+    safe_detail = {
+        "CausingEntity": "DataBucket.Arn",
+        "ChangeSource": "ResourceAttribute",
+        "Evaluation": "Dynamic",
+        "Target": {"RequiresRecreation": "Conditionally"},
+    }
+    change_summary_list = [
+        {
+            "action": "Modify",
+            "detail_list": [],
+            "logical_resource_id": "DataBucket",
+            "replacement": "False",
+            "resource_type": "AWS::S3::Bucket",
+        },
+        {
+            "action": "Modify",
+            "detail_list": [safe_detail],
+            "logical_resource_id": "DataLakeLocation",
+            "replacement": "Conditional",
+            "resource_type": "AWS::LakeFormation::Resource",
+        },
+    ]
+    assert environment._stable_data_change_violation_list_get(change_summary_list) == []
+
+    change_summary_list[0]["replacement"] = "True"
+    assert environment._stable_data_change_violation_list_get(change_summary_list) == [
+        "DataBucket",
+        "DataLakeLocation",
+    ]
+
+
 def test_ssh_remote_arguments_are_shell_quoted_once(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

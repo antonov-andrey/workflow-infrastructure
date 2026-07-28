@@ -1390,15 +1390,27 @@ shutil.rmtree(root_path)
                 "logical_resource_id": resource_change.get("LogicalResourceId"),
                 "replacement": resource_change.get("Replacement", "False"),
                 "resource_type": resource_change.get("ResourceType"),
+                "detail_list": resource_change.get("Details", []),
             }
             change_summary_list.append(summary)
-            if must_preserve_resource and (
-                summary["action"] == "Remove" or summary["replacement"] in {"Conditional", "True"}
-            ):
-                raise DevelopmentEnvironmentError(
-                    f"Stable data-plane change would remove or replace {summary['logical_resource_id']}"
-                )
         print(json.dumps({"change_set": change_set_name, "changes": change_summary_list}, indent=2, sort_keys=True))
+        if must_preserve_resource:
+            violation_logical_id_list = self._stable_data_change_violation_list_get(change_summary_list)
+            if violation_logical_id_list:
+                self._aws_run(
+                    [
+                        "cloudformation",
+                        "delete-change-set",
+                        "--stack-name",
+                        stack_name,
+                        "--change-set-name",
+                        change_set_name,
+                    ]
+                )
+                raise DevelopmentEnvironmentError(
+                    "Stable data-plane change would remove or replace "
+                    + ", ".join(violation_logical_id_list)
+                )
         self._aws_run(
             [
                 "cloudformation",
@@ -1416,6 +1428,71 @@ shutil.rmtree(root_path)
             "UPDATE_COMPLETE",
         }:
             raise DevelopmentEnvironmentError(f"Stack {stack_name} did not reach a complete state")
+
+    def _stable_data_change_violation_list_get(
+        self,
+        change_summary_list: list[dict[str, object]],
+    ) -> list[str]:
+        """Return data-plane changes that are not proven identity-preserving.
+
+        CloudFormation reports ``Conditional`` for a dependent resource when
+        its property references another modified resource, even if that
+        resource's physical identity cannot change. Such a change is safe only
+        when every replacement-relevant detail is a dynamic resource-attribute
+        reference to a change explicitly reported with ``Replacement=False``.
+
+        Args:
+            change_summary_list: Complete resource-change summaries.
+
+        Returns:
+            Sorted violating logical resource IDs.
+        """
+
+        summary_by_logical_id_map = {
+            str(summary.get("logical_resource_id")): summary for summary in change_summary_list
+        }
+        violation_logical_id_list: list[str] = []
+        for summary in change_summary_list:
+            logical_resource_id = str(summary.get("logical_resource_id"))
+            action = summary.get("action")
+            replacement = summary.get("replacement")
+            if action == "Remove" or replacement == "True":
+                violation_logical_id_list.append(logical_resource_id)
+                continue
+            if replacement != "Conditional":
+                continue
+            detail_list = summary.get("detail_list")
+            if not isinstance(detail_list, list) or not detail_list:
+                violation_logical_id_list.append(logical_resource_id)
+                continue
+            replacement_detail_list = []
+            for detail in detail_list:
+                if not isinstance(detail, dict):
+                    replacement_detail_list.append(detail)
+                    continue
+                target = detail.get("Target")
+                if isinstance(target, dict) and target.get("RequiresRecreation") in {"Always", "Conditionally"}:
+                    replacement_detail_list.append(detail)
+            if not replacement_detail_list:
+                violation_logical_id_list.append(logical_resource_id)
+                continue
+            for detail in replacement_detail_list:
+                if not isinstance(detail, dict):
+                    violation_logical_id_list.append(logical_resource_id)
+                    break
+                causing_entity = detail.get("CausingEntity")
+                causing_logical_id = str(causing_entity).split(".", maxsplit=1)[0]
+                causing_summary = summary_by_logical_id_map.get(causing_logical_id)
+                if (
+                    detail.get("Evaluation") != "Dynamic"
+                    or detail.get("ChangeSource") != "ResourceAttribute"
+                    or causing_summary is None
+                    or causing_summary.get("action") == "Remove"
+                    or causing_summary.get("replacement") != "False"
+                ):
+                    violation_logical_id_list.append(logical_resource_id)
+                    break
+        return sorted(set(violation_logical_id_list))
 
     def _submodule_by_path_map_get(self, repository_path: Path) -> dict[str, dict[str, str]]:
         gitmodules_path = repository_path / ".gitmodules"
