@@ -147,6 +147,7 @@ class DevelopmentEnvironment:
         self._local_operator_context_validate()
         self._source_repository_validate(self._project_root_path, "workflow-infrastructure")
         self._cost_review_record()
+        self._stack_drift_validate(DATA_PLANE_STACK_NAME)
         data_resource_id_by_logical_name_map = self._stack_resource_id_by_logical_name_map_get(DATA_PLANE_STACK_NAME)
         self._template_validate(self._project_root_path / "cloudformation/workflow-control-center-development.yaml")
         self._template_validate(
