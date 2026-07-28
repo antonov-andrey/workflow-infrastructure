@@ -501,10 +501,10 @@ Resources:
         - Key: ManagedBy
           Value: CloudFormation
 
-  ReplacementGuardSchedule:
+  InstanceCreationGuardSchedule:
     Type: AWS::Scheduler::Schedule
     Properties:
-      Name: workflow-control-center-development-replacement-guard
+      Name: workflow-control-center-development-instance-creation-guard
       FlexibleTimeWindow:
         Mode: 'OFF'
       ScheduleExpression: !Ref ReplacementGuardScheduleExpression
@@ -686,7 +686,7 @@ Resources:
     Type: AWS::EC2::Instance
     DependsOn:
       - DevelopmentRoute
-      - ReplacementGuardSchedule
+      - InstanceCreationGuardSchedule
     Properties:
       LaunchTemplate:
         LaunchTemplateId: !Ref DevelopmentLaunchTemplate
@@ -717,7 +717,7 @@ Outputs:
   Region:
     Value: !Ref AWS::Region
   ReplacementGuardScheduleName:
-    Value: !Ref ReplacementGuardSchedule
+    Value: !Ref InstanceCreationGuardSchedule
   RetainedVolumeId:
     Value: !Ref RetainedVolume
   SchedulerExecutionRoleArn:
