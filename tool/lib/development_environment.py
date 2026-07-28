@@ -194,16 +194,23 @@ class DevelopmentEnvironment:
                 raise DevelopmentEnvironmentError(
                     "Stable data-plane physical resource identity changed"
                 )
+        compute_parameter_by_name_map: dict[str, str] = {}
+        if not self._stack_payload_get(COMPUTE_STACK_NAME, is_required=False):
+            compute_parameter_by_name_map.update(
+                self._replacement_guard_parameter_by_name_map_get()
+            )
         self._stack_apply(
             stack_name=COMPUTE_STACK_NAME,
             template_path=self._project_root_path
             / "cloudformation/workflow-control-center-development-compute.yaml",
-            parameter_by_name_map={},
+            parameter_by_name_map=compute_parameter_by_name_map,
             must_preserve_resource=False,
             protected_identity_logical_id_set=COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET,
         )
         self._retained_volume_attachment_validate()
+        self._instance_launch_template_version_validate()
         self.start()
+        self._replacement_guard_disable()
         self._infrastructure_source_publish()
         self._stack_drift_validate(DATA_PLANE_STACK_NAME)
         self._stack_drift_validate(COMPUTE_STACK_NAME)
@@ -553,7 +560,7 @@ WantedBy=multi-user.target
             self._project_root_path, "workflow-infrastructure"
         )
         replacement_parameter_by_name_map = (
-            self._replacement_parameter_by_name_map_prepare()
+            self._replacement_parameter_by_name_map_get()
         )
         replacement_parameter_by_name_map["RetainedVolumeSnapshotId"] = snapshot_id
         self.stop()
@@ -561,6 +568,7 @@ WantedBy=multi-user.target
             parameter_by_name_map=replacement_parameter_by_name_map
         )
         self.start()
+        self._replacement_guard_disable()
         self._infrastructure_source_publish()
         self._product_recovery_acceptance_run()
         print(f"OK: retained state restored and accepted from {snapshot_id}")
@@ -573,7 +581,7 @@ WantedBy=multi-user.target
             self._project_root_path, "workflow-infrastructure"
         )
         replacement_parameter_by_name_map = (
-            self._replacement_parameter_by_name_map_prepare()
+            self._replacement_parameter_by_name_map_get()
         )
         replacement_slot = replacement_parameter_by_name_map["InstanceSlot"]
         self.stop()
@@ -581,14 +589,15 @@ WantedBy=multi-user.target
             parameter_by_name_map=replacement_parameter_by_name_map
         )
         self.start()
+        self._replacement_guard_disable()
         self._infrastructure_source_publish()
         self._product_recovery_acceptance_run()
         print(
             f"OK: replacement instance in slot {replacement_slot} accepted the retained volume"
         )
 
-    def _replacement_parameter_by_name_map_prepare(self) -> dict[str, str]:
-        """Prepare and return one exact replacement launch-template version.
+    def _replacement_parameter_by_name_map_get(self) -> dict[str, str]:
+        """Return explicit slot and fail-safe schedule parameters for replacement.
 
         Returns:
             Parameter overrides that deliberately replace the current instance.
@@ -596,64 +605,46 @@ WantedBy=multi-user.target
 
         output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
         try:
-            current_instance_id = output_by_name_map["InstanceId"]
-            current_retained_volume_id = output_by_name_map["RetainedVolumeId"]
             current_slot = output_by_name_map["InstanceSlot"]
-            current_launch_template_version = output_by_name_map[
-                "InstanceLaunchTemplateVersion"
-            ]
         except KeyError as error:
             raise DevelopmentEnvironmentError(
                 "Compute stack replacement outputs are incomplete"
             ) from error
-        if (
-            current_slot not in {"a", "b"}
-            or not current_launch_template_version.isdigit()
-        ):
+        if current_slot not in {"a", "b"}:
             raise DevelopmentEnvironmentError(
                 "Compute stack replacement outputs are malformed"
             )
-        replacement_slot = "b" if current_slot == "a" else "a"
+        parameter_by_name_map = self._replacement_guard_parameter_by_name_map_get()
+        parameter_by_name_map["InstanceSlot"] = "b" if current_slot == "a" else "a"
+        return parameter_by_name_map
+
+    def _replacement_guard_parameter_by_name_map_get(self) -> dict[str, str]:
+        """Return an enabled two-hour CloudFormation replacement guard."""
+
+        t_stop = self._clock.now() + LEASE_DURATION
+        return {
+            "ReplacementGuardScheduleExpression": (
+                f"at({t_stop.strftime('%Y-%m-%dT%H:%M:%S')})"
+            ),
+            "ReplacementGuardScheduleState": "ENABLED",
+        }
+
+    def _replacement_guard_disable(self) -> None:
+        """Disable the CloudFormation guard after the renewable lease is proven."""
+
+        output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
+        if "ReplacementGuardScheduleName" not in output_by_name_map:
+            raise DevelopmentEnvironmentError(
+                "Compute stack replacement guard output is missing"
+            )
         self._stack_apply(
             stack_name=COMPUTE_STACK_NAME,
             template_path=self._project_root_path
             / "cloudformation/workflow-control-center-development-compute.yaml",
-            parameter_by_name_map={"InstanceSlot": replacement_slot},
+            parameter_by_name_map={"ReplacementGuardScheduleState": "DISABLED"},
             must_preserve_resource=False,
             protected_identity_logical_id_set=COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET,
         )
-        prepared_output_by_name_map = self._stack_output_by_name_map_get(
-            COMPUTE_STACK_NAME
-        )
-        try:
-            prepared_instance_id = prepared_output_by_name_map["InstanceId"]
-            prepared_retained_volume_id = prepared_output_by_name_map[
-                "RetainedVolumeId"
-            ]
-            prepared_slot = prepared_output_by_name_map["InstanceSlot"]
-            latest_launch_template_version = prepared_output_by_name_map[
-                "LatestLaunchTemplateVersion"
-            ]
-        except KeyError as error:
-            raise DevelopmentEnvironmentError(
-                "Prepared compute stack replacement outputs are incomplete"
-            ) from error
-        if (
-            prepared_instance_id != current_instance_id
-            or prepared_retained_volume_id != current_retained_volume_id
-            or prepared_slot != replacement_slot
-            or not latest_launch_template_version.isdigit()
-            or int(latest_launch_template_version)
-            <= int(current_launch_template_version)
-        ):
-            raise DevelopmentEnvironmentError(
-                "Replacement launch-template preparation did not preserve stable identities "
-                "and produce a newer exact version"
-            )
-        return {
-            "InstanceLaunchTemplateVersion": latest_launch_template_version,
-            "InstanceSlot": replacement_slot,
-        }
 
     def _replacement_stack_apply(
         self, *, parameter_by_name_map: dict[str, str]
@@ -664,11 +655,22 @@ WantedBy=multi-user.target
             parameter_by_name_map: Exact replacement and optional restore parameters.
         """
 
-        self._stop_lease_upsert()
+        if (
+            parameter_by_name_map.get("ReplacementGuardScheduleState") != "ENABLED"
+            or "ReplacementGuardScheduleExpression" not in parameter_by_name_map
+        ):
+            raise DevelopmentEnvironmentError(
+                "Explicit replacement requires an enabled CloudFormation guard"
+            )
+        output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
+        renewable_lease_created = "StopLeaseTargetArn" in output_by_name_map
+        if renewable_lease_created:
+            self._stop_lease_upsert()
         try:
             self._retained_volume_detach_for_replacement()
         except Exception:
-            self._stop_lease_delete()
+            if renewable_lease_created:
+                self._stop_lease_delete()
             raise
         try:
             self._stack_apply(
@@ -686,9 +688,11 @@ WantedBy=multi-user.target
                     "Compute replacement failed and retained-volume attachment recovery failed: "
                     f"{recovery_error}"
                 ) from error
-            self._stop_lease_delete()
+            if renewable_lease_created:
+                self._stop_lease_delete()
             raise
         self._retained_volume_attachment_validate()
+        self._instance_launch_template_version_validate()
 
     def ssh(self, ssh_argument_list: list[str]) -> int:
         """Run one SSH client command through an ephemeral SSH-over-SSM session.
@@ -1092,6 +1096,41 @@ WantedBy=multi-user.target
         if not isinstance(state, str):
             raise DevelopmentEnvironmentError("EC2 instance state is not text")
         return state
+
+    def _instance_launch_template_version_validate(self) -> None:
+        """Prove the instance records the exact latest immutable template version."""
+
+        output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
+        instance_id = output_by_name_map["InstanceId"]
+        expected_version = output_by_name_map["LatestLaunchTemplateVersion"]
+        payload = self._aws_json_get(
+            ["ec2", "describe-instances", "--instance-ids", instance_id]
+        )
+        try:
+            tag_list = payload["Reservations"][0]["Instances"][0]["Tags"]
+        except (KeyError, IndexError, TypeError) as error:
+            raise DevelopmentEnvironmentError(
+                "EC2 instance launch-template response is malformed"
+            ) from error
+        if not isinstance(tag_list, list) or any(
+            not isinstance(tag, dict) for tag in tag_list
+        ):
+            raise DevelopmentEnvironmentError(
+                "EC2 instance launch-template tags are malformed"
+            )
+        tag_by_name_map = {
+            tag.get("Key"): tag.get("Value")
+            for tag in tag_list
+            if isinstance(tag.get("Key"), str)
+        }
+        if (
+            not isinstance(expected_version, str)
+            or not expected_version.isdigit()
+            or tag_by_name_map.get("aws:ec2launchtemplate:version") != expected_version
+        ):
+            raise DevelopmentEnvironmentError(
+                "EC2 instance does not use the exact latest launch-template version"
+            )
 
     def _retained_volume_state_get(
         self, *, volume_id: str

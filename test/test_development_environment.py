@@ -165,7 +165,7 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
 
     launch_template_reference = {
         "LaunchTemplateId": {"Ref": "DevelopmentLaunchTemplate"},
-        "Version": {"Ref": "InstanceLaunchTemplateVersion"},
+        "Version": {"Fn::GetAtt": ["DevelopmentLaunchTemplate", "LatestVersionNumber"]},
     }
     assert (
         resource_by_name_map["DevelopmentInstance"]["Properties"]["LaunchTemplate"]
@@ -175,14 +175,6 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
         "Device": "/dev/sdf",
         "InstanceId": {"Ref": "DevelopmentInstance"},
         "VolumeId": {"Ref": "RetainedVolume"},
-    }
-    assert template["Parameters"]["InstanceLaunchTemplateVersion"] == {
-        "AllowedPattern": "[1-9][0-9]*",
-        "Default": "1",
-        "Description": (
-            "Exact launch-template version used by the current instance until explicit replacement."
-        ),
-        "Type": "String",
     }
     assert template["Outputs"]["LatestLaunchTemplateVersion"]["Value"] == {
         "Fn::GetAtt": ["DevelopmentLaunchTemplate", "LatestVersionNumber"]
@@ -204,6 +196,15 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
             "Effect": "Allow",
             "Resource": {"Fn::GetAtt": ["LeaseStopFunction", "Arn"]},
         }
+    ]
+    replacement_guard = resource_by_name_map["ReplacementGuardSchedule"]["Properties"]
+    assert replacement_guard["State"] == {"Ref": "ReplacementGuardScheduleState"}
+    assert replacement_guard["Target"]["Arn"] == {
+        "Fn::GetAtt": ["LeaseStopFunction", "Arn"]
+    }
+    assert resource_by_name_map["DevelopmentInstance"]["DependsOn"] == [
+        "DevelopmentRoute",
+        "ReplacementGuardSchedule",
     ]
 
 
@@ -560,50 +561,24 @@ def test_ordinary_compute_apply_rejects_every_possible_stable_identity_replaceme
     ) == ["DevelopmentInstance", "RetainedVolumeAttachment"]
 
 
-def test_replacement_parameters_select_next_slot_and_latest_launch_template(
+def test_replacement_parameters_select_next_slot_and_enable_creation_guard(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Explicit replacement promotes one exact prepared template version."""
+    """Explicit replacement makes future instance creation fail-safe before it starts."""
 
     environment = _environment_get(tmp_path)
-    output_by_name_map_list = [
-        {
-            "InstanceId": "i-old",
-            "InstanceLaunchTemplateVersion": "3",
-            "InstanceSlot": "a",
-            "RetainedVolumeId": "vol-retained",
-        },
-        {
-            "InstanceId": "i-old",
-            "InstanceSlot": "b",
-            "LatestLaunchTemplateVersion": "7",
-            "RetainedVolumeId": "vol-retained",
-        },
-    ]
-    stack_apply_keyword_by_name_map: dict[str, object] = {}
     monkeypatch.setattr(
         environment,
         "_stack_output_by_name_map_get",
-        lambda stack_name: output_by_name_map_list.pop(0),
-    )
-    monkeypatch.setattr(
-        environment,
-        "_stack_apply",
-        lambda **kwargs: stack_apply_keyword_by_name_map.update(kwargs),
+        lambda stack_name: {"InstanceSlot": "a"},
     )
 
-    assert environment._replacement_parameter_by_name_map_prepare() == {
-        "InstanceLaunchTemplateVersion": "7",
+    assert environment._replacement_parameter_by_name_map_get() == {
         "InstanceSlot": "b",
+        "ReplacementGuardScheduleExpression": "at(2026-07-28T14:00:00)",
+        "ReplacementGuardScheduleState": "ENABLED",
     }
-    assert stack_apply_keyword_by_name_map["parameter_by_name_map"] == {
-        "InstanceSlot": "b"
-    }
-    assert (
-        stack_apply_keyword_by_name_map["protected_identity_logical_id_set"]
-        == development_environment.COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET
-    )
 
 
 def test_replacement_detaches_retained_volume_only_after_proven_stop(
@@ -672,6 +647,45 @@ def test_replacement_detaches_retained_volume_only_after_proven_stop(
     ]
 
 
+def test_instance_launch_template_version_must_match_stack_latest_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A completed replacement proves the concrete immutable version used by EC2."""
+
+    environment = _environment_get(tmp_path)
+    monkeypatch.setattr(
+        environment,
+        "_stack_output_by_name_map_get",
+        lambda stack_name: {
+            "InstanceId": "i-current",
+            "LatestLaunchTemplateVersion": "7",
+        },
+    )
+    monkeypatch.setattr(
+        environment,
+        "_aws_json_get",
+        lambda argument_list: {
+            "Reservations": [
+                {
+                    "Instances": [
+                        {
+                            "Tags": [
+                                {
+                                    "Key": "aws:ec2launchtemplate:version",
+                                    "Value": "7",
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        },
+    )
+
+    environment._instance_launch_template_version_validate()
+
+
 def test_failed_replacement_recovers_the_stack_declared_volume_attachment(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -680,6 +694,11 @@ def test_failed_replacement_recovers_the_stack_declared_volume_attachment(
 
     environment = _environment_get(tmp_path)
     operation_list: list[str] = []
+    monkeypatch.setattr(
+        environment,
+        "_stack_output_by_name_map_get",
+        lambda stack_name: {"StopLeaseTargetArn": "arn:aws:lambda:target"},
+    )
     monkeypatch.setattr(
         environment,
         "_stop_lease_upsert",
@@ -711,19 +730,70 @@ def test_failed_replacement_recovers_the_stack_declared_volume_attachment(
     with pytest.raises(DevelopmentEnvironmentError, match="replacement failed"):
         environment._replacement_stack_apply(
             parameter_by_name_map={
-                "InstanceLaunchTemplateVersion": "7",
                 "InstanceSlot": "b",
+                "ReplacementGuardScheduleExpression": "at(2026-07-28T14:00:00)",
+                "ReplacementGuardScheduleState": "ENABLED",
             }
         )
 
     assert operation_list == ["lease", "detach", "recover", "delete-lease"]
 
 
-def test_replace_uses_controlled_detach_and_exact_prepared_version(
+def test_first_replacement_relies_on_cloudformation_guard_before_target_exists(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Public replace never asks ordinary apply to follow mutable latest implicitly."""
+    """The initial legacy-stack replacement does not require the future Lambda output."""
+
+    environment = _environment_get(tmp_path)
+    operation_list: list[str] = []
+    monkeypatch.setattr(
+        environment,
+        "_stack_output_by_name_map_get",
+        lambda stack_name: {"InstanceSlot": "a"},
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stop_lease_upsert",
+        lambda: pytest.fail("The not-yet-created renewable target cannot be used"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_retained_volume_detach_for_replacement",
+        lambda: operation_list.append("detach"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stack_apply",
+        lambda **kwargs: operation_list.append("apply"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_retained_volume_attachment_validate",
+        lambda: operation_list.append("attachment"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_instance_launch_template_version_validate",
+        lambda: operation_list.append("version"),
+    )
+
+    environment._replacement_stack_apply(
+        parameter_by_name_map={
+            "InstanceSlot": "b",
+            "ReplacementGuardScheduleExpression": "at(2026-07-28T14:00:00)",
+            "ReplacementGuardScheduleState": "ENABLED",
+        }
+    )
+
+    assert operation_list == ["detach", "apply", "attachment", "version"]
+
+
+def test_replace_uses_controlled_detach_and_creation_guard(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Public replace disables the creation guard only after renewable lease and start."""
 
     environment = _environment_get(tmp_path)
     operation_list: list[object] = []
@@ -735,10 +805,11 @@ def test_replace_uses_controlled_detach_and_exact_prepared_version(
     )
     monkeypatch.setattr(
         environment,
-        "_replacement_parameter_by_name_map_prepare",
+        "_replacement_parameter_by_name_map_get",
         lambda: {
-            "InstanceLaunchTemplateVersion": "7",
             "InstanceSlot": "b",
+            "ReplacementGuardScheduleExpression": "at(2026-07-28T14:00:00)",
+            "ReplacementGuardScheduleState": "ENABLED",
         },
     )
     monkeypatch.setattr(environment, "stop", lambda: operation_list.append("stop"))
@@ -748,6 +819,11 @@ def test_replace_uses_controlled_detach_and_exact_prepared_version(
         lambda **kwargs: operation_list.append(kwargs["parameter_by_name_map"]),
     )
     monkeypatch.setattr(environment, "start", lambda: operation_list.append("start"))
+    monkeypatch.setattr(
+        environment,
+        "_replacement_guard_disable",
+        lambda: operation_list.append("disable-guard"),
+    )
     monkeypatch.setattr(
         environment,
         "_infrastructure_source_publish",
@@ -764,16 +840,18 @@ def test_replace_uses_controlled_detach_and_exact_prepared_version(
     assert operation_list == [
         "stop",
         {
-            "InstanceLaunchTemplateVersion": "7",
             "InstanceSlot": "b",
+            "ReplacementGuardScheduleExpression": "at(2026-07-28T14:00:00)",
+            "ReplacementGuardScheduleState": "ENABLED",
         },
         "start",
+        "disable-guard",
         "publish",
         "accept",
     ]
 
 
-def test_restore_prepares_exact_version_and_snapshot_before_controlled_replacement(
+def test_restore_combines_snapshot_and_creation_guard_in_controlled_replacement(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -789,10 +867,11 @@ def test_restore_prepares_exact_version_and_snapshot_before_controlled_replaceme
     )
     monkeypatch.setattr(
         environment,
-        "_replacement_parameter_by_name_map_prepare",
+        "_replacement_parameter_by_name_map_get",
         lambda: {
-            "InstanceLaunchTemplateVersion": "7",
             "InstanceSlot": "b",
+            "ReplacementGuardScheduleExpression": "at(2026-07-28T14:00:00)",
+            "ReplacementGuardScheduleState": "ENABLED",
         },
     )
     monkeypatch.setattr(environment, "stop", lambda: operation_list.append("stop"))
@@ -802,6 +881,11 @@ def test_restore_prepares_exact_version_and_snapshot_before_controlled_replaceme
         lambda **kwargs: operation_list.append(kwargs["parameter_by_name_map"]),
     )
     monkeypatch.setattr(environment, "start", lambda: operation_list.append("start"))
+    monkeypatch.setattr(
+        environment,
+        "_replacement_guard_disable",
+        lambda: operation_list.append("disable-guard"),
+    )
     monkeypatch.setattr(
         environment,
         "_infrastructure_source_publish",
@@ -818,11 +902,13 @@ def test_restore_prepares_exact_version_and_snapshot_before_controlled_replaceme
     assert operation_list == [
         "stop",
         {
-            "InstanceLaunchTemplateVersion": "7",
             "InstanceSlot": "b",
+            "ReplacementGuardScheduleExpression": "at(2026-07-28T14:00:00)",
+            "ReplacementGuardScheduleState": "ENABLED",
             "RetainedVolumeSnapshotId": "snap-0123456789abcdef0",
         },
         "start",
+        "disable-guard",
         "publish",
         "accept",
     ]
