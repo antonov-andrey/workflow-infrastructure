@@ -10,6 +10,7 @@ import io
 import json
 import os
 from pathlib import Path
+import platform
 import shlex
 import subprocess
 import tarfile
@@ -33,6 +34,18 @@ HOST_CONTROL_RELEASE_ROOT_PATH = Path("/opt/workflow-infrastructure/control/rele
 HOST_CURRENT_SOURCE_PATH = Path("/opt/workflow-infrastructure/current")
 HOST_RELEASE_ROOT_PATH = Path("/opt/workflow-infrastructure/releases")
 HOST_STATE_ROOT_PATH = Path("/var/lib/workflow-infrastructure")
+HELM_BINARY_PATH = Path("/usr/local/bin/helm")
+HELM_VERSION = "v4.2.3"
+HELM_RELEASE_BY_MACHINE_MAP = {
+    "aarch64": (
+        "arm64",
+        "21abd9354d39b2cd79a8d76be6912cd137a983cbf997193503fb8a6a6e2f2785",
+    ),
+    "x86_64": (
+        "amd64",
+        "e9b88b4ee95b18c706839c28d3a0220e5bc470e9cd9262410c90793c45ff8b7c",
+    ),
+}
 INSTANCE_NAME = "workflow-control-center-development"
 LEASE_DURATION = timedelta(hours=2)
 LEASE_GROUP_NAME = "workflow-control-center-development"
@@ -324,8 +337,23 @@ class DevelopmentEnvironment:
                 text=release_manifest_text,
                 ssh_control_path=ssh_control_path,
             )
-            platform = self._runtime_platform_get(ssh_control_path)
             release_root_path = HOST_RELEASE_ROOT_PATH / release_name
+            self._ssh_run(
+                [
+                    "sudo",
+                    "python3.14",
+                    str(
+                        release_root_path
+                        / "sources"
+                        / "workflow-infrastructure"
+                        / "tool"
+                        / "development_environment_manage.py"
+                    ),
+                    "host-prepare",
+                ],
+                ssh_control_path=ssh_control_path,
+            )
+            platform = self._runtime_platform_get(ssh_control_path)
             product_command_list = [
                 "sudo",
                 "python3.14",
@@ -476,9 +504,116 @@ class DevelopmentEnvironment:
                     idle_start_path.unlink(missing_ok=True)
             self._clock.sleep(60)
 
+    def host_prepare(self) -> None:
+        """Install exact source-owned host dependencies required before Product deploy."""
+
+        if not self._is_host:
+            raise DevelopmentEnvironmentError(
+                "host-prepare is supported only from an exact source release on the development host"
+            )
+        self._helm_ensure()
+        print(f"OK: exact Helm {HELM_VERSION} is installed")
+
+    def _helm_ensure(self) -> None:
+        """Install the pinned Helm release atomically after archive verification."""
+
+        if HELM_BINARY_PATH.is_file():
+            current_result = self._runner.run(
+                [
+                    str(HELM_BINARY_PATH),
+                    "version",
+                    "--template",
+                    "{{.Version}}",
+                ],
+                check=False,
+            )
+            if (
+                current_result.returncode == 0
+                and current_result.stdout.strip() == HELM_VERSION
+            ):
+                return
+        machine = platform.machine()
+        release = HELM_RELEASE_BY_MACHINE_MAP.get(machine)
+        if release is None:
+            raise DevelopmentEnvironmentError(
+                f"Unsupported Helm host architecture {machine}"
+            )
+        archive_architecture, expected_sha256 = release
+        archive_name = f"helm-{HELM_VERSION}-linux-{archive_architecture}.tar.gz"
+        member_name = f"linux-{archive_architecture}/helm"
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root_path = Path(temporary_directory)
+            archive_path = temporary_root_path / archive_name
+            self._runner.run(
+                [
+                    "curl",
+                    "--fail",
+                    "--silent",
+                    "--show-error",
+                    "--location",
+                    f"https://get.helm.sh/{archive_name}",
+                    "-o",
+                    str(archive_path),
+                ]
+            )
+            actual_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+            if actual_sha256 != expected_sha256:
+                raise DevelopmentEnvironmentError(
+                    "Downloaded Helm archive digest does not match the pinned release"
+                )
+            with tarfile.open(archive_path, "r:gz") as archive:
+                try:
+                    member = archive.getmember(member_name)
+                except KeyError as error:
+                    raise DevelopmentEnvironmentError(
+                        "Pinned Helm archive does not contain its expected binary"
+                    ) from error
+                if not member.isfile():
+                    raise DevelopmentEnvironmentError(
+                        "Pinned Helm archive member is not a regular file"
+                    )
+                source_file = archive.extractfile(member)
+                if source_file is None:
+                    raise DevelopmentEnvironmentError(
+                        "Pinned Helm archive binary is unreadable"
+                    )
+                binary_payload = source_file.read()
+            if not binary_payload.startswith(b"\x7fELF"):
+                raise DevelopmentEnvironmentError(
+                    "Pinned Helm archive does not contain a Linux executable"
+                )
+            temporary_binary_path: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    dir=HELM_BINARY_PATH.parent,
+                    delete=False,
+                ) as temporary_binary:
+                    temporary_binary_path = Path(temporary_binary.name)
+                    temporary_binary.write(binary_payload)
+                    temporary_binary.flush()
+                    os.fsync(temporary_binary.fileno())
+                os.chmod(temporary_binary_path, 0o755)
+                os.replace(temporary_binary_path, HELM_BINARY_PATH)
+            finally:
+                if temporary_binary_path is not None:
+                    temporary_binary_path.unlink(missing_ok=True)
+        installed_result = self._runner.run(
+            [
+                str(HELM_BINARY_PATH),
+                "version",
+                "--template",
+                "{{.Version}}",
+            ]
+        )
+        if installed_result.stdout.strip() != HELM_VERSION:
+            raise DevelopmentEnvironmentError(
+                "Installed Helm version does not match the pinned release"
+            )
+
     def host_install(self) -> None:
         """Install the source-owned host controller service from the current exact release."""
 
+        self.host_prepare()
         infrastructure_source_path = (
             HOST_CONTROL_CURRENT_SOURCE_PATH / "sources" / "workflow-infrastructure"
         )

@@ -5,6 +5,8 @@ from __future__ import annotations
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+import hashlib
+import io
 import json
 from pathlib import Path
 import subprocess
@@ -1172,6 +1174,12 @@ def test_deploy_activates_release_before_installing_product_and_host_services(
 
     environment.deploy()
 
+    host_prepare_index = next(
+        index
+        for index, command_list in enumerate(remote_command_list_list)
+        if command_list[-1] == "host-prepare"
+        and "/sources/workflow-infrastructure/" in " ".join(command_list)
+    )
     product_deploy_index = next(
         index
         for index, command_list in enumerate(remote_command_list_list)
@@ -1199,11 +1207,78 @@ def test_deploy_activates_release_before_installing_product_and_host_services(
         in " ".join(command_list)
     )
     assert (
-        product_deploy_index
+        host_prepare_index
+        < product_deploy_index
         < current_symlink_index
         < product_host_install_index
         < controller_host_install_index
     )
+
+
+def test_host_prepare_installs_checksum_pinned_helm_atomically(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Host preparation verifies and installs the exact native Helm binary."""
+
+    binary_payload = b"\x7fELFtest-helm-binary"
+    archive_buffer = io.BytesIO()
+    with tarfile.open(fileobj=archive_buffer, mode="w:gz") as archive:
+        member = tarfile.TarInfo("linux-arm64/helm")
+        member.size = len(binary_payload)
+        archive.addfile(member, io.BytesIO(binary_payload))
+    archive_payload = archive_buffer.getvalue()
+    helm_path = tmp_path / "bin/helm"
+    helm_path.parent.mkdir()
+    monkeypatch.setattr(development_environment, "HELM_BINARY_PATH", helm_path)
+    monkeypatch.setattr(development_environment.platform, "machine", lambda: "aarch64")
+    monkeypatch.setattr(
+        development_environment,
+        "HELM_RELEASE_BY_MACHINE_MAP",
+        {
+            "aarch64": (
+                "arm64",
+                hashlib.sha256(archive_payload).hexdigest(),
+            )
+        },
+    )
+
+    class HelmRunner:
+        """Provide the pinned archive and report the installed binary version."""
+
+        def run(
+            self,
+            command_list: list[str],
+            *,
+            check: bool = True,
+            input_text: str | None = None,
+            should_capture: bool = True,
+        ) -> subprocess.CompletedProcess[str]:
+            del check, input_text, should_capture
+            if command_list[0] == "curl":
+                output_path = Path(command_list[command_list.index("-o") + 1])
+                output_path.write_bytes(archive_payload)
+                return subprocess.CompletedProcess(command_list, 0, "", "")
+            assert command_list[0] == str(helm_path)
+            assert helm_path.read_bytes() == binary_payload
+            return subprocess.CompletedProcess(
+                command_list,
+                0,
+                development_environment.HELM_VERSION + "\n",
+                "",
+            )
+
+    environment = DevelopmentEnvironment(
+        clock=ClockFixed(),
+        project_root_path=tmp_path,
+        runner=HelmRunner(),  # type: ignore[arg-type]
+    )
+    environment._is_host = True
+
+    environment.host_prepare()
+
+    assert helm_path.read_bytes() == binary_payload
+    assert helm_path.stat().st_mode & 0o777 == 0o755
 
 
 def test_host_controller_renews_beyond_two_hours_then_stops_after_proven_idle(

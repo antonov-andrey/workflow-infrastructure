@@ -41,6 +41,7 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
             "diagnose",
             "host-controller",
             "host-install",
+            "host-prepare",
             "host-shutdown",
             "replace",
             "restore",
@@ -92,6 +93,8 @@ def main(argv_list: list[str]) -> int:
             environment.host_controller()
         elif args.command == "host-install":
             environment.host_install()
+        elif args.command == "host-prepare":
+            environment.host_prepare()
         elif args.command == "host-shutdown":
             environment.host_shutdown()
         elif args.command == "replace":

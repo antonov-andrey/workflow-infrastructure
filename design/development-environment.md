@@ -116,6 +116,8 @@ Cloud-init/UserData выполняет только:
 
 UserData не содержит исходники приложения, Product secrets, deployment logic или GitHub credentials. Project-owned host tools работают в воспроизводимом Python 3.14 virtual environment.
 
+Перед каждым Product deploy exact переданный source release выполняет source-owned host preparation. Он атомарно устанавливает только закреплённый Helm release для фактической host architecture после проверки declared SHA-256; отсутствие или другая версия Helm не компенсируются package-manager latest, непроверенным install script или состоянием workstation. Этот шаг выполняется до Product image/chart path и повторяется без изменений при замене instance.
+
 ## AWS Credentials В Runtime
 
 EC2 получает platform role через instance profile. EC2 temporary credentials автоматически обновляются AWS и являются единственным host credential source.

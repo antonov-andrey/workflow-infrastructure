@@ -67,11 +67,12 @@ python tool/development_environment_manage.py deploy
 2. проверяет clean worktrees, exact upstream commits и remote URLs;
 3. передаёт только tracked required files через rsync over SSH-over-SSM;
 4. проверяет content manifest на host и атомарно публикует source release;
-5. определяет единую Linux OCI platform по eligible Kubernetes nodes;
-6. сохраняет exact Helm charts и release-local ingress-nginx manifest с SHA-256 provenance;
-7. собирает platform images и source maps, публикует immutable digests в retained local registry;
-8. вызывает Product-owned secret restore, renewable credential refresh, render/apply/smoke path из переданного WCC source;
-9. активирует release и переустанавливает host credential timer только после полной readiness/smoke либо восстанавливает previous Helm revisions, ingress и exact render.
+5. из exact infrastructure source атомарно устанавливает checksum-pinned Helm для фактической host architecture;
+6. определяет единую Linux OCI platform по eligible Kubernetes nodes;
+7. сохраняет exact Helm charts и release-local ingress-nginx manifest с SHA-256 provenance;
+8. собирает platform images и source maps, публикует immutable digests в retained local registry;
+9. вызывает Product-owned secret restore, renewable credential refresh, render/apply/smoke path из переданного WCC source;
+10. активирует release и переустанавливает host credential timer только после полной readiness/smoke либо восстанавливает previous Helm revisions, ingress и exact render.
 
 Команда не выполняет `git clone` на host и не сохраняет GitHub credentials. Dirty или unpublished source блокирует deployment. AWS credential-process JSON не входит в source/release manifest, retained secret export или operator output; его обновляет Product-owned systemd timer из exact current WCC release.
 
