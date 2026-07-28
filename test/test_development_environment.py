@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from contextlib import nullcontext
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 import json
 from pathlib import Path
@@ -13,7 +14,12 @@ from cfnlint.decode import decode
 import pytest
 
 from tool.lib import development_environment
-from tool.lib.development_environment import Clock, CommandRunner, DevelopmentEnvironment, DevelopmentEnvironmentError
+from tool.lib.development_environment import (
+    Clock,
+    CommandRunner,
+    DevelopmentEnvironment,
+    DevelopmentEnvironmentError,
+)
 
 
 class ClockFixed(Clock):
@@ -51,6 +57,7 @@ class ClockFixed(Clock):
         """
 
         self.monotonic_seconds += delay_seconds
+        self.t_now += timedelta(seconds=delay_seconds)
 
 
 def _environment_get(project_root_path: Path) -> DevelopmentEnvironment:
@@ -63,7 +70,9 @@ def _environment_get(project_root_path: Path) -> DevelopmentEnvironment:
         Development environment.
     """
 
-    return DevelopmentEnvironment(clock=ClockFixed(), project_root_path=project_root_path, runner=CommandRunner())
+    return DevelopmentEnvironment(
+        clock=ClockFixed(), project_root_path=project_root_path, runner=CommandRunner()
+    )
 
 
 def _git_run(repository_path: Path, argument_list: list[str]) -> None:
@@ -74,7 +83,12 @@ def _git_run(repository_path: Path, argument_list: list[str]) -> None:
         argument_list: Git arguments.
     """
 
-    subprocess.run(["git", "-C", str(repository_path), *argument_list], check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "-C", str(repository_path), *argument_list],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _template_get(project_root_path: Path, template_name: str) -> dict[str, object]:
@@ -88,7 +102,9 @@ def _template_get(project_root_path: Path, template_name: str) -> dict[str, obje
         Decoded template.
     """
 
-    template, error_list = decode(str(project_root_path / "cloudformation" / template_name))
+    template, error_list = decode(
+        str(project_root_path / "cloudformation" / template_name)
+    )
     assert error_list == []
     assert isinstance(template, dict)
     return template
@@ -98,11 +114,17 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
     """Compute template must enforce the approved isolation, storage, and snapshot contract."""
 
     project_root_path = Path(__file__).resolve().parents[1]
-    template = _template_get(project_root_path, "workflow-control-center-development-compute.yaml")
+    template = _template_get(
+        project_root_path, "workflow-control-center-development-compute.yaml"
+    )
     resource_by_name_map = template["Resources"]
     assert isinstance(resource_by_name_map, dict)
 
-    resource_type_set = {resource["Type"] for resource in resource_by_name_map.values() if isinstance(resource, dict)}
+    resource_type_set = {
+        resource["Type"]
+        for resource in resource_by_name_map.values()
+        if isinstance(resource, dict)
+    }
     assert "AWS::EC2::EIP" not in resource_type_set
     assert "AWS::EC2::NatGateway" not in resource_type_set
     security_group = resource_by_name_map["DevelopmentSecurityGroup"]
@@ -114,13 +136,15 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
     assert retained_volume["Properties"]["Encrypted"] is True
     assert retained_volume["Properties"]["VolumeType"] == "gp3"
 
-    snapshot_schedule = resource_by_name_map["RetainedSnapshotLifecyclePolicy"]["Properties"]["PolicyDetails"][
-        "Schedules"
-    ][0]
+    snapshot_schedule = resource_by_name_map["RetainedSnapshotLifecyclePolicy"][
+        "Properties"
+    ]["PolicyDetails"]["Schedules"][0]
     assert snapshot_schedule["CreateRule"]["Interval"] == 24
     assert snapshot_schedule["RetainRule"]["Count"] == 7
 
-    launch_template_data = resource_by_name_map["DevelopmentLaunchTemplate"]["Properties"]["LaunchTemplateData"]
+    launch_template_data = resource_by_name_map["DevelopmentLaunchTemplate"][
+        "Properties"
+    ]["LaunchTemplateData"]
     assert launch_template_data["MetadataOptions"] == {
         "HttpEndpoint": "enabled",
         "HttpPutResponseHopLimit": 1,
@@ -130,13 +154,23 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
     user_data = launch_template_data["UserData"]["Fn::Base64"]["Fn::Sub"][0]
     assert "apt upgrade" not in user_data
     assert "--disable traefik --secrets-encryption" in user_data
+    assert "https://get.k3s.io" not in user_data
+    assert (
+        "https://raw.githubusercontent.com/k3s-io/k3s/${K3sVersion}/install.sh"
+        in user_data
+    )
+    assert "K3sInstallScriptSha256" in user_data
+    assert "sha256sum --check --strict" in user_data
     assert "uv python install 3.14" in user_data
 
     launch_template_reference = {
         "LaunchTemplateId": {"Ref": "DevelopmentLaunchTemplate"},
         "Version": {"Fn::GetAtt": ["DevelopmentLaunchTemplate", "LatestVersionNumber"]},
     }
-    assert resource_by_name_map["DevelopmentInstance"]["Properties"]["LaunchTemplate"] == launch_template_reference
+    assert (
+        resource_by_name_map["DevelopmentInstance"]["Properties"]["LaunchTemplate"]
+        == launch_template_reference
+    )
     assert resource_by_name_map["RetainedVolumeAttachment"]["Properties"] == {
         "Device": "/dev/sdf",
         "InstanceId": {"Ref": "DevelopmentInstance"},
@@ -144,17 +178,24 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
     }
 
 
-def test_data_plane_template_adds_compute_trust_without_narrowing_platform_permissions() -> None:
+def test_data_plane_template_adds_compute_trust_without_narrowing_platform_permissions() -> (
+    None
+):
     """Data-plane template must keep universal platform authority and add EC2 trust."""
 
     project_root_path = Path(__file__).resolve().parents[1]
-    template = _template_get(project_root_path, "workflow-control-center-development.yaml")
+    template = _template_get(
+        project_root_path, "workflow-control-center-development.yaml"
+    )
     platform_role = template["Resources"]["PlatformRole"]["Properties"]
     assert platform_role["ManagedPolicyArns"] == [
         {"Fn::Sub": "arn:${AWS::Partition}:iam::aws:policy/AdministratorAccess"}
     ]
     trust_statement_list = platform_role["AssumeRolePolicyDocument"]["Statement"]
-    assert any(statement.get("Principal") == {"Service": "ec2.amazonaws.com"} for statement in trust_statement_list)
+    assert any(
+        statement.get("Principal") == {"Service": "ec2.amazonaws.com"}
+        for statement in trust_statement_list
+    )
     assert template["Parameters"]["UiOrigin"]["Default"] == "http://localhost:8080"
 
 
@@ -167,8 +208,16 @@ def test_runtime_platform_accepts_one_linux_arm64_platform(
     environment = _environment_get(tmp_path)
     node_payload = {
         "items": [
-            {"status": {"nodeInfo": {"architecture": "arm64", "operatingSystem": "linux"}}},
-            {"status": {"nodeInfo": {"architecture": "arm64", "operatingSystem": "linux"}}},
+            {
+                "status": {
+                    "nodeInfo": {"architecture": "arm64", "operatingSystem": "linux"}
+                }
+            },
+            {
+                "status": {
+                    "nodeInfo": {"architecture": "arm64", "operatingSystem": "linux"}
+                }
+            },
         ]
     }
 
@@ -205,8 +254,16 @@ def test_runtime_platform_rejects_mixed_eligible_nodes(
     environment = _environment_get(tmp_path)
     node_payload = {
         "items": [
-            {"status": {"nodeInfo": {"architecture": "arm64", "operatingSystem": "linux"}}},
-            {"status": {"nodeInfo": {"architecture": "amd64", "operatingSystem": "linux"}}},
+            {
+                "status": {
+                    "nodeInfo": {"architecture": "arm64", "operatingSystem": "linux"}
+                }
+            },
+            {
+                "status": {
+                    "nodeInfo": {"architecture": "amd64", "operatingSystem": "linux"}
+                }
+            },
         ]
     }
 
@@ -271,7 +328,9 @@ def test_price_lookup_requires_one_exact_current_price(
     assert price == Decimal("0.0800000000")
 
 
-def test_source_archive_is_deterministic_and_excludes_untracked_files(tmp_path: Path) -> None:
+def test_source_archive_is_deterministic_and_excludes_untracked_files(
+    tmp_path: Path,
+) -> None:
     """Source archive must contain only deterministic tracked content and its exact manifest."""
 
     repository_path = tmp_path / "repository"
@@ -318,9 +377,16 @@ def test_source_repository_requires_clean_exact_published_head(
     """Source validation must reject dirty and unpublished repository states."""
 
     remote_path = tmp_path / "remote.git"
-    subprocess.run(["git", "init", "--bare", "--initial-branch=main", str(remote_path)], check=True)
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=main", str(remote_path)], check=True
+    )
     repository_path = tmp_path / "repository"
-    subprocess.run(["git", "clone", str(remote_path), str(repository_path)], check=True, capture_output=True, text=True)
+    subprocess.run(
+        ["git", "clone", str(remote_path), str(repository_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
     _git_run(repository_path, ["config", "user.email", "test@example.com"])
     _git_run(repository_path, ["config", "user.name", "Test"])
     (repository_path / "tracked.txt").write_text("one\n", encoding="utf-8")
@@ -338,14 +404,18 @@ def test_source_repository_requires_clean_exact_published_head(
 
     (repository_path / "tracked.txt").write_text("dirty\n", encoding="utf-8")
     with pytest.raises(DevelopmentEnvironmentError, match="worktree is not clean"):
-        environment._source_repository_validate(repository_path, "workflow-infrastructure")
+        environment._source_repository_validate(
+            repository_path, "workflow-infrastructure"
+        )
     _git_run(repository_path, ["restore", "tracked.txt"])
 
     (repository_path / "tracked.txt").write_text("two\n", encoding="utf-8")
     _git_run(repository_path, ["add", "tracked.txt"])
     _git_run(repository_path, ["commit", "-m", "unpublished"])
     with pytest.raises(DevelopmentEnvironmentError, match="not exact origin/main"):
-        environment._source_repository_validate(repository_path, "workflow-infrastructure")
+        environment._source_repository_validate(
+            repository_path, "workflow-infrastructure"
+        )
 
 
 def test_service_readiness_checks_every_required_aws_control_plane(
@@ -383,7 +453,12 @@ def test_service_readiness_checks_every_required_aws_control_plane(
         ["s3api", "list-buckets"],
         ["kms", "list-keys", "--limit", "1"],
         ["athena", "list-work-groups", "--max-results", "1"],
-        ["cloudformation", "describe-stacks", "--stack-name", "workflow-control-center-development"],
+        [
+            "cloudformation",
+            "describe-stacks",
+            "--stack-name",
+            "workflow-control-center-development",
+        ],
     ]
 
 
@@ -495,9 +570,17 @@ def test_start_creates_stop_lease_before_ec2_start(
 
     monkeypatch.setattr(environment, "_local_operator_context_validate", lambda: None)
     monkeypatch.setattr(environment, "_instance_id_get", lambda: "i-0123456789abcdef0")
-    monkeypatch.setattr(environment, "_instance_state_get", lambda instance_id: "stopped")
-    monkeypatch.setattr(environment, "_instance_online_wait", lambda: operation_list.append("online"))
-    monkeypatch.setattr(environment, "_stop_lease_upsert", lambda instance_id: operation_list.append("lease"))
+    monkeypatch.setattr(
+        environment, "_instance_state_get", lambda instance_id: "stopped"
+    )
+    monkeypatch.setattr(
+        environment, "_instance_online_wait", lambda: operation_list.append("online")
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stop_lease_upsert",
+        lambda instance_id: operation_list.append("lease"),
+    )
     monkeypatch.setattr(environment, "_aws_run", aws_run)
 
     environment.start()
@@ -539,7 +622,9 @@ def test_stop_lease_uses_renewable_direct_stop_instances_target(
     monkeypatch.setattr(
         environment,
         "_stack_output_by_name_map_get",
-        lambda stack_name: {"SchedulerExecutionRoleArn": "arn:aws:iam::463564115167:role/scheduler"},
+        lambda stack_name: {
+            "SchedulerExecutionRoleArn": "arn:aws:iam::463564115167:role/scheduler"
+        },
     )
     monkeypatch.setattr(environment, "_aws_run", aws_run)
     monkeypatch.setattr(
@@ -553,6 +638,293 @@ def test_stop_lease_uses_renewable_direct_stop_instances_target(
     assert create_argument_list[:2] == ["scheduler", "create-schedule"]
     assert "at(2026-07-28T14:00:00)" in create_argument_list
     assert "DELETE" in create_argument_list
-    target_payload = json.loads(create_argument_list[create_argument_list.index("--target") + 1])
+    target_payload = json.loads(
+        create_argument_list[create_argument_list.index("--target") + 1]
+    )
     assert target_payload["Arn"] == "arn:aws:scheduler:::aws-sdk:ec2:stopInstances"
-    assert json.loads(target_payload["Input"]) == {"InstanceIds": ["i-0123456789abcdef0"]}
+    assert json.loads(target_payload["Input"]) == {
+        "InstanceIds": ["i-0123456789abcdef0"]
+    }
+
+
+def test_connect_forwards_the_remote_ingress_port_to_local_8080(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Session Manager must target the actual hostPort without public ingress."""
+
+    environment = _environment_get(tmp_path)
+    command_list: list[str] = []
+
+    def run(
+        argument_list: list[str],
+        *,
+        check: bool = True,
+        input_text: str | None = None,
+        should_capture: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        del check, input_text, should_capture
+        command_list.extend(argument_list)
+        return subprocess.CompletedProcess(argument_list, 0, "", "")
+
+    monkeypatch.setattr(environment, "_local_operator_context_validate", lambda: None)
+    monkeypatch.setattr(
+        environment,
+        "_instance_id_get",
+        lambda: "i-0123456789abcdef0",
+    )
+    monkeypatch.setattr(environment._runner, "run", run)
+
+    assert environment.connect() == 0
+    parameter_payload = json.loads(command_list[command_list.index("--parameters") + 1])
+    assert parameter_payload == {
+        "localPortNumber": ["8080"],
+        "portNumber": ["8080"],
+    }
+
+
+def test_deploy_activates_release_before_installing_product_and_host_services(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Accepted source becomes current before either current-path systemd owner is installed."""
+
+    environment = _environment_get(tmp_path / "workflow-infrastructure")
+    remote_command_list_list: list[list[str]] = []
+
+    monkeypatch.setattr(environment, "_local_operator_context_validate", lambda: None)
+    monkeypatch.setattr(
+        environment,
+        "_source_repository_validate",
+        lambda repository_path, repository_name: None,
+    )
+    monkeypatch.setattr(environment, "_instance_online_wait", lambda: None)
+    monkeypatch.setattr(
+        environment,
+        "_source_archive_publish",
+        lambda **kwargs: {
+            "archive_sha256": "a" * 64,
+            "commit_sha": "b" * 40,
+            "file_sha256_by_path_map": {},
+            "repository_url": development_environment.REPOSITORY_URL_BY_NAME_MAP[
+                kwargs["repository_name"]
+            ],
+            "submodule_by_path_map": {},
+        },
+    )
+    monkeypatch.setattr(
+        environment,
+        "_ssh_control_session",
+        lambda: nullcontext(tmp_path / "control"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_remote_text_write",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        environment,
+        "_runtime_platform_get",
+        lambda ssh_control_path: "linux/arm64",
+    )
+
+    def ssh_run(
+        remote_command_list: list[str],
+        *,
+        ssh_control_path: Path,
+        should_capture: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        del ssh_control_path, should_capture
+        remote_command_list_list.append(remote_command_list)
+        return subprocess.CompletedProcess(remote_command_list, 0, "", "")
+
+    monkeypatch.setattr(environment, "_ssh_run", ssh_run)
+
+    environment.deploy()
+
+    product_deploy_index = next(
+        index
+        for index, command_list in enumerate(remote_command_list_list)
+        if command_list[-1] == "linux/arm64"
+        and "development_kubernetes_manage.py" in " ".join(command_list)
+    )
+    current_symlink_index = next(
+        index
+        for index, command_list in enumerate(remote_command_list_list)
+        if command_list[:3] == ["sudo", "ln", "-sfn"]
+        and str(development_environment.HOST_CURRENT_SOURCE_PATH) == command_list[-1]
+    )
+    product_host_install_index = next(
+        index
+        for index, command_list in enumerate(remote_command_list_list)
+        if command_list[-1] == "host-install"
+        and str(development_environment.HOST_CURRENT_SOURCE_PATH)
+        in " ".join(command_list)
+    )
+    controller_host_install_index = next(
+        index
+        for index, command_list in enumerate(remote_command_list_list)
+        if command_list[-1] == "host-install"
+        and str(development_environment.HOST_CONTROL_CURRENT_SOURCE_PATH)
+        in " ".join(command_list)
+    )
+    assert (
+        product_deploy_index
+        < current_symlink_index
+        < product_host_install_index
+        < controller_host_install_index
+    )
+
+
+def test_host_controller_renews_beyond_two_hours_then_stops_after_proven_idle(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Useful access has no hard deadline; a fresh 30-minute idle proof is still required."""
+
+    clock = ClockFixed()
+    environment = DevelopmentEnvironment(
+        clock=clock,
+        project_root_path=tmp_path,
+        runner=CommandRunner(),
+    )
+    command_list_list: list[list[str]] = []
+    lease_time_list: list[datetime] = []
+    shutdown_time_list: list[datetime] = []
+    t_active_until = clock.t_now + timedelta(hours=2, minutes=10)
+
+    def run(
+        argument_list: list[str],
+        *,
+        check: bool = True,
+        input_text: str | None = None,
+        should_capture: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        del check, input_text, should_capture
+        command_list_list.append(argument_list)
+        return subprocess.CompletedProcess(argument_list, 0, "", "")
+
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_STATE_ROOT_PATH",
+        tmp_path / "state",
+    )
+    monkeypatch.setattr(environment._runner, "run", run)
+    monkeypatch.setattr(
+        environment,
+        "_instance_metadata_get",
+        lambda path: "i-0123456789abcdef0",
+    )
+    monkeypatch.setattr(environment, "_host_node_name_get", lambda: "node-a")
+    monkeypatch.setattr(
+        environment,
+        "_host_active_session_count_get",
+        lambda instance_id: int(clock.t_now < t_active_until),
+    )
+    monkeypatch.setattr(environment, "_host_product_activity_get", lambda: "idle")
+    monkeypatch.setattr(
+        environment,
+        "_stop_lease_upsert",
+        lambda instance_id: lease_time_list.append(clock.t_now),
+    )
+    monkeypatch.setattr(
+        environment,
+        "host_shutdown",
+        lambda: shutdown_time_list.append(clock.t_now),
+    )
+
+    environment.host_controller()
+
+    assert command_list_list[0] == [
+        "k3s",
+        "kubectl",
+        "uncordon",
+        "node-a",
+    ]
+    assert lease_time_list[0] == datetime(2026, 7, 28, 12, 0, tzinfo=UTC)
+    assert lease_time_list[-1] >= datetime(2026, 7, 28, 14, 0, tzinfo=UTC)
+    assert shutdown_time_list[0] >= t_active_until + timedelta(minutes=30)
+
+
+def test_host_controller_discards_stale_idle_proof_on_restart(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A controller restart begins a new uninterrupted idle interval."""
+
+    clock = ClockFixed()
+    environment = DevelopmentEnvironment(
+        clock=clock,
+        project_root_path=tmp_path,
+        runner=CommandRunner(),
+    )
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    idle_start_path = state_root / "idle-start"
+    idle_start_path.write_text(
+        (clock.t_now - timedelta(days=1)).isoformat(),
+        encoding="utf-8",
+    )
+    shutdown_time_list: list[datetime] = []
+
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_STATE_ROOT_PATH",
+        state_root,
+    )
+    monkeypatch.setattr(
+        environment._runner,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_instance_metadata_get",
+        lambda path: "i-0123456789abcdef0",
+    )
+    monkeypatch.setattr(environment, "_host_node_name_get", lambda: "node-a")
+    monkeypatch.setattr(
+        environment,
+        "_host_active_session_count_get",
+        lambda instance_id: 0,
+    )
+    monkeypatch.setattr(environment, "_host_product_activity_get", lambda: "idle")
+    monkeypatch.setattr(
+        environment,
+        "host_shutdown",
+        lambda: shutdown_time_list.append(clock.t_now),
+    )
+
+    environment.host_controller()
+
+    assert shutdown_time_list == [datetime(2026, 7, 28, 12, 30, tzinfo=UTC)]
+
+
+def test_start_never_calls_ec2_when_initial_stop_lease_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The external failure lease is a precondition, not best-effort cleanup."""
+
+    environment = _environment_get(tmp_path)
+    monkeypatch.setattr(environment, "_local_operator_context_validate", lambda: None)
+    monkeypatch.setattr(
+        environment,
+        "_instance_id_get",
+        lambda: "i-0123456789abcdef0",
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stop_lease_upsert",
+        lambda instance_id: (_ for _ in ()).throw(
+            DevelopmentEnvironmentError("scheduler unavailable")
+        ),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_instance_state_get",
+        lambda instance_id: pytest.fail("EC2 state must not be read"),
+    )
+
+    with pytest.raises(DevelopmentEnvironmentError, match="scheduler unavailable"):
+        environment.start()

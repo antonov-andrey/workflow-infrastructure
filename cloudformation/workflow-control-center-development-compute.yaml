@@ -40,6 +40,12 @@ Parameters:
     AllowedPattern: 'v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+'
     Description: Exact k3s release installed by host bootstrap.
 
+  K3sInstallScriptSha256:
+    Type: String
+    Default: 46177d4c99440b4c0311b67233823a8e8a2fc09693f6c89af1a7161e152fbfad
+    AllowedPattern: '[0-9a-f]{64}'
+    Description: Exact SHA-256 of install.sh at the selected k3s release tag.
+
   NotificationTagValue:
     Type: String
     Default: workflow-control-center
@@ -476,7 +482,8 @@ Resources:
                 /srv/workflow-control-center/workflow-registry \
                 /srv/workflow-control-center/workflow-run
 
-              curl -fsSL https://get.k3s.io -o /tmp/k3s-install
+              curl -fsSL "https://raw.githubusercontent.com/k3s-io/k3s/${K3sVersion}/install.sh" -o /tmp/k3s-install
+              printf '%s  %s\n' '${K3sInstallScriptSha256}' /tmp/k3s-install | sha256sum --check --strict
               chmod 0755 /tmp/k3s-install
               INSTALL_K3S_VERSION='${K3sVersion}' \
                 INSTALL_K3S_EXEC='server --disable traefik --secrets-encryption --write-kubeconfig-mode 0600 --node-label apwid.com/workflow-run-eligible=true' \

@@ -84,10 +84,16 @@ class CommandRunner:
                 text=True,
             )
         except OSError as error:
-            raise DevelopmentEnvironmentError(f"Unable to execute {command_list[0]}: {error}") from error
+            raise DevelopmentEnvironmentError(
+                f"Unable to execute {command_list[0]}: {error}"
+            ) from error
         except subprocess.CalledProcessError as error:
-            error_text = (error.stderr or error.stdout or f"exit {error.returncode}").strip()
-            raise DevelopmentEnvironmentError(f"{command_list[0]} failed: {error_text}") from error
+            error_text = (
+                error.stderr or error.stdout or f"exit {error.returncode}"
+            ).strip()
+            raise DevelopmentEnvironmentError(
+                f"{command_list[0]} failed: {error_text}"
+            ) from error
 
 
 class Clock:
@@ -124,7 +130,9 @@ class Clock:
 class DevelopmentEnvironment:
     """Own the complete bounded development-environment workflow."""
 
-    def __init__(self, *, clock: Clock, project_root_path: Path, runner: CommandRunner) -> None:
+    def __init__(
+        self, *, clock: Clock, project_root_path: Path, runner: CommandRunner
+    ) -> None:
         """Initialize the environment workflow.
 
         Args:
@@ -145,29 +153,44 @@ class DevelopmentEnvironment:
         """Validate, plan, apply, and verify the data-plane and compute stacks."""
 
         self._local_operator_context_validate()
-        self._source_repository_validate(self._project_root_path, "workflow-infrastructure")
+        self._source_repository_validate(
+            self._project_root_path, "workflow-infrastructure"
+        )
         self._cost_review_record()
         self._stack_drift_validate(DATA_PLANE_STACK_NAME)
-        data_resource_id_by_logical_name_map = self._stack_resource_id_by_logical_name_map_get(DATA_PLANE_STACK_NAME)
-        self._template_validate(self._project_root_path / "cloudformation/workflow-control-center-development.yaml")
+        data_resource_id_by_logical_name_map = (
+            self._stack_resource_id_by_logical_name_map_get(DATA_PLANE_STACK_NAME)
+        )
         self._template_validate(
-            self._project_root_path / "cloudformation/workflow-control-center-development-compute.yaml"
+            self._project_root_path
+            / "cloudformation/workflow-control-center-development.yaml"
+        )
+        self._template_validate(
+            self._project_root_path
+            / "cloudformation/workflow-control-center-development-compute.yaml"
         )
         self._stack_apply(
             stack_name=DATA_PLANE_STACK_NAME,
-            template_path=self._project_root_path / "cloudformation/workflow-control-center-development.yaml",
+            template_path=self._project_root_path
+            / "cloudformation/workflow-control-center-development.yaml",
             parameter_by_name_map={"UiOrigin": "http://localhost:8080"},
             must_preserve_resource=True,
         )
         if data_resource_id_by_logical_name_map:
-            current_resource_id_by_logical_name_map = self._stack_resource_id_by_logical_name_map_get(
-                DATA_PLANE_STACK_NAME
+            current_resource_id_by_logical_name_map = (
+                self._stack_resource_id_by_logical_name_map_get(DATA_PLANE_STACK_NAME)
             )
-            if current_resource_id_by_logical_name_map != data_resource_id_by_logical_name_map:
-                raise DevelopmentEnvironmentError("Stable data-plane physical resource identity changed")
+            if (
+                current_resource_id_by_logical_name_map
+                != data_resource_id_by_logical_name_map
+            ):
+                raise DevelopmentEnvironmentError(
+                    "Stable data-plane physical resource identity changed"
+                )
         self._stack_apply(
             stack_name=COMPUTE_STACK_NAME,
-            template_path=self._project_root_path / "cloudformation/workflow-control-center-development-compute.yaml",
+            template_path=self._project_root_path
+            / "cloudformation/workflow-control-center-development-compute.yaml",
             parameter_by_name_map={},
             must_preserve_resource=False,
         )
@@ -201,7 +224,10 @@ class DevelopmentEnvironment:
                 "--document-name",
                 SSM_DOCUMENT_PORT_FORWARD,
                 "--parameters",
-                json.dumps({"localPortNumber": ["8080"], "portNumber": ["80"]}, separators=(",", ":")),
+                json.dumps(
+                    {"localPortNumber": ["8080"], "portNumber": ["8080"]},
+                    separators=(",", ":"),
+                ),
             ],
             check=False,
             should_capture=False,
@@ -237,26 +263,35 @@ class DevelopmentEnvironment:
         """Publish exact Product sources and invoke the Product-owned deployment."""
 
         self._local_operator_context_validate()
-        self._source_repository_validate(self._project_root_path, "workflow-infrastructure")
+        self._source_repository_validate(
+            self._project_root_path, "workflow-infrastructure"
+        )
         for repository_name in PRODUCT_SOURCE_REPOSITORY_NAME_LIST:
-            self._source_repository_validate(self._workspace_root_path / repository_name, repository_name)
+            self._source_repository_validate(
+                self._workspace_root_path / repository_name, repository_name
+            )
         self._instance_online_wait()
         release_name = self._clock.now().strftime("%Y%m%d%H%M%S%f")
         source_manifest_by_repository_name_map: dict[str, dict[str, object]] = {}
         with self._ssh_control_session() as ssh_control_path:
-            repository_name_list = ["workflow-infrastructure", *PRODUCT_SOURCE_REPOSITORY_NAME_LIST]
+            repository_name_list = [
+                "workflow-infrastructure",
+                *PRODUCT_SOURCE_REPOSITORY_NAME_LIST,
+            ]
             for repository_name in repository_name_list:
                 repository_path = (
                     self._project_root_path
                     if repository_name == "workflow-infrastructure"
                     else self._workspace_root_path / repository_name
                 )
-                source_manifest_by_repository_name_map[repository_name] = self._source_archive_publish(
-                    repository_name=repository_name,
-                    repository_path=repository_path,
-                    release_name=release_name,
-                    remote_release_root_path=HOST_RELEASE_ROOT_PATH,
-                    ssh_control_path=ssh_control_path,
+                source_manifest_by_repository_name_map[repository_name] = (
+                    self._source_archive_publish(
+                        repository_name=repository_name,
+                        repository_path=repository_path,
+                        release_name=release_name,
+                        remote_release_root_path=HOST_RELEASE_ROOT_PATH,
+                        ssh_control_path=ssh_control_path,
+                    )
                 )
             release_manifest_text = json.dumps(
                 {
@@ -268,7 +303,9 @@ class DevelopmentEnvironment:
                 sort_keys=True,
             )
             self._remote_text_write(
-                remote_path=HOST_RELEASE_ROOT_PATH / release_name / "source-manifest.json",
+                remote_path=HOST_RELEASE_ROOT_PATH
+                / release_name
+                / "source-manifest.json",
                 text=release_manifest_text,
                 ssh_control_path=ssh_control_path,
             )
@@ -292,7 +329,11 @@ class DevelopmentEnvironment:
                 "--target-platform",
                 platform,
             ]
-            self._ssh_run(product_command_list, ssh_control_path=ssh_control_path, should_capture=False)
+            self._ssh_run(
+                product_command_list,
+                ssh_control_path=ssh_control_path,
+                should_capture=False,
+            )
             self._ssh_run(
                 [
                     "sudo",
@@ -321,6 +362,21 @@ class DevelopmentEnvironment:
                     "-sfn",
                     str(release_root_path),
                     str(HOST_CONTROL_CURRENT_SOURCE_PATH),
+                ],
+                ssh_control_path=ssh_control_path,
+            )
+            self._ssh_run(
+                [
+                    "sudo",
+                    "python3.14",
+                    str(
+                        HOST_CURRENT_SOURCE_PATH
+                        / "sources"
+                        / "workflow-control-center"
+                        / "tool"
+                        / "development_kubernetes_manage.py"
+                    ),
+                    "host-install",
                 ],
                 ssh_control_path=ssh_control_path,
             )
@@ -368,8 +424,12 @@ class DevelopmentEnvironment:
         """Run the fail-safe host lifecycle controller until shutdown."""
 
         instance_id = self._instance_metadata_get("instance-id")
+        self._runner.run(
+            ["k3s", "kubectl", "uncordon", self._host_node_name_get()], check=False
+        )
         idle_start_path = HOST_STATE_ROOT_PATH / "idle-start"
         HOST_STATE_ROOT_PATH.mkdir(mode=0o750, parents=True, exist_ok=True)
+        idle_start_path.unlink(missing_ok=True)
         t_last_lease_renew = datetime.min.replace(tzinfo=UTC)
         while True:
             t_now = self._clock.now()
@@ -404,7 +464,9 @@ class DevelopmentEnvironment:
     def host_install(self) -> None:
         """Install the source-owned host controller service from the current exact release."""
 
-        infrastructure_source_path = HOST_CONTROL_CURRENT_SOURCE_PATH / "sources" / "workflow-infrastructure"
+        infrastructure_source_path = (
+            HOST_CONTROL_CURRENT_SOURCE_PATH / "sources" / "workflow-infrastructure"
+        )
         self._runner.run(
             [
                 "python3.14",
@@ -412,7 +474,9 @@ class DevelopmentEnvironment:
                 "--runtime-only",
             ]
         )
-        service_path = Path("/etc/systemd/system/workflow-control-center-host-controller.service")
+        service_path = Path(
+            "/etc/systemd/system/workflow-control-center-host-controller.service"
+        )
         service_text = f"""[Unit]
 Description=Workflow Control Center development host lifecycle controller
 After=k3s.service network-online.target
@@ -431,8 +495,12 @@ WantedBy=multi-user.target
         service_path.write_text(service_text, encoding="utf-8")
         os.chmod(service_path, 0o644)
         self._runner.run(["systemctl", "daemon-reload"])
-        self._runner.run(["systemctl", "enable", "workflow-control-center-host-controller"])
-        self._runner.run(["systemctl", "restart", "workflow-control-center-host-controller"])
+        self._runner.run(
+            ["systemctl", "enable", "workflow-control-center-host-controller"]
+        )
+        self._runner.run(
+            ["systemctl", "restart", "workflow-control-center-host-controller"]
+        )
         print("OK: host lifecycle controller is installed")
 
     def host_shutdown(self) -> None:
@@ -452,8 +520,13 @@ WantedBy=multi-user.target
                 should_capture=False,
             )
             if result.returncode != 0:
-                self._runner.run(["k3s", "kubectl", "uncordon", self._host_node_name_get()], check=False)
-                raise DevelopmentEnvironmentError("Product graceful shutdown failed; node was uncordoned")
+                self._runner.run(
+                    ["k3s", "kubectl", "uncordon", self._host_node_name_get()],
+                    check=False,
+                )
+                raise DevelopmentEnvironmentError(
+                    "Product graceful shutdown failed; node was uncordoned"
+                )
         else:
             self._runner.run(["systemctl", "stop", "k3s"], check=False)
         self._runner.run(["systemctl", "poweroff"], should_capture=False)
@@ -468,11 +541,14 @@ WantedBy=multi-user.target
         if not snapshot_id.startswith("snap-"):
             raise DevelopmentEnvironmentError("Snapshot ID must start with snap-")
         self._local_operator_context_validate()
-        self._source_repository_validate(self._project_root_path, "workflow-infrastructure")
+        self._source_repository_validate(
+            self._project_root_path, "workflow-infrastructure"
+        )
         self.stop()
         self._stack_apply(
             stack_name=COMPUTE_STACK_NAME,
-            template_path=self._project_root_path / "cloudformation/workflow-control-center-development-compute.yaml",
+            template_path=self._project_root_path
+            / "cloudformation/workflow-control-center-development-compute.yaml",
             parameter_by_name_map={"RetainedVolumeSnapshotId": snapshot_id},
             must_preserve_resource=False,
         )
@@ -485,8 +561,12 @@ WantedBy=multi-user.target
         """Replace the EC2 instance while preserving the exact retained volume."""
 
         self._local_operator_context_validate()
-        self._source_repository_validate(self._project_root_path, "workflow-infrastructure")
-        current_slot = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)["InstanceSlot"]
+        self._source_repository_validate(
+            self._project_root_path, "workflow-infrastructure"
+        )
+        current_slot = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)[
+            "InstanceSlot"
+        ]
         replacement_slot = "b" if current_slot == "a" else "a"
         self.stop()
         self._stack_apply(
@@ -499,7 +579,9 @@ WantedBy=multi-user.target
         self.start()
         self._infrastructure_source_publish()
         self._product_recovery_acceptance_run()
-        print(f"OK: replacement instance in slot {replacement_slot} accepted the retained volume")
+        print(
+            f"OK: replacement instance in slot {replacement_slot} accepted the retained volume"
+        )
 
     def ssh(self, ssh_argument_list: list[str]) -> int:
         """Run one SSH client command through an ephemeral SSH-over-SSM session.
@@ -529,7 +611,9 @@ WantedBy=multi-user.target
         if state == "stopped":
             self._aws_run(["ec2", "start-instances", "--instance-ids", instance_id])
         elif state not in {"pending", "running"}:
-            raise DevelopmentEnvironmentError(f"Instance cannot start from state {state}")
+            raise DevelopmentEnvironmentError(
+                f"Instance cannot start from state {state}"
+            )
         self._instance_online_wait()
         print(f"OK: development instance {instance_id} is ready")
 
@@ -550,11 +634,15 @@ WantedBy=multi-user.target
             instance_id = output_by_name_map["InstanceId"]
             payload.update(
                 {
-                    "active_ssm_session_count": self._active_session_count_get(instance_id),
+                    "active_ssm_session_count": self._active_session_count_get(
+                        instance_id
+                    ),
                     "instance_id": instance_id,
                     "instance_state": self._instance_state_get(instance_id),
                     "instance_type": output_by_name_map["InstanceType"],
-                    "latest_retained_snapshot_id": self._latest_snapshot_id_get(output_by_name_map["RetainedVolumeId"]),
+                    "latest_retained_snapshot_id": self._latest_snapshot_id_get(
+                        output_by_name_map["RetainedVolumeId"]
+                    ),
                     "retained_volume_id": output_by_name_map["RetainedVolumeId"],
                     "stop_lease": self._stop_lease_payload_get(),
                 }
@@ -572,7 +660,9 @@ WantedBy=multi-user.target
             print(f"OK: development instance {instance_id} is already stopped")
             return
         if state != "running":
-            raise DevelopmentEnvironmentError(f"Instance cannot stop gracefully from state {state}")
+            raise DevelopmentEnvironmentError(
+                f"Instance cannot stop gracefully from state {state}"
+            )
         command_id = self._ssm_command_start(
             [
                 (
@@ -585,7 +675,9 @@ WantedBy=multi-user.target
             ]
         )
         print(f"OK: graceful shutdown command {command_id} started")
-        self._aws_run(["ec2", "wait", "instance-stopped", "--instance-ids", instance_id])
+        self._aws_run(
+            ["ec2", "wait", "instance-stopped", "--instance-ids", instance_id]
+        )
         self._stop_lease_delete()
         print(f"OK: development instance {instance_id} stopped")
 
@@ -602,7 +694,9 @@ WantedBy=multi-user.target
         )
         session_list = payload.get("Sessions", [])
         if not isinstance(session_list, list):
-            raise DevelopmentEnvironmentError("Session Manager returned malformed Sessions")
+            raise DevelopmentEnvironmentError(
+                "Session Manager returned malformed Sessions"
+            )
         return len(session_list)
 
     def _aws_json_get(self, aws_argument_list: Sequence[str]) -> dict[str, object]:
@@ -610,9 +704,13 @@ WantedBy=multi-user.target
         try:
             payload = json.loads(result.stdout or "{}")
         except json.JSONDecodeError as error:
-            raise DevelopmentEnvironmentError(f"AWS {aws_argument_list[0]} returned invalid JSON") from error
+            raise DevelopmentEnvironmentError(
+                f"AWS {aws_argument_list[0]} returned invalid JSON"
+            ) from error
         if not isinstance(payload, dict):
-            raise DevelopmentEnvironmentError(f"AWS {aws_argument_list[0]} returned unexpected JSON")
+            raise DevelopmentEnvironmentError(
+                f"AWS {aws_argument_list[0]} returned unexpected JSON"
+            )
         return payload
 
     def _aws_run(
@@ -645,14 +743,27 @@ WantedBy=multi-user.target
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError as error:
-            raise DevelopmentEnvironmentError("Host Session Manager response is invalid") from error
+            raise DevelopmentEnvironmentError(
+                "Host Session Manager response is invalid"
+            ) from error
         session_list = payload.get("Sessions", []) if isinstance(payload, dict) else []
         if not isinstance(session_list, list):
-            raise DevelopmentEnvironmentError("Host Session Manager response is malformed")
+            raise DevelopmentEnvironmentError(
+                "Host Session Manager response is malformed"
+            )
         return len(session_list)
 
     def _host_node_name_get(self) -> str:
-        result = self._runner.run(["k3s", "kubectl", "get", "node", "-o", "jsonpath={.items[0].metadata.name}"])
+        result = self._runner.run(
+            [
+                "k3s",
+                "kubectl",
+                "get",
+                "node",
+                "-o",
+                "jsonpath={.items[0].metadata.name}",
+            ]
+        )
         node_name = result.stdout.strip()
         if not node_name:
             raise DevelopmentEnvironmentError("Kubernetes node name is empty")
@@ -711,7 +822,9 @@ WantedBy=multi-user.target
         snapshot_gib_count_max = Decimal(80)
         estimated_compute_monthly = instance_hour_price * active_hour_count_monthly
         estimated_gp3_monthly = gp3_gib_month_price * gp3_gib_count
-        estimated_snapshot_monthly_max = snapshot_gib_month_price * snapshot_gib_count_max
+        estimated_snapshot_monthly_max = (
+            snapshot_gib_month_price * snapshot_gib_count_max
+        )
         review_payload = {
             "architecture_checkpoint": "approved-2026-07-28",
             "assumption": {
@@ -722,11 +835,15 @@ WantedBy=multi-user.target
             "estimated_monthly_usd": {
                 "compute": str(estimated_compute_monthly.quantize(Decimal("0.01"))),
                 "gp3": str(estimated_gp3_monthly.quantize(Decimal("0.01"))),
-                "snapshot_max": str(estimated_snapshot_monthly_max.quantize(Decimal("0.01"))),
+                "snapshot_max": str(
+                    estimated_snapshot_monthly_max.quantize(Decimal("0.01"))
+                ),
                 "total_fixed_max": str(
-                    (estimated_compute_monthly + estimated_gp3_monthly + estimated_snapshot_monthly_max).quantize(
-                        Decimal("0.01")
-                    )
+                    (
+                        estimated_compute_monthly
+                        + estimated_gp3_monthly
+                        + estimated_snapshot_monthly_max
+                    ).quantize(Decimal("0.01"))
                 ),
             },
             "price_usd": {
@@ -741,7 +858,9 @@ WantedBy=multi-user.target
         }
         review_path = self._project_root_path / ".local" / "cost-review.json"
         review_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        review_path.write_text(json.dumps(review_payload, indent=2, sort_keys=True), encoding="utf-8")
+        review_path.write_text(
+            json.dumps(review_payload, indent=2, sort_keys=True), encoding="utf-8"
+        )
         os.chmod(review_path, 0o600)
         print(json.dumps(review_payload, indent=2, sort_keys=True))
 
@@ -827,7 +946,9 @@ WantedBy=multi-user.target
 
     def _instance_online_wait(self) -> None:
         instance_id = self._instance_id_get()
-        self._aws_run(["ec2", "wait", "instance-status-ok", "--instance-ids", instance_id])
+        self._aws_run(
+            ["ec2", "wait", "instance-status-ok", "--instance-ids", instance_id]
+        )
         t_deadline = self._clock.monotonic() + SSM_ONLINE_TIMEOUT_SECONDS
         while self._clock.monotonic() < t_deadline:
             payload = self._aws_json_get(
@@ -847,14 +968,20 @@ WantedBy=multi-user.target
             ):
                 return
             self._clock.sleep(STACK_POLL_INTERVAL_SECONDS)
-        raise DevelopmentEnvironmentError(f"Instance {instance_id} did not become SSM Online")
+        raise DevelopmentEnvironmentError(
+            f"Instance {instance_id} did not become SSM Online"
+        )
 
     def _instance_state_get(self, instance_id: str) -> str:
-        payload = self._aws_json_get(["ec2", "describe-instances", "--instance-ids", instance_id])
+        payload = self._aws_json_get(
+            ["ec2", "describe-instances", "--instance-ids", instance_id]
+        )
         try:
             state = payload["Reservations"][0]["Instances"][0]["State"]["Name"]
         except (KeyError, IndexError, TypeError) as error:
-            raise DevelopmentEnvironmentError("EC2 instance state response is malformed") from error
+            raise DevelopmentEnvironmentError(
+                "EC2 instance state response is malformed"
+            ) from error
         if not isinstance(state, str):
             raise DevelopmentEnvironmentError("EC2 instance state is not text")
         return state
@@ -887,7 +1014,9 @@ WantedBy=multi-user.target
             raise DevelopmentEnvironmentError(
                 f"AWS profile {AWS_PROFILE} targets {payload.get('Account')}, expected {AWS_ACCOUNT_ID}"
             )
-        region_result = self._runner.run(["aws", "configure", "get", "region", "--profile", AWS_PROFILE])
+        region_result = self._runner.run(
+            ["aws", "configure", "get", "region", "--profile", AWS_PROFILE]
+        )
         if region_result.stdout.strip() != AWS_REGION:
             raise DevelopmentEnvironmentError(
                 f"AWS profile {AWS_PROFILE} region is {region_result.stdout.strip()}, expected {AWS_REGION}"
@@ -901,7 +1030,12 @@ WantedBy=multi-user.target
             ["s3api", "list-buckets"],
             ["kms", "list-keys", "--limit", "1"],
             ["athena", "list-work-groups", "--max-results", "1"],
-            ["cloudformation", "describe-stacks", "--stack-name", DATA_PLANE_STACK_NAME],
+            [
+                "cloudformation",
+                "describe-stacks",
+                "--stack-name",
+                DATA_PLANE_STACK_NAME,
+            ],
         ]
         for aws_argument_list in readiness_command_list:
             self._aws_run(aws_argument_list)
@@ -946,11 +1080,15 @@ WantedBy=multi-user.target
             try:
                 product_payload = json.loads(product_text)
             except json.JSONDecodeError as error:
-                raise DevelopmentEnvironmentError("AWS Pricing product is invalid") from error
+                raise DevelopmentEnvironmentError(
+                    "AWS Pricing product is invalid"
+                ) from error
             if not isinstance(product_payload, dict):
                 raise DevelopmentEnvironmentError("AWS Pricing product is malformed")
             product = product_payload.get("product", {})
-            attribute_by_name_map = product.get("attributes", {}) if isinstance(product, dict) else {}
+            attribute_by_name_map = (
+                product.get("attributes", {}) if isinstance(product, dict) else {}
+            )
             if not isinstance(attribute_by_name_map, dict):
                 continue
             if usage_type and attribute_by_name_map.get("usagetype") != usage_type:
@@ -965,10 +1103,17 @@ WantedBy=multi-user.target
                 if not isinstance(dimension_by_code_map, dict):
                     continue
                 for dimension_payload in dimension_by_code_map.values():
-                    if not isinstance(dimension_payload, dict) or dimension_payload.get("unit") != unit:
+                    if (
+                        not isinstance(dimension_payload, dict)
+                        or dimension_payload.get("unit") != unit
+                    ):
                         continue
                     price_per_unit = dimension_payload.get("pricePerUnit", {})
-                    price_text = price_per_unit.get("USD") if isinstance(price_per_unit, dict) else None
+                    price_text = (
+                        price_per_unit.get("USD")
+                        if isinstance(price_per_unit, dict)
+                        else None
+                    )
                     if isinstance(price_text, str):
                         price_set.add(Decimal(price_text))
         if len(price_set) != 1:
@@ -977,7 +1122,9 @@ WantedBy=multi-user.target
             )
         return next(iter(price_set))
 
-    def _remote_text_write(self, *, remote_path: Path, text: str, ssh_control_path: Path) -> None:
+    def _remote_text_write(
+        self, *, remote_path: Path, text: str, ssh_control_path: Path
+    ) -> None:
         with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as file:
             file.write(text)
             local_path = Path(file.name)
@@ -1028,14 +1175,20 @@ WantedBy=multi-user.target
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError as error:
-            raise DevelopmentEnvironmentError("Kubernetes node platform response is invalid") from error
+            raise DevelopmentEnvironmentError(
+                "Kubernetes node platform response is invalid"
+            ) from error
         item_list = payload.get("items", []) if isinstance(payload, dict) else []
         if not isinstance(item_list, list) or not item_list:
-            raise DevelopmentEnvironmentError("No WorkflowRun-eligible Kubernetes nodes exist")
+            raise DevelopmentEnvironmentError(
+                "No WorkflowRun-eligible Kubernetes nodes exist"
+            )
         platform_set: set[str] = set()
         for item in item_list:
             if not isinstance(item, dict):
-                raise DevelopmentEnvironmentError("Kubernetes node platform response is malformed")
+                raise DevelopmentEnvironmentError(
+                    "Kubernetes node platform response is malformed"
+                )
             node_info = item.get("status", {}).get("nodeInfo", {})
             operating_system = node_info.get("operatingSystem")
             architecture = node_info.get("architecture")
@@ -1045,7 +1198,9 @@ WantedBy=multi-user.target
                 )
             platform_set.add(f"{operating_system}/{architecture}")
         if len(platform_set) != 1:
-            raise DevelopmentEnvironmentError(f"WorkflowRun node platforms are mixed: {sorted(platform_set)}")
+            raise DevelopmentEnvironmentError(
+                f"WorkflowRun node platforms are mixed: {sorted(platform_set)}"
+            )
         return next(iter(platform_set))
 
     def _source_archive_publish(
@@ -1067,7 +1222,9 @@ WantedBy=multi-user.target
                 repository_name=repository_name,
                 repository_path=repository_path,
             )
-            remote_staging_path = f"/tmp/workflow-source-{release_name}-{repository_name}"
+            remote_staging_path = (
+                f"/tmp/workflow-source-{release_name}-{repository_name}"
+            )
             self._runner.run(
                 [
                     "rsync",
@@ -1080,7 +1237,9 @@ WantedBy=multi-user.target
                     f"{INSTANCE_NAME}:{remote_staging_path}/",
                 ]
             )
-            remote_release_path = remote_release_root_path / release_name / "sources" / repository_name
+            remote_release_path = (
+                remote_release_root_path / release_name / "sources" / repository_name
+            )
             verification_code = f"""\
 import hashlib
 import json
@@ -1140,7 +1299,9 @@ shutil.rmtree(root_path)
                 source_path = repository_path / relative_path
                 if source_path.is_dir():
                     continue
-                archive_info = archive.gettarinfo(str(source_path), arcname=relative_path.as_posix())
+                archive_info = archive.gettarinfo(
+                    str(source_path), arcname=relative_path.as_posix()
+                )
                 archive_info.gid = 0
                 archive_info.gname = ""
                 archive_info.mtime = 0
@@ -1155,7 +1316,9 @@ shutil.rmtree(root_path)
                     with source_path.open("rb") as source_file:
                         payload = source_file.read()
                     archive.addfile(archive_info, fileobj=io.BytesIO(payload))
-                    file_sha256_by_path_map[relative_path.as_posix()] = hashlib.sha256(payload).hexdigest()
+                    file_sha256_by_path_map[relative_path.as_posix()] = hashlib.sha256(
+                        payload
+                    ).hexdigest()
         manifest: dict[str, object] = {
             "archive_sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
             "commit_sha": self._git_stdout_get(repository_path, ["rev-parse", "HEAD"]),
@@ -1163,50 +1326,93 @@ shutil.rmtree(root_path)
             "repository_url": REPOSITORY_URL_BY_NAME_MAP[repository_name],
             "submodule_by_path_map": self._submodule_by_path_map_get(repository_path),
         }
-        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+        )
         return manifest
 
-    def _source_repository_validate(self, repository_path: Path, repository_name: str) -> None:
+    def _source_repository_validate(
+        self, repository_path: Path, repository_name: str
+    ) -> None:
         expected_url = REPOSITORY_URL_BY_NAME_MAP[repository_name]
-        actual_url = self._git_stdout_get(repository_path, ["remote", "get-url", "origin"])
+        actual_url = self._git_stdout_get(
+            repository_path, ["remote", "get-url", "origin"]
+        )
         if actual_url != expected_url:
-            raise DevelopmentEnvironmentError(f"{repository_name} origin is {actual_url}, expected {expected_url}")
+            raise DevelopmentEnvironmentError(
+                f"{repository_name} origin is {actual_url}, expected {expected_url}"
+            )
         status = self._git_stdout_get(
             repository_path,
-            ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"],
+            [
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+                "--ignore-submodules=none",
+            ],
         )
         if status:
-            raise DevelopmentEnvironmentError(f"{repository_name} worktree is not clean")
+            raise DevelopmentEnvironmentError(
+                f"{repository_name} worktree is not clean"
+            )
         head_sha = self._git_stdout_get(repository_path, ["rev-parse", "HEAD"])
-        branch_name = self._git_stdout_get(repository_path, ["branch", "--show-current"])
+        branch_name = self._git_stdout_get(
+            repository_path, ["branch", "--show-current"]
+        )
         if not branch_name:
             raise DevelopmentEnvironmentError(f"{repository_name} is detached")
         remote_result = self._runner.run(
-            ["git", "-C", str(repository_path), "ls-remote", "--exit-code", "origin", f"refs/heads/{branch_name}"]
+            [
+                "git",
+                "-C",
+                str(repository_path),
+                "ls-remote",
+                "--exit-code",
+                "origin",
+                f"refs/heads/{branch_name}",
+            ]
         )
         remote_field_list = remote_result.stdout.strip().split()
         if len(remote_field_list) != 2 or remote_field_list[0] != head_sha:
-            raise DevelopmentEnvironmentError(f"{repository_name} HEAD is not exact origin/{branch_name}")
+            raise DevelopmentEnvironmentError(
+                f"{repository_name} HEAD is not exact origin/{branch_name}"
+            )
         submodule_result = self._runner.run(
             ["git", "-C", str(repository_path), "submodule", "status", "--recursive"],
             check=False,
         )
         if submodule_result.returncode != 0:
-            raise DevelopmentEnvironmentError(f"{repository_name} submodule status failed")
+            raise DevelopmentEnvironmentError(
+                f"{repository_name} submodule status failed"
+            )
         for status_line in submodule_result.stdout.splitlines():
             if status_line[:1] != " ":
-                raise DevelopmentEnvironmentError(f"{repository_name} has a non-exact submodule: {status_line}")
-        for submodule_path_text, submodule_payload in self._submodule_by_path_map_get(repository_path).items():
+                raise DevelopmentEnvironmentError(
+                    f"{repository_name} has a non-exact submodule: {status_line}"
+                )
+        for submodule_path_text, submodule_payload in self._submodule_by_path_map_get(
+            repository_path
+        ).items():
             submodule_path = repository_path / submodule_path_text
             expected_submodule_url = submodule_payload["repository_url"]
-            actual_submodule_url = self._git_stdout_get(submodule_path, ["remote", "get-url", "origin"])
+            actual_submodule_url = self._git_stdout_get(
+                submodule_path, ["remote", "get-url", "origin"]
+            )
             if actual_submodule_url != expected_submodule_url:
                 raise DevelopmentEnvironmentError(
                     f"{repository_name}/{submodule_path_text} origin is {actual_submodule_url}, "
                     f"expected {expected_submodule_url}"
                 )
             remote_result = self._runner.run(
-                ["git", "-C", str(submodule_path), "ls-remote", "--exit-code", "origin", "refs/heads/main"]
+                [
+                    "git",
+                    "-C",
+                    str(submodule_path),
+                    "ls-remote",
+                    "--exit-code",
+                    "origin",
+                    "refs/heads/main",
+                ]
             )
             remote_field_list = remote_result.stdout.strip().split()
             if len(remote_field_list) != 2:
@@ -1268,7 +1474,9 @@ shutil.rmtree(root_path)
         try:
             command_id = payload["Command"]["CommandId"]
         except (KeyError, TypeError) as error:
-            raise DevelopmentEnvironmentError("SSM send-command response is malformed") from error
+            raise DevelopmentEnvironmentError(
+                "SSM send-command response is malformed"
+            ) from error
         if not isinstance(command_id, str):
             raise DevelopmentEnvironmentError("SSM command ID is not text")
         return command_id
@@ -1301,7 +1509,9 @@ shutil.rmtree(root_path)
         if error_text:
             print(error_text, end="", file=os.sys.stderr)
         if payload.get("Status") != "Success":
-            raise DevelopmentEnvironmentError(f"SSM command {command_id} failed with {payload.get('Status')}")
+            raise DevelopmentEnvironmentError(
+                f"SSM command {command_id} failed with {payload.get('Status')}"
+            )
 
     def _stack_apply(
         self,
@@ -1329,13 +1539,19 @@ shutil.rmtree(root_path)
             "CAPABILITY_NAMED_IAM",
         ]
         if stack_payload:
-            current_parameter_by_name_map = self._stack_parameter_by_name_map_get(stack_name)
+            current_parameter_by_name_map = self._stack_parameter_by_name_map_get(
+                stack_name
+            )
             current_parameter_by_name_map.update(parameter_by_name_map)
             parameter_by_name_map = current_parameter_by_name_map
         if parameter_by_name_map:
             command_list.append("--parameters")
-            for parameter_name, parameter_value in sorted(parameter_by_name_map.items()):
-                command_list.append(f"ParameterKey={parameter_name},ParameterValue={parameter_value}")
+            for parameter_name, parameter_value in sorted(
+                parameter_by_name_map.items()
+            ):
+                command_list.append(
+                    f"ParameterKey={parameter_name},ParameterValue={parameter_value}"
+                )
         self._aws_run(command_list)
         wait_result = self._aws_run(
             [
@@ -1374,17 +1590,25 @@ shutil.rmtree(root_path)
                 )
                 print(f"OK: stack {stack_name} has no changes")
                 return
-            raise DevelopmentEnvironmentError(f"Change set {stack_name}/{change_set_name} failed: {reason}")
+            raise DevelopmentEnvironmentError(
+                f"Change set {stack_name}/{change_set_name} failed: {reason}"
+            )
         change_list = change_set_payload.get("Changes", [])
         if not isinstance(change_list, list):
-            raise DevelopmentEnvironmentError(f"Change set {stack_name}/{change_set_name} is malformed")
+            raise DevelopmentEnvironmentError(
+                f"Change set {stack_name}/{change_set_name} is malformed"
+            )
         change_summary_list: list[dict[str, object]] = []
         for change_payload in change_list:
             if not isinstance(change_payload, dict):
-                raise DevelopmentEnvironmentError(f"Change set {stack_name}/{change_set_name} is malformed")
+                raise DevelopmentEnvironmentError(
+                    f"Change set {stack_name}/{change_set_name} is malformed"
+                )
             resource_change = change_payload.get("ResourceChange", {})
             if not isinstance(resource_change, dict):
-                raise DevelopmentEnvironmentError(f"Change set {stack_name}/{change_set_name} is malformed")
+                raise DevelopmentEnvironmentError(
+                    f"Change set {stack_name}/{change_set_name} is malformed"
+                )
             summary = {
                 "action": resource_change.get("Action"),
                 "logical_resource_id": resource_change.get("LogicalResourceId"),
@@ -1393,9 +1617,17 @@ shutil.rmtree(root_path)
                 "detail_list": resource_change.get("Details", []),
             }
             change_summary_list.append(summary)
-        print(json.dumps({"change_set": change_set_name, "changes": change_summary_list}, indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                {"change_set": change_set_name, "changes": change_summary_list},
+                indent=2,
+                sort_keys=True,
+            )
+        )
         if must_preserve_resource:
-            violation_logical_id_list = self._stable_data_change_violation_list_get(change_summary_list)
+            violation_logical_id_list = self._stable_data_change_violation_list_get(
+                change_summary_list
+            )
             if violation_logical_id_list:
                 self._aws_run(
                     [
@@ -1421,13 +1653,21 @@ shutil.rmtree(root_path)
                 change_set_name,
             ]
         )
-        wait_name = "stack-update-complete" if change_set_type == "UPDATE" else "stack-create-complete"
+        wait_name = (
+            "stack-update-complete"
+            if change_set_type == "UPDATE"
+            else "stack-create-complete"
+        )
         self._aws_run(["cloudformation", "wait", wait_name, "--stack-name", stack_name])
-        if self._stack_payload_get(stack_name, is_required=True).get("StackStatus") not in {
+        if self._stack_payload_get(stack_name, is_required=True).get(
+            "StackStatus"
+        ) not in {
             "CREATE_COMPLETE",
             "UPDATE_COMPLETE",
         }:
-            raise DevelopmentEnvironmentError(f"Stack {stack_name} did not reach a complete state")
+            raise DevelopmentEnvironmentError(
+                f"Stack {stack_name} did not reach a complete state"
+            )
 
     def _stable_data_change_violation_list_get(
         self,
@@ -1449,7 +1689,8 @@ shutil.rmtree(root_path)
         """
 
         summary_by_logical_id_map = {
-            str(summary.get("logical_resource_id")): summary for summary in change_summary_list
+            str(summary.get("logical_resource_id")): summary
+            for summary in change_summary_list
         }
         violation_logical_id_list: list[str] = []
         for summary in change_summary_list:
@@ -1471,7 +1712,10 @@ shutil.rmtree(root_path)
                     replacement_detail_list.append(detail)
                     continue
                 target = detail.get("Target")
-                if isinstance(target, dict) and target.get("RequiresRecreation") in {"Always", "Conditionally"}:
+                if isinstance(target, dict) and target.get("RequiresRecreation") in {
+                    "Always",
+                    "Conditionally",
+                }:
                     replacement_detail_list.append(detail)
             if not replacement_detail_list:
                 violation_logical_id_list.append(logical_resource_id)
@@ -1494,7 +1738,9 @@ shutil.rmtree(root_path)
                     break
         return sorted(set(violation_logical_id_list))
 
-    def _submodule_by_path_map_get(self, repository_path: Path) -> dict[str, dict[str, str]]:
+    def _submodule_by_path_map_get(
+        self, repository_path: Path
+    ) -> dict[str, dict[str, str]]:
         gitmodules_path = repository_path / ".gitmodules"
         if not gitmodules_path.is_file():
             return {}
@@ -1512,12 +1758,16 @@ shutil.rmtree(root_path)
             check=False,
         )
         if result.returncode not in {0, 1}:
-            raise DevelopmentEnvironmentError(f"{repository_path.name} .gitmodules lookup failed")
+            raise DevelopmentEnvironmentError(
+                f"{repository_path.name} .gitmodules lookup failed"
+            )
         submodule_by_path_map: dict[str, dict[str, str]] = {}
         for line in result.stdout.splitlines():
             field_list = line.split(maxsplit=1)
             if len(field_list) != 2:
-                raise DevelopmentEnvironmentError(f"{repository_path.name} .gitmodules path is malformed")
+                raise DevelopmentEnvironmentError(
+                    f"{repository_path.name} .gitmodules path is malformed"
+                )
             path_key, submodule_path = field_list
             name = path_key.removeprefix("submodule.").removesuffix(".path")
             repository_url = self._git_stdout_get(
@@ -1525,16 +1775,22 @@ shutil.rmtree(root_path)
                 ["config", "--file", ".gitmodules", "--get", f"submodule.{name}.url"],
             )
             submodule_by_path_map[submodule_path] = {
-                "commit_sha": self._git_stdout_get(repository_path / submodule_path, ["rev-parse", "HEAD"]),
+                "commit_sha": self._git_stdout_get(
+                    repository_path / submodule_path, ["rev-parse", "HEAD"]
+                ),
                 "repository_url": repository_url,
             }
         return submodule_by_path_map
 
     def _stack_drift_validate(self, stack_name: str) -> None:
-        payload = self._aws_json_get(["cloudformation", "detect-stack-drift", "--stack-name", stack_name])
+        payload = self._aws_json_get(
+            ["cloudformation", "detect-stack-drift", "--stack-name", stack_name]
+        )
         drift_detection_id = payload.get("StackDriftDetectionId")
         if not isinstance(drift_detection_id, str):
-            raise DevelopmentEnvironmentError(f"Stack {stack_name} drift detection ID is missing")
+            raise DevelopmentEnvironmentError(
+                f"Stack {stack_name} drift detection ID is missing"
+            )
         t_deadline = self._clock.monotonic() + STACK_TIMEOUT_SECONDS
         while self._clock.monotonic() < t_deadline:
             status_payload = self._aws_json_get(
@@ -1548,27 +1804,39 @@ shutil.rmtree(root_path)
             detection_status = status_payload.get("DetectionStatus")
             if detection_status == "DETECTION_COMPLETE":
                 if status_payload.get("StackDriftStatus") != "IN_SYNC":
-                    raise DevelopmentEnvironmentError(f"Stack {stack_name} is not IN_SYNC")
+                    raise DevelopmentEnvironmentError(
+                        f"Stack {stack_name} is not IN_SYNC"
+                    )
                 print(f"OK: stack {stack_name} drift is IN_SYNC")
                 return
             if detection_status == "DETECTION_FAILED":
-                raise DevelopmentEnvironmentError(f"Stack {stack_name} drift detection failed")
+                raise DevelopmentEnvironmentError(
+                    f"Stack {stack_name} drift detection failed"
+                )
             self._clock.sleep(STACK_POLL_INTERVAL_SECONDS)
-        raise DevelopmentEnvironmentError(f"Stack {stack_name} drift detection timed out")
+        raise DevelopmentEnvironmentError(
+            f"Stack {stack_name} drift detection timed out"
+        )
 
     def _stack_output_by_name_map_get(self, stack_name: str) -> dict[str, str]:
         stack_payload = self._stack_payload_get(stack_name, is_required=True)
         output_list = stack_payload.get("Outputs", [])
         if not isinstance(output_list, list):
-            raise DevelopmentEnvironmentError(f"Stack {stack_name} Outputs are malformed")
+            raise DevelopmentEnvironmentError(
+                f"Stack {stack_name} Outputs are malformed"
+            )
         output_by_name_map: dict[str, str] = {}
         for output_payload in output_list:
             if not isinstance(output_payload, dict):
-                raise DevelopmentEnvironmentError(f"Stack {stack_name} Outputs are malformed")
+                raise DevelopmentEnvironmentError(
+                    f"Stack {stack_name} Outputs are malformed"
+                )
             output_name = output_payload.get("OutputKey")
             output_value = output_payload.get("OutputValue")
             if not isinstance(output_name, str) or not isinstance(output_value, str):
-                raise DevelopmentEnvironmentError(f"Stack {stack_name} output is malformed")
+                raise DevelopmentEnvironmentError(
+                    f"Stack {stack_name} output is malformed"
+                )
             output_by_name_map[output_name] = output_value
         return output_by_name_map
 
@@ -1576,21 +1844,38 @@ shutil.rmtree(root_path)
         stack_payload = self._stack_payload_get(stack_name, is_required=True)
         parameter_list = stack_payload.get("Parameters", [])
         if not isinstance(parameter_list, list):
-            raise DevelopmentEnvironmentError(f"Stack {stack_name} Parameters are malformed")
+            raise DevelopmentEnvironmentError(
+                f"Stack {stack_name} Parameters are malformed"
+            )
         parameter_by_name_map: dict[str, str] = {}
         for parameter_payload in parameter_list:
             if not isinstance(parameter_payload, dict):
-                raise DevelopmentEnvironmentError(f"Stack {stack_name} Parameters are malformed")
+                raise DevelopmentEnvironmentError(
+                    f"Stack {stack_name} Parameters are malformed"
+                )
             parameter_name = parameter_payload.get("ParameterKey")
             parameter_value = parameter_payload.get("ParameterValue")
-            if not isinstance(parameter_name, str) or not isinstance(parameter_value, str):
-                raise DevelopmentEnvironmentError(f"Stack {stack_name} parameter is malformed")
+            if not isinstance(parameter_name, str) or not isinstance(
+                parameter_value, str
+            ):
+                raise DevelopmentEnvironmentError(
+                    f"Stack {stack_name} parameter is malformed"
+                )
             parameter_by_name_map[parameter_name] = parameter_value
         return parameter_by_name_map
 
-    def _stack_payload_get(self, stack_name: str, *, is_required: bool) -> dict[str, object]:
+    def _stack_payload_get(
+        self, stack_name: str, *, is_required: bool
+    ) -> dict[str, object]:
         result = self._aws_run(
-            ["cloudformation", "describe-stacks", "--stack-name", stack_name, "--output", "json"],
+            [
+                "cloudformation",
+                "describe-stacks",
+                "--stack-name",
+                stack_name,
+                "--output",
+                "json",
+            ],
             check=False,
         )
         if result.returncode != 0:
@@ -1602,27 +1887,45 @@ shutil.rmtree(root_path)
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError as error:
-            raise DevelopmentEnvironmentError(f"Stack {stack_name} response is invalid") from error
+            raise DevelopmentEnvironmentError(
+                f"Stack {stack_name} response is invalid"
+            ) from error
         stack_list = payload.get("Stacks", []) if isinstance(payload, dict) else []
-        if not isinstance(stack_list, list) or len(stack_list) != 1 or not isinstance(stack_list[0], dict):
-            raise DevelopmentEnvironmentError(f"Stack {stack_name} response is malformed")
+        if (
+            not isinstance(stack_list, list)
+            or len(stack_list) != 1
+            or not isinstance(stack_list[0], dict)
+        ):
+            raise DevelopmentEnvironmentError(
+                f"Stack {stack_name} response is malformed"
+            )
         return stack_list[0]
 
-    def _stack_resource_id_by_logical_name_map_get(self, stack_name: str) -> dict[str, str]:
+    def _stack_resource_id_by_logical_name_map_get(
+        self, stack_name: str
+    ) -> dict[str, str]:
         if not self._stack_payload_get(stack_name, is_required=False):
             return {}
-        payload = self._aws_json_get(["cloudformation", "list-stack-resources", "--stack-name", stack_name])
+        payload = self._aws_json_get(
+            ["cloudformation", "list-stack-resources", "--stack-name", stack_name]
+        )
         resource_list = payload.get("StackResourceSummaries", [])
         if not isinstance(resource_list, list):
-            raise DevelopmentEnvironmentError(f"Stack {stack_name} resources are malformed")
+            raise DevelopmentEnvironmentError(
+                f"Stack {stack_name} resources are malformed"
+            )
         resource_id_by_logical_name_map: dict[str, str] = {}
         for resource_payload in resource_list:
             if not isinstance(resource_payload, dict):
-                raise DevelopmentEnvironmentError(f"Stack {stack_name} resource is malformed")
+                raise DevelopmentEnvironmentError(
+                    f"Stack {stack_name} resource is malformed"
+                )
             logical_name = resource_payload.get("LogicalResourceId")
             resource_id = resource_payload.get("PhysicalResourceId")
             if not isinstance(logical_name, str) or not isinstance(resource_id, str):
-                raise DevelopmentEnvironmentError(f"Stack {stack_name} resource identity is malformed")
+                raise DevelopmentEnvironmentError(
+                    f"Stack {stack_name} resource identity is malformed"
+                )
             resource_id_by_logical_name_map[logical_name] = resource_id
         return resource_id_by_logical_name_map
 
@@ -1639,7 +1942,9 @@ shutil.rmtree(root_path)
             check=False,
         )
         if result.returncode != 0 and "ResourceNotFoundException" not in result.stderr:
-            raise DevelopmentEnvironmentError(f"Stop lease deletion failed: {result.stderr.strip()}")
+            raise DevelopmentEnvironmentError(
+                f"Stop lease deletion failed: {result.stderr.strip()}"
+            )
 
     def _stop_lease_payload_get(self) -> dict[str, object]:
         result = self._aws_run(
@@ -1658,11 +1963,15 @@ shutil.rmtree(root_path)
         if result.returncode != 0:
             if "ResourceNotFoundException" in result.stderr:
                 return {"state": "absent"}
-            raise DevelopmentEnvironmentError(f"Stop lease lookup failed: {result.stderr.strip()}")
+            raise DevelopmentEnvironmentError(
+                f"Stop lease lookup failed: {result.stderr.strip()}"
+            )
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError as error:
-            raise DevelopmentEnvironmentError("Stop lease response is invalid") from error
+            raise DevelopmentEnvironmentError(
+                "Stop lease response is invalid"
+            ) from error
         if not isinstance(payload, dict):
             raise DevelopmentEnvironmentError("Stop lease response is malformed")
         return {
@@ -1704,7 +2013,15 @@ shutil.rmtree(root_path)
             json.dumps(target_payload, separators=(",", ":")),
         ]
         result = self._aws_run(
-            ["scheduler", "get-schedule", "--group-name", LEASE_GROUP_NAME, "--name", LEASE_NAME], check=False
+            [
+                "scheduler",
+                "get-schedule",
+                "--group-name",
+                LEASE_GROUP_NAME,
+                "--name",
+                LEASE_NAME,
+            ],
+            check=False,
         )
         operation = "update-schedule" if result.returncode == 0 else "create-schedule"
         create_argument_list = ["scheduler", operation, *common_argument_list]
@@ -1714,7 +2031,12 @@ shutil.rmtree(root_path)
             raise DevelopmentEnvironmentError("Stop lease was not proven enabled")
 
     def _template_validate(self, template_path: Path) -> None:
-        self._runner.run([str(self._project_root_path / ".venv" / "bin" / "cfn-lint"), str(template_path)])
+        self._runner.run(
+            [
+                str(self._project_root_path / ".venv" / "bin" / "cfn-lint"),
+                str(template_path),
+            ]
+        )
         self._aws_run(
             [
                 "cloudformation",
@@ -1739,8 +2061,12 @@ shutil.rmtree(root_path)
         path_list = [Path(value) for value in result.stdout.split("\0") if value]
         return sorted(path_list, key=lambda path: path.as_posix())
 
-    def _git_stdout_get(self, repository_path: Path, git_argument_list: Sequence[str]) -> str:
-        result = self._runner.run(["git", "-C", str(repository_path), *git_argument_list])
+    def _git_stdout_get(
+        self, repository_path: Path, git_argument_list: Sequence[str]
+    ) -> str:
+        result = self._runner.run(
+            ["git", "-C", str(repository_path), *git_argument_list]
+        )
         return result.stdout.strip()
 
 
@@ -1785,11 +2111,17 @@ class SshControlSession:
             ]
         )
         instance_id = self._environment._instance_id_get()
-        instance_payload = self._environment._aws_json_get(["ec2", "describe-instances", "--instance-ids", instance_id])
+        instance_payload = self._environment._aws_json_get(
+            ["ec2", "describe-instances", "--instance-ids", instance_id]
+        )
         try:
-            availability_zone = instance_payload["Reservations"][0]["Instances"][0]["Placement"]["AvailabilityZone"]
+            availability_zone = instance_payload["Reservations"][0]["Instances"][0][
+                "Placement"
+            ]["AvailabilityZone"]
         except (KeyError, IndexError, TypeError) as error:
-            raise DevelopmentEnvironmentError("EC2 availability zone response is malformed") from error
+            raise DevelopmentEnvironmentError(
+                "EC2 availability zone response is malformed"
+            ) from error
         if not isinstance(availability_zone, str):
             raise DevelopmentEnvironmentError("EC2 availability zone is not text")
         self._environment._aws_run(

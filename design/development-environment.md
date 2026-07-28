@@ -106,7 +106,7 @@ Cloud-init/UserData выполняет только:
 
 - форматирование и mount retained volume;
 - установку минимальных base packages без `apt upgrade`;
-- установку закреплённого k3s;
+- загрузку `install.sh` из exact k3s release tag, проверку declared SHA-256 и установку той же закреплённой k3s version;
 - установку Docker/Buildx и настройку SSM/systemd;
 - запуск host lifecycle controller.
 
@@ -116,19 +116,19 @@ UserData не содержит исходники приложения, Product 
 
 EC2 получает platform role через instance profile. EC2 temporary credentials автоматически обновляются AWS и являются единственным host credential source.
 
-Host credential refresher использует `aws configure export-credentials --format process` и атомарно обновляет узко распространяемый Kubernetes `Secret` со стандартным `credential_process` JSON. Backend и platform workers монтируют JSON read-only и используют стандартную AWS SDK credential chain, которая обновляет session до expiry без Pod restart или ручного apply. AWS access key, secret и token не передаются через environment variables.
+Product-owned host credential refresher устанавливается из exact current WCC release как systemd oneshot/timer, использует `aws configure export-credentials --format process` и атомарно обновляет узко распространяемый Kubernetes `Secret` со стандартным `credential_process` JSON. Backend, platform workers, run-local control services и bounded trusted materialization Jobs монтируют JSON read-only и используют стандартную AWS SDK credential chain, которая обновляет session до expiry без Pod restart или ручного apply. Их readiness проверяет timezone-aware expiration и workload health без вывода credential fields. AWS access key, secret и token не передаются через environment variables или command arguments.
 
-Workflow, browser и VPN Pods никогда не получают platform credentials. Temporary AWS credentials не входят в retained secret archive, release manifest или logs. Истечение credential без успешного refresh закрывает AWS-dependent operations; static key, anonymous access и local S3 fallback отсутствуют. Истечение laptop SSO session не останавливает уже работающий Product.
+Workflow, browser, VPN provider, WorkflowSource candidate test и credentialless wait Pods никогда не получают platform credentials. Trusted materializer передаёт им только exact snapshot и atomic readiness marker через private run/attempt volume. Temporary AWS credentials не входят в retained secret archive, release manifest или logs. Истечение credential без успешного refresh закрывает AWS-dependent operations; static key, anonymous access и local S3 fallback отсутствуют. Истечение laptop SSO session не останавливает уже работающий Product.
 
 ## Доставка Исходников И Release
 
 Локальный orchestrator принимает только чистые exact checkouts требуемых репозиториев. Для каждого source он проверяет remote URL, commit SHA, отсутствие untracked/modified files и опубликованность exact commit в upstream. Исходники передаются через rsync поверх SSH-over-SSM; EC2 не хранит GitHub credentials.
 
-Передаваемый набор содержит только tracked required files. Orchestrator создаёт content manifest, проверяет его на host, помещает source в staging и атомарно переключает current release source только после полной передачи. Release manifest сохраняет repository URLs, source commit SHAs, content digests, runtime platform, immutable image digests, digest применённого Kubernetes render и timestamp deployment.
+Передаваемый набор содержит только tracked required files. Orchestrator создаёт content manifest, проверяет его на host, помещает source в staging и атомарно переключает current release source только после полной передачи. Release manifest сохраняет repository URLs, source commit SHAs, archive/content digests, runtime platform, immutable image digests, exact Helm chart versions/archive digests, release-local ingress-nginx source URL/digest, digest применённого Kubernetes render и timestamp deployment.
 
 Platform images собираются на EC2 через Docker Buildx для exact target platform и публикуются в persistent cluster-local OCI registry по immutable digest. User `WorkflowSourceVersion` images продолжают собираться cluster-local rootless BuildKit и принимаются только после platform и publisher validation. Runtime registry и accepted workflow images находятся на retained volume.
 
-Deployment сначала собирает все images и source-map artifacts, затем фиксирует exact image digests в одном Kustomize render. Release становится active только после rollout readiness, Product smoke и exact current-assets verification. При failure повторно применяется предыдущий exact release manifest; частично собранный набор не становится current.
+Deployment сначала сохраняет versioned ingress-nginx manifest и exact Helm chart archives внутри immutable release, затем собирает все images и source-map artifacts и фиксирует exact image digests в одном Kustomize render. Install не применяет remote URL или mutable chart reference напрямую. Release становится active только после rollout readiness, Product smoke и exact current-assets verification. При failure восстанавливаются previous Helm revisions, previous release-local ingress manifest и previous exact render; частично собранный набор не становится current.
 
 ## Платформа Runtime
 
