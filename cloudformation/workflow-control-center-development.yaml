@@ -1,0 +1,1053 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Workflow Control Center development data plane in us-east-1.
+
+Parameters:
+  DeploymentPrincipalArn:
+    Type: String
+    Default: arn:aws:iam::463564115167:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_AdministratorAccess_96adc54d23890b23
+    Description: Exact IAM Identity Center administrator role allowed to assume the platform role and administer Lake Formation.
+
+  NotificationTagValue:
+    Type: String
+    Default: workflow-control-center
+    AllowedPattern: '[a-z0-9-]+'
+    Description: Stable project tag value.
+
+  UiOrigin:
+    Type: String
+    Default: http://localhost:8080
+    Description: Browser origin allowed to use direct S3 credentials.
+
+Resources:
+  VpnValidationRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Description: Public controlled HTTPS boundary for VPN egress validation.
+      DisableExecuteApiEndpoint: false
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Name: workflow-control-center-vpn-validation
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-vpn-validation
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  VpnValidationIpResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt VpnValidationRestApi.RootResourceId
+      PathPart: ip
+      RestApiId: !Ref VpnValidationRestApi
+
+  VpnValidationGetMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: GET
+      Integration:
+        RequestTemplates:
+          application/json: '{"statusCode":200}'
+        IntegrationResponses:
+          - ResponseParameters:
+              method.response.header.Cache-Control: "'no-store'"
+            ResponseTemplates:
+              application/json: '{"ip":"$context.identity.sourceIp"}'
+            StatusCode: '200'
+        PassthroughBehavior: NEVER
+        Type: MOCK
+      MethodResponses:
+        - ResponseParameters:
+            method.response.header.Cache-Control: true
+          StatusCode: '200'
+      ResourceId: !Ref VpnValidationIpResource
+      RestApiId: !Ref VpnValidationRestApi
+
+  VpnValidationDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - VpnValidationGetMethod
+    Properties:
+      Description: VPN validation HTTPS contract version 1.
+      RestApiId: !Ref VpnValidationRestApi
+
+  VpnValidationStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      DeploymentId: !Ref VpnValidationDeployment
+      Description: Workflow Control Center development VPN validation endpoint.
+      MethodSettings:
+        - DataTraceEnabled: false
+          HttpMethod: '*'
+          LoggingLevel: 'OFF'
+          MetricsEnabled: false
+          ResourcePath: '/*'
+          ThrottlingBurstLimit: 20
+          ThrottlingRateLimit: 10
+      RestApiId: !Ref VpnValidationRestApi
+      StageName: development
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-vpn-validation
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  LakeFormationDataAccessRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: workflow-control-center-lake-formation-data-access
+      Description: Lake Formation access to encrypted Workflow Control Center development Data.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowLakeFormation
+            Effect: Allow
+            Principal:
+              Service: lakeformation.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-lake-formation-data-access
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  StorageKmsKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      Description: Workflow Control Center development Data, Secret, and Result encryption.
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnableAccountAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+          - Sid: AllowLakeFormationDataAccess
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt LakeFormationDataAccessRole.Arn
+            Action:
+              - kms:Decrypt
+              - kms:DescribeKey
+              - kms:Encrypt
+              - kms:GenerateDataKey*
+              - kms:ReEncrypt*
+            Resource: '*'
+      PendingWindowInDays: 7
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  StorageKmsAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/workflow-control-center-development
+      TargetKeyId: !Ref StorageKmsKey
+
+  DataBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BucketName: !Sub workflow-control-center-devel-${AWS::AccountId}-data
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              KMSMasterKeyID: !GetAtt StorageKmsKey.Arn
+              SSEAlgorithm: aws:kms
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - '*'
+            AllowedMethods:
+              - DELETE
+              - GET
+              - HEAD
+              - POST
+              - PUT
+            AllowedOrigins:
+              - !Ref UiOrigin
+            ExposedHeaders:
+              - ETag
+              - x-amz-checksum-sha256
+              - x-amz-version-id
+            MaxAge: 3600
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteMultipartUploads
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+            Prefix: .platform/staging/
+            Status: Enabled
+          - Id: RetainNoncurrentVersionsForThirtyDays
+            NoncurrentVersionExpirationInDays: 30
+            Status: Enabled
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development-data
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+      VersioningConfiguration:
+        Status: Enabled
+
+  SecretBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BucketName: !Sub workflow-control-center-devel-${AWS::AccountId}-secret
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              KMSMasterKeyID: !GetAtt StorageKmsKey.Arn
+              SSEAlgorithm: aws:kms
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - '*'
+            AllowedMethods:
+              - DELETE
+              - GET
+              - HEAD
+              - POST
+              - PUT
+            AllowedOrigins:
+              - !Ref UiOrigin
+            ExposedHeaders:
+              - ETag
+              - x-amz-checksum-sha256
+              - x-amz-version-id
+            MaxAge: 3600
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteMultipartUploads
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+            Prefix: .platform/staging/
+            Status: Enabled
+          - Id: RetainNoncurrentVersionsForThirtyDays
+            NoncurrentVersionExpirationInDays: 30
+            Status: Enabled
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development-secret
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+      VersioningConfiguration:
+        Status: Enabled
+
+  ResultBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BucketName: !Sub workflow-control-center-devel-${AWS::AccountId}-result
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              KMSMasterKeyID: !GetAtt StorageKmsKey.Arn
+              SSEAlgorithm: aws:kms
+      CorsConfiguration:
+        CorsRules:
+          - AllowedHeaders:
+              - '*'
+            AllowedMethods:
+              - GET
+              - HEAD
+            AllowedOrigins:
+              - !Ref UiOrigin
+            ExposedHeaders:
+              - ETag
+              - x-amz-checksum-sha256
+              - x-amz-version-id
+            MaxAge: 3600
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteMultipartUploads
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+            Prefix: athena-result/
+            Status: Enabled
+          - Id: ExpireDownloadsAfterTwoDays
+            ExpirationInDays: 2
+            NoncurrentVersionExpirationInDays: 2
+            Prefix: data-download/
+            Status: Enabled
+          - Id: ExpireAthenaResultsAfterThirtyDays
+            ExpirationInDays: 30
+            NoncurrentVersionExpirationInDays: 30
+            Prefix: athena-result/
+            Status: Enabled
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development-result
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+      VersioningConfiguration:
+        Status: Enabled
+
+  ObservabilityBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      BucketName: !Sub workflow-control-center-devel-${AWS::AccountId}-observability
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              KMSMasterKeyID: !GetAtt StorageKmsKey.Arn
+              SSEAlgorithm: aws:kms
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteSourceMapUploads
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 1
+            Prefix: source-map/
+            Status: Enabled
+          - Id: ExpireSourceMapsAfterThirtyDays
+            ExpirationInDays: 30
+            NoncurrentVersionExpirationInDays: 30
+            Prefix: source-map/
+            Status: Enabled
+          - Id: RemoveExpiredSourceMapDeleteMarkers
+            ExpiredObjectDeleteMarker: true
+            Prefix: source-map/
+            Status: Enabled
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development-observability
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+      VersioningConfiguration:
+        Status: Enabled
+
+  PlatformRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: workflow-control-center-platform
+      Description: Full Workflow Control Center control-plane access to its dedicated account.
+      MaxSessionDuration: 3600
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AdministratorAccess
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowDevelopmentAdministrator
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: sts:AssumeRole
+            Condition:
+              ArnEquals:
+                aws:PrincipalArn: !Ref DeploymentPrincipalArn
+          - Sid: AllowDevelopmentCompute
+            Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-platform
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  DataCredentialRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: apwid-data-access
+      Description: Tenant-tagged direct access to Workflow Control Center Data and Secret.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowTaggedPlatformSession
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt PlatformRole.Arn
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+            Condition:
+              ForAllValues:StringEquals:
+                aws:TagKeys:
+                  - UserDataRootId
+              'Null':
+                aws:RequestTag/UserDataRootId: 'false'
+              StringLike:
+                aws:RequestTag/UserDataRootId: '????????????????????????????????'
+      Policies:
+        - PolicyName: workflow-data-access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: DataAndSecretBucketRead
+                Effect: Allow
+                Action:
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                  - s3:ListBucketVersions
+                Resource:
+                  - !GetAtt DataBucket.Arn
+                  - !GetAtt SecretBucket.Arn
+              - Sid: DataAndSecretObjects
+                Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:DeleteObject
+                  - s3:GetObject
+                  - s3:GetObjectAttributes
+                  - s3:GetObjectVersion
+                  - s3:ListMultipartUploadParts
+                  - s3:PutObject
+                Resource:
+                  - !Sub ${DataBucket.Arn}/*
+                  - !Sub ${SecretBucket.Arn}/*
+              - Sid: ResultBucketRead
+                Effect: Allow
+                Action:
+                  - s3:GetBucketLocation
+                  - s3:ListBucket
+                Resource: !GetAtt ResultBucket.Arn
+              - Sid: ResultObjectsRead
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectAttributes
+                Resource: !Sub ${ResultBucket.Arn}/*
+              - Sid: StorageKms
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt StorageKmsKey.Arn
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-data-access
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  QueryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: workflow-data-workflow_data_000
+      Description: Tenant-tagged Athena access for workflow_data_000.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowTaggedPlatformSession
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt PlatformRole.Arn
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+            Condition:
+              ForAllValues:StringEquals:
+                aws:TagKeys:
+                  - UserDataRootId
+              'Null':
+                aws:RequestTag/UserDataRootId: 'false'
+              StringLike:
+                aws:RequestTag/UserDataRootId: '????????????????????????????????'
+      Policies:
+        - PolicyName: workflow-data-query
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AthenaWorkgroup
+                Effect: Allow
+                Action:
+                  - athena:GetQueryExecution
+                  - athena:GetQueryResults
+                  - athena:GetWorkGroup
+                  - athena:ListQueryExecutions
+                  - athena:StartQueryExecution
+                  - athena:StopQueryExecution
+                Resource: !Sub arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/workflow-data
+              - Sid: GlueTenantMetadata
+                Effect: Allow
+                Action:
+                  - glue:BatchGetPartition
+                  - glue:GetDatabase
+                  - glue:GetDatabases
+                  - glue:GetPartition
+                  - glue:GetPartitions
+                  - glue:GetTable
+                  - glue:GetTables
+                  - glue:GetTableVersion
+                  - glue:GetTableVersions
+                  - glue:SearchTables
+                Resource:
+                  - !Sub arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog
+                  - !Sub arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/workflow_data_000
+                  - !Sub arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/workflow_data_000/user_${!aws:PrincipalTag/UserDataRootId}__*
+              - Sid: LakeFormationDataAccess
+                Effect: Allow
+                Action: lakeformation:GetDataAccess
+                Resource: '*'
+              - Sid: ResultBucketLocation
+                Effect: Allow
+                Action: s3:GetBucketLocation
+                Resource: !GetAtt ResultBucket.Arn
+              - Sid: ResultBucketList
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt ResultBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - 'athena-result/user_${aws:PrincipalTag/UserDataRootId}'
+                      - 'athena-result/user_${aws:PrincipalTag/UserDataRootId}/*'
+              - Sid: ResultObjects
+                Effect: Allow
+                Action:
+                  - s3:AbortMultipartUpload
+                  - s3:GetObject
+                  - s3:ListMultipartUploadParts
+                  - s3:PutObject
+                Resource: !Sub '${ResultBucket.Arn}/athena-result/user_${!aws:PrincipalTag/UserDataRootId}/*'
+              - Sid: ResultKms
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:DescribeKey
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                Resource: !GetAtt StorageKmsKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:EncryptionContext:aws:s3:arn: !GetAtt ResultBucket.Arn
+      Tags:
+        - Key: Name
+          Value: workflow-data-workflow_data_000
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: workflow-control-center
+          Value: athena-query
+
+  DataBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DataBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt DataBucket.Arn
+              - !Sub ${DataBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: DenyUnexpectedResourceAccount
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt DataBucket.Arn
+              - !Sub ${DataBucket.Arn}/*
+            Condition:
+              StringNotEquals:
+                s3:ResourceAccount: !Ref AWS::AccountId
+
+  LakeFormationDataAccessPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: workflow-control-center-lake-formation-data-access
+      Roles:
+        - !Ref LakeFormationDataAccessRole
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DataBucketReadWrite
+            Effect: Allow
+            Action:
+              - s3:DeleteObject
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:PutObject
+            Resource: !Sub ${DataBucket.Arn}/*
+          - Sid: DataBucketList
+            Effect: Allow
+            Action:
+              - s3:GetBucketLocation
+              - s3:ListBucket
+            Resource: !GetAtt DataBucket.Arn
+          - Sid: StorageKms
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:DescribeKey
+              - kms:Encrypt
+              - kms:GenerateDataKey*
+              - kms:ReEncrypt*
+            Resource: !GetAtt StorageKmsKey.Arn
+
+  SecretBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref SecretBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt SecretBucket.Arn
+              - !Sub ${SecretBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: DenyUnexpectedResourceAccount
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt SecretBucket.Arn
+              - !Sub ${SecretBucket.Arn}/*
+            Condition:
+              StringNotEquals:
+                s3:ResourceAccount: !Ref AWS::AccountId
+
+  ResultBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ResultBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt ResultBucket.Arn
+              - !Sub ${ResultBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: DenyUnexpectedResourceAccount
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt ResultBucket.Arn
+              - !Sub ${ResultBucket.Arn}/*
+            Condition:
+              StringNotEquals:
+                s3:ResourceAccount: !Ref AWS::AccountId
+
+  ObservabilityBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ObservabilityBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt ObservabilityBucket.Arn
+              - !Sub ${ObservabilityBucket.Arn}/*
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+          - Sid: DenyUnexpectedResourceAccount
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt ObservabilityBucket.Arn
+              - !Sub ${ObservabilityBucket.Arn}/*
+            Condition:
+              StringNotEquals:
+                s3:ResourceAccount: !Ref AWS::AccountId
+
+  DataLakeSettings:
+    Type: AWS::LakeFormation::DataLakeSettings
+    Properties:
+      Admins:
+        - DataLakePrincipalIdentifier: !Ref DeploymentPrincipalArn
+        - DataLakePrincipalIdentifier: !GetAtt PlatformRole.Arn
+      AllowExternalDataFiltering: false
+      AllowFullTableExternalDataAccess: false
+      CreateDatabaseDefaultPermissions: []
+      CreateTableDefaultPermissions: []
+      ExternalDataFilteringAllowList: []
+      MutationType: REPLACE
+      Parameters:
+        CROSS_ACCOUNT_VERSION: '4'
+      TrustedResourceOwners: []
+
+  DataLakeLocation:
+    Type: AWS::LakeFormation::Resource
+    DependsOn:
+      - DataBucketPolicy
+      - DataLakeSettings
+      - LakeFormationDataAccessPolicy
+    Properties:
+      HybridAccessEnabled: false
+      ResourceArn: !GetAtt DataBucket.Arn
+      RoleArn: !GetAtt LakeFormationDataAccessRole.Arn
+      UseServiceLinkedRole: false
+      WithFederation: false
+
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    DependsOn: DataLakeSettings
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        CreateTableDefaultPermissions: []
+        Description: Shared tenant-isolated workflow Data tables
+        Name: workflow_data_000
+        Parameters:
+          workflow-control-center: athena-data
+
+  PlatformRoleDatabasePermission:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    DependsOn: GlueDatabase
+    Properties:
+      Permissions:
+        - ALL
+      PermissionsWithGrantOption:
+        - ALL
+      Principal:
+        DataLakePrincipalIdentifier: !GetAtt PlatformRole.Arn
+      Resource:
+        Database:
+          CatalogId: !Ref AWS::AccountId
+          Name: workflow_data_000
+
+  UserATable:
+    Type: AWS::Glue::Table
+    DependsOn: DataLakeLocation
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref GlueDatabase
+      TableInput:
+        Description: Source-declared workflow dataset projected from accepted Data manifests
+        Name: user_11111111111141118111111111111111__acceptance__fixture__v1
+        Parameters:
+          classification: json
+          EXTERNAL: 'TRUE'
+          workflow-control-center: athena-data
+        PartitionKeys:
+          - Name: workflow_run_date
+            Type: string
+        Retention: 0
+        StorageDescriptor:
+          Columns:
+            - Name: value
+              Type: string
+          Compressed: false
+          InputFormat: org.apache.hadoop.hive.ql.io.SymlinkTextInputFormat
+          Location: !Sub s3://${DataBucket}/user_11111111111141118111111111111111/
+          NumberOfBuckets: -1
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            Parameters:
+              serialization.format: '1'
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
+          StoredAsSubDirectories: false
+        TableType: EXTERNAL_TABLE
+
+  UserBTable:
+    Type: AWS::Glue::Table
+    DependsOn: DataLakeLocation
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: !Ref GlueDatabase
+      TableInput:
+        Description: Source-declared workflow dataset projected from accepted Data manifests
+        Name: user_22222222222242228222222222222222__acceptance__fixture__v1
+        Parameters:
+          classification: json
+          EXTERNAL: 'TRUE'
+          workflow-control-center: athena-data
+        PartitionKeys:
+          - Name: workflow_run_date
+            Type: string
+        Retention: 0
+        StorageDescriptor:
+          Columns:
+            - Name: value
+              Type: string
+          Compressed: false
+          InputFormat: org.apache.hadoop.hive.ql.io.SymlinkTextInputFormat
+          Location: !Sub s3://${DataBucket}/user_22222222222242228222222222222222/
+          NumberOfBuckets: -1
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            Parameters:
+              serialization.format: '1'
+            SerializationLibrary: org.openx.data.jsonserde.JsonSerDe
+          StoredAsSubDirectories: false
+        TableType: EXTERNAL_TABLE
+
+  PlatformRoleTablePermission:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    DependsOn:
+      - UserATable
+      - UserBTable
+    Properties:
+      Permissions:
+        - ALL
+      PermissionsWithGrantOption:
+        - ALL
+      Principal:
+        DataLakePrincipalIdentifier: !GetAtt PlatformRole.Arn
+      Resource:
+        Table:
+          CatalogId: !Ref AWS::AccountId
+          DatabaseName: workflow_data_000
+          TableWildcard: {}
+
+  QueryRoleDatabasePermission:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    DependsOn: GlueDatabase
+    Properties:
+      Permissions:
+        - DESCRIBE
+      PermissionsWithGrantOption: []
+      Principal:
+        DataLakePrincipalIdentifier: !GetAtt QueryRole.Arn
+      Resource:
+        Database:
+          CatalogId: !Ref AWS::AccountId
+          Name: workflow_data_000
+
+  QueryRoleTablePermission:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    DependsOn:
+      - UserATable
+      - UserBTable
+    Properties:
+      Permissions:
+        - SELECT
+      PermissionsWithGrantOption: []
+      Principal:
+        DataLakePrincipalIdentifier: !GetAtt QueryRole.Arn
+      Resource:
+        Table:
+          CatalogId: !Ref AWS::AccountId
+          DatabaseName: workflow_data_000
+          TableWildcard: {}
+
+  AthenaWorkGroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Description: Workflow Control Center development tenant queries.
+      Name: workflow-data
+      RecursiveDeleteOption: true
+      State: ENABLED
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+      WorkGroupConfiguration:
+        BytesScannedCutoffPerQuery: 104857600
+        EnforceWorkGroupConfiguration: true
+        EngineVersion:
+          SelectedEngineVersion: AUTO
+        PublishCloudWatchMetricsEnabled: true
+        RequesterPaysEnabled: false
+
+  AthenaDailyScannedBytesAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Athena workgroup scanned at least 1 TiB during one day.
+      AlarmName: workflow-data-daily-scanned-byte-count
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      DatapointsToAlarm: 1
+      Dimensions:
+        - Name: WorkGroup
+          Value: !Ref AthenaWorkGroup
+      EvaluationPeriods: 1
+      MetricName: ProcessedBytes
+      Namespace: AWS/Athena
+      Period: 86400
+      Statistic: Sum
+      Tags:
+        - Key: Name
+          Value: workflow-data-daily-scanned-byte-count
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+      Threshold: 1099511627776
+      TreatMissingData: notBreaching
+      Unit: Bytes
+
+  AthenaFailedQueryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Athena workgroup produced at least one failed query during five minutes.
+      AlarmName: workflow-data-failed-query-count
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      DatapointsToAlarm: 1
+      Dimensions:
+        - Name: QueryState
+          Value: FAILED
+        - Name: WorkGroup
+          Value: !Ref AthenaWorkGroup
+      EvaluationPeriods: 1
+      MetricName: TotalExecutionTime
+      Namespace: AWS/Athena
+      Period: 300
+      Statistic: SampleCount
+      Tags:
+        - Key: Name
+          Value: workflow-data-failed-query-count
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+      Threshold: 1
+      TreatMissingData: notBreaching
+
+Outputs:
+  AccountId:
+    Value: !Ref AWS::AccountId
+  AthenaQueryRoleArn:
+    Value: !GetAtt QueryRole.Arn
+  AthenaWorkGroupName:
+    Value: !Ref AthenaWorkGroup
+  DataBucketName:
+    Value: !Ref DataBucket
+  DataCredentialRoleArn:
+    Value: !GetAtt DataCredentialRole.Arn
+  GlueDatabaseName:
+    Value: !Ref GlueDatabase
+  LakeFormationDataAccessRoleArn:
+    Value: !GetAtt LakeFormationDataAccessRole.Arn
+  ObservabilityBucketName:
+    Value: !Ref ObservabilityBucket
+  PlatformRoleArn:
+    Value: !GetAtt PlatformRole.Arn
+  Region:
+    Value: !Ref AWS::Region
+  ResultBucketName:
+    Value: !Ref ResultBucket
+  SecretBucketName:
+    Value: !Ref SecretBucket
+  StorageKmsKeyArn:
+    Value: !GetAtt StorageKmsKey.Arn
+  VpnValidationHttpsUrl:
+    Value: !Sub https://${VpnValidationRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${VpnValidationStage}/ip
+  UserADataRootId:
+    Value: 11111111-1111-4111-8111-111111111111
+  UserATableName:
+    Value: user_11111111111141118111111111111111__acceptance__fixture__v1
+  UserBDataRootId:
+    Value: 22222222-2222-4222-8222-222222222222
+  UserBTableName:
+    Value: user_22222222222242228222222222222222__acceptance__fixture__v1

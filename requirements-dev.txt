@@ -1,0 +1,4 @@
+-r requirements.txt
+cfn-lint
+project-standards @ git+https://github.com/antonov-andrey/project-standards.git
+pytest

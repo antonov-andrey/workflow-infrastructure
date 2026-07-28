@@ -1,0 +1,563 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Workflow Control Center development EC2 and k3s compute plane in us-east-1.
+
+Parameters:
+  Amd64AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
+    Description: Canonical Ubuntu 24.04 LTS amd64 AMI resolved at deployment time.
+
+  Arm64AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id
+    Description: Canonical Ubuntu 24.04 LTS arm64 AMI resolved at deployment time.
+
+  ComputeArchitecture:
+    Type: String
+    Default: arm64
+    AllowedValues:
+      - amd64
+      - arm64
+    Description: Architecture of the development compute instance and runtime platform.
+
+  InstanceSlot:
+    Type: String
+    Default: a
+    AllowedValues:
+      - a
+      - b
+    Description: Alternating logical slot used for explicit replacement-instance recovery.
+
+  InstanceType:
+    Type: String
+    Default: m7g.xlarge
+    AllowedPattern: '[a-z0-9.]+'
+    Description: Approved development compute instance type compatible with ComputeArchitecture.
+
+  K3sVersion:
+    Type: String
+    Default: v1.36.2+k3s1
+    AllowedPattern: 'v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+'
+    Description: Exact k3s release installed by host bootstrap.
+
+  NotificationTagValue:
+    Type: String
+    Default: workflow-control-center
+    AllowedPattern: '[a-z0-9-]+'
+    Description: Stable project tag value.
+
+  PlatformRoleName:
+    Type: String
+    Default: workflow-control-center-platform
+    AllowedPattern: '[A-Za-z0-9+=,.@_-]+'
+    Description: Existing data-plane platform role attached to the EC2 instance profile.
+
+  RetainedVolumeSizeGiB:
+    Type: Number
+    Default: 80
+    MinValue: 80
+    Description: Size of the encrypted retained Product state volume.
+
+  RetainedVolumeSnapshotId:
+    Type: String
+    Default: ''
+    AllowedPattern: '(^$|^snap-[0-9a-f]+$)'
+    Description: Optional exact snapshot used to create a replacement retained volume.
+
+  RootVolumeSizeGiB:
+    Type: Number
+    Default: 100
+    MinValue: 100
+    Description: Size of the encrypted disposable root and build-cache volume.
+
+  S3GatewayEndpointEnabled:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'false'
+      - 'true'
+    Description: Whether to create the no-hourly-charge S3 gateway endpoint.
+
+Conditions:
+  HasRetainedVolumeSnapshot: !Not [!Equals [!Ref RetainedVolumeSnapshotId, '']]
+  IsAmd64: !Equals [!Ref ComputeArchitecture, amd64]
+  UseS3GatewayEndpoint: !Equals [!Ref S3GatewayEndpointEnabled, 'true']
+
+Resources:
+  DevelopmentInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  DevelopmentInternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref DevelopmentInternetGateway
+      VpcId: !Ref DevelopmentVpc
+
+  DevelopmentRoute:
+    Type: AWS::EC2::Route
+    DependsOn: DevelopmentInternetGatewayAttachment
+    Properties:
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref DevelopmentInternetGateway
+      RouteTableId: !Ref DevelopmentRouteTable
+
+  DevelopmentRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref DevelopmentVpc
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  DevelopmentS3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: UseS3GatewayEndpoint
+    Properties:
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: s3:*
+            Resource: '*'
+      RouteTableIds:
+        - !Ref DevelopmentRouteTable
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcEndpointType: Gateway
+      VpcId: !Ref DevelopmentVpc
+
+  DevelopmentSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Egress-only Workflow Control Center development compute.
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          Description: Outbound package, image, AWS API, and Product traffic.
+          IpProtocol: '-1'
+      VpcId: !Ref DevelopmentVpc
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  DevelopmentSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: 10.70.0.0/24
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref DevelopmentVpc
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  DevelopmentSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref DevelopmentRouteTable
+      SubnetId: !Ref DevelopmentSubnet
+
+  DevelopmentVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.70.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  HostInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: workflow-control-center-development
+      Roles:
+        - !Ref PlatformRoleName
+
+  RetainedSnapshotLifecyclePolicy:
+    Type: AWS::DLM::LifecyclePolicy
+    Properties:
+      Description: Workflow Control Center retained volume daily snapshots
+      ExecutionRoleArn: !GetAtt RetainedSnapshotRole.Arn
+      PolicyDetails:
+        PolicyType: EBS_SNAPSHOT_MANAGEMENT
+        ResourceTypes:
+          - VOLUME
+        TargetTags:
+          - Key: workflow-control-center-retained-backup
+            Value: enabled
+        Schedules:
+          - CopyTags: true
+            CreateRule:
+              Interval: 24
+              IntervalUnit: HOURS
+              Times:
+                - '03:00'
+            Name: Daily retained volume snapshots
+            RetainRule:
+              Count: 7
+            TagsToAdd:
+              - Key: Project
+                Value: !Ref NotificationTagValue
+              - Key: Environment
+                Value: development
+              - Key: ManagedBy
+                Value: DLM
+      State: ENABLED
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development-retained
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  RetainedSnapshotRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: workflow-control-center-development-dlm
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: dlm.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: workflow-control-center-development-dlm
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:CreateSnapshot
+                  - ec2:CreateSnapshots
+                  - ec2:DeleteSnapshot
+                  - ec2:DescribeInstances
+                  - ec2:DescribeSnapshots
+                  - ec2:DescribeTags
+                  - ec2:DescribeVolumes
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - ec2:CreateTags
+                Resource: arn:aws:ec2:*::snapshot/*
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development-dlm
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  RetainedVolume:
+    Type: AWS::EC2::Volume
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AvailabilityZone: !GetAtt DevelopmentSubnet.AvailabilityZone
+      Encrypted: true
+      Size: !Ref RetainedVolumeSizeGiB
+      SnapshotId: !If [HasRetainedVolumeSnapshot, !Ref RetainedVolumeSnapshotId, !Ref AWS::NoValue]
+      VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development-retained
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: workflow-control-center-retained-backup
+          Value: enabled
+
+  SchedulerExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: workflow-control-center-development-scheduler
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: workflow-control-center-development-stop
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ec2:StopInstances
+                Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${DevelopmentInstance}
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development-scheduler
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  SchedulerGroup:
+    Type: AWS::Scheduler::ScheduleGroup
+    Properties:
+      Name: workflow-control-center-development
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  DevelopmentLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        BlockDeviceMappings:
+          - DeviceName: /dev/sda1
+            Ebs:
+              DeleteOnTermination: true
+              Encrypted: true
+              VolumeSize: !Ref RootVolumeSizeGiB
+              VolumeType: gp3
+        IamInstanceProfile:
+          Name: !Ref HostInstanceProfile
+        ImageId: !If [IsAmd64, !Ref Amd64AmiId, !Ref Arm64AmiId]
+        InstanceInitiatedShutdownBehavior: stop
+        InstanceType: !Ref InstanceType
+        MetadataOptions:
+          HttpEndpoint: enabled
+          HttpPutResponseHopLimit: 1
+          HttpTokens: required
+          InstanceMetadataTags: disabled
+        Monitoring:
+          Enabled: false
+        NetworkInterfaces:
+          - AssociatePublicIpAddress: true
+            DeleteOnTermination: true
+            DeviceIndex: 0
+            Groups:
+              - !Ref DevelopmentSecurityGroup
+            SubnetId: !Ref DevelopmentSubnet
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: workflow-control-center-development
+              - Key: Project
+                Value: !Ref NotificationTagValue
+              - Key: Environment
+                Value: development
+              - Key: ManagedBy
+                Value: CloudFormation
+              - Key: ReplacementSlot
+                Value: !Ref InstanceSlot
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: workflow-control-center-development-root
+              - Key: Project
+                Value: !Ref NotificationTagValue
+              - Key: Environment
+                Value: development
+              - Key: ManagedBy
+                Value: CloudFormation
+        UserData:
+          Fn::Base64: !Sub
+            - |
+              #!/usr/bin/env bash
+              set -euo pipefail
+              export DEBIAN_FRONTEND=noninteractive
+
+              apt-get update
+              apt-get install --no-install-recommends -y ca-certificates curl ec2-instance-connect gnupg iptables jq openssh-server rsync unzip xfsprogs
+
+              case "$(dpkg --print-architecture)" in
+                amd64) aws_cli_architecture=x86_64 ;;
+                arm64) aws_cli_architecture=aarch64 ;;
+                *) echo 'Unsupported AWS CLI architecture.' >&2; exit 1 ;;
+              esac
+              curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$aws_cli_architecture.zip" -o /tmp/awscliv2.zip
+              unzip -q /tmp/awscliv2.zip -d /tmp
+              /tmp/aws/install
+              rm -rf /tmp/aws /tmp/awscliv2.zip
+
+              install -d -m 0755 /etc/apt/keyrings
+              curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+              chmod 0644 /etc/apt/keyrings/docker.asc
+              . /etc/os-release
+              printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu %s stable\n' \
+                "$(dpkg --print-architecture)" "$VERSION_CODENAME" > /etc/apt/sources.list.d/docker.list
+              apt-get update
+              apt-get install --no-install-recommends -y docker-buildx-plugin docker-ce docker-ce-cli containerd.io
+              systemctl enable --now containerd docker ssh
+
+              curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install
+              UV_INSTALL_DIR=/usr/local/bin sh /tmp/uv-install
+              rm -f /tmp/uv-install
+              UV_PYTHON_INSTALL_DIR=/opt/python /usr/local/bin/uv python install 3.14
+              ln -sfn "$(UV_PYTHON_INSTALL_DIR=/opt/python /usr/local/bin/uv python find 3.14)" /usr/local/bin/python3.14
+
+              retained_volume_id='${RetainedVolumeId}'
+              retained_volume_serial="$(printf '%s' "$retained_volume_id" | tr -d '-')"
+              retained_device="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$retained_volume_serial"
+              for attempt in $(seq 1 180); do
+                if [ -b "$retained_device" ]; then
+                  break
+                fi
+                sleep 2
+              done
+              if [ ! -b "$retained_device" ]; then
+                echo 'Retained EBS device did not appear.' >&2
+                exit 1
+              fi
+              if ! blkid "$retained_device" >/dev/null 2>&1; then
+                mkfs.xfs -f "$retained_device"
+              fi
+              retained_uuid="$(blkid -s UUID -o value "$retained_device")"
+              install -d -m 0755 /srv/workflow-control-center
+              if ! grep -q "UUID=$retained_uuid " /etc/fstab; then
+                printf 'UUID=%s /srv/workflow-control-center xfs defaults,nofail,x-systemd.device-timeout=30 0 2\n' \
+                  "$retained_uuid" >> /etc/fstab
+              fi
+              mount /srv/workflow-control-center
+              install -d -m 0750 \
+                /srv/workflow-control-center/glitchtip \
+                /srv/workflow-control-center/observability \
+                /srv/workflow-control-center/postgres \
+                /srv/workflow-control-center/secrets \
+                /srv/workflow-control-center/workflow-registry \
+                /srv/workflow-control-center/workflow-run
+
+              curl -fsSL https://get.k3s.io -o /tmp/k3s-install
+              chmod 0755 /tmp/k3s-install
+              INSTALL_K3S_VERSION='${K3sVersion}' \
+                INSTALL_K3S_EXEC='server --disable traefik --secrets-encryption --write-kubeconfig-mode 0600 --node-label apwid.com/workflow-run-eligible=true' \
+                /tmp/k3s-install
+              rm -f /tmp/k3s-install
+
+              install -d -m 0755 /etc/systemd/system/k3s.service.d
+              printf '[Service]\nEnvironment=KUBECONFIG=/etc/rancher/k3s/k3s.yaml\n' \
+                > /etc/systemd/system/k3s.service.d/workflow-control-center.conf
+              cat > /etc/systemd/system/workflow-control-center-imds-deny.service <<'UNIT'
+              [Unit]
+              Description=Deny Kubernetes pod access to EC2 instance metadata
+              After=k3s.service
+              Requires=k3s.service
+
+              [Service]
+              Type=oneshot
+              RemainAfterExit=yes
+              ExecStart=/bin/sh -c '/usr/sbin/iptables -C FORWARD -s 10.42.0.0/16 -d 169.254.169.254/32 -j REJECT || /usr/sbin/iptables -I FORWARD 1 -s 10.42.0.0/16 -d 169.254.169.254/32 -j REJECT'
+              ExecStop=/bin/sh -c '/usr/sbin/iptables -D FORWARD -s 10.42.0.0/16 -d 169.254.169.254/32 -j REJECT || true'
+
+              [Install]
+              WantedBy=multi-user.target
+              UNIT
+              systemctl daemon-reload
+              systemctl enable --now k3s workflow-control-center-imds-deny
+              systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service 2>/dev/null \
+                || systemctl enable --now amazon-ssm-agent
+            - RetainedVolumeId: !Ref RetainedVolume
+      LaunchTemplateName: workflow-control-center-development
+      TagSpecifications:
+        - ResourceType: launch-template
+          Tags:
+            - Key: Name
+              Value: workflow-control-center-development
+            - Key: Project
+              Value: !Ref NotificationTagValue
+            - Key: Environment
+              Value: development
+            - Key: ManagedBy
+              Value: CloudFormation
+
+  DevelopmentInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: DevelopmentRoute
+    Properties:
+      LaunchTemplate:
+        LaunchTemplateId: !Ref DevelopmentLaunchTemplate
+        Version: !GetAtt DevelopmentLaunchTemplate.LatestVersionNumber
+
+  RetainedVolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      Device: /dev/sdf
+      InstanceId: !Ref DevelopmentInstance
+      VolumeId: !Ref RetainedVolume
+
+Outputs:
+  AccountId:
+    Value: !Ref AWS::AccountId
+  ComputeArchitecture:
+    Value: !Ref ComputeArchitecture
+  InstanceId:
+    Value: !Ref DevelopmentInstance
+  InstanceSlot:
+    Value: !Ref InstanceSlot
+  InstanceType:
+    Value: !Ref InstanceType
+  K3sVersion:
+    Value: !Ref K3sVersion
+  Region:
+    Value: !Ref AWS::Region
+  RetainedVolumeId:
+    Value: !Ref RetainedVolume
+  SchedulerExecutionRoleArn:
+    Value: !GetAtt SchedulerExecutionRole.Arn
+  SchedulerGroupName:
+    Value: !Ref SchedulerGroup
+  SecurityGroupId:
+    Value: !Ref DevelopmentSecurityGroup
+  SubnetId:
+    Value: !Ref DevelopmentSubnet
+  VpcId:
+    Value: !Ref DevelopmentVpc

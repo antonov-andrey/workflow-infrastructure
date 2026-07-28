@@ -1,0 +1,11 @@
+.spec/
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+.cfn-lint-cache/
+.aws/
+.local/
+*.py[cod]
+change-set*.json
+drift*.json
