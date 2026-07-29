@@ -84,7 +84,7 @@ IMDSv2 обязателен, hop limit равен `1`. Kubernetes workloads до
 
 ## Диски И Постоянное Состояние
 
-Заменяемый root/scratch volume — encrypted gp3 `100 GiB`. Он хранит OS, k3s datastore, containerd, Docker/BuildKit cache, images и `emptyDir`; удаляется при замене instance и не получает snapshots.
+Заменяемый root/scratch volume — encrypted gp3 `100 GiB`. Он хранит OS, k3s datastore, containerd, Docker/BuildKit cache, `emptyDir`, текущую копию infrastructure control source и host service definitions; удаляется при замене instance и не получает snapshots. Exact Product source releases и их deployment artifacts на root volume не хранятся.
 
 Отдельный encrypted gp3 volume `80 GiB` хранит:
 
@@ -93,12 +93,17 @@ IMDSv2 обязателен, hop limit равен `1`. Kubernetes workloads до
   glitchtip/
   observability/
   postgres/
+  release/
+    current -> releases/<release>/
+    releases/
   secrets/
   workflow-registry/
   workflow-run/
 ```
 
-Volume имеет `DeletionPolicy: Retain` и `UpdateReplacePolicy: Retain`. Ordinary stop/start сохраняет его. Instance replacement повторно подключает тот же volume. Семь ежедневных incremental snapshots обеспечивают восстановление на новый volume.
+`release/releases/<release>/` содержит exact source graph, source manifest, Product release manifest, Kustomize render, release-local ingress manifest и Helm archives. `release/current` является абсолютной атомарно заменяемой ссылкой только на полностью принятый child release. Root-volume `/opt/workflow-infrastructure/current` является восстановимой ссылкой на retained `release/current`, а не владельцем Product release.
+
+Volume имеет `DeletionPolicy: Retain` и `UpdateReplacePolicy: Retain`. Ordinary stop/start сохраняет его. Instance replacement повторно подключает тот же volume. Семь ежедневных incremental snapshots обеспечивают восстановление на новый volume, включая exact current Product release, необходимый для пересоздания disposable k3s.
 
 `postgres/` физически объединяет БД `apwid`, `apwid_test`, `zitadel` и `glitchtip`, но их логические lifecycle различаются. Product reset может пересоздать только `apwid`, `apwid_test`, workflow registry, WorkflowRun storage и явно выбранные Product data-plane objects. Он сохраняет ZITADEL users, password hashes, identity-provider links, Product role grants, GlitchTip database, uploaded files и source-map state.
 
@@ -130,11 +135,22 @@ Workflow, browser, VPN provider, WorkflowSource candidate test и credentialless
 
 Локальный orchestrator принимает только чистые exact checkouts требуемых репозиториев. Для каждого source он проверяет remote URL, commit SHA, отсутствие untracked/modified files и опубликованность exact commit в upstream. Исходники передаются через rsync поверх SSH-over-SSM; EC2 не хранит GitHub credentials.
 
-Передаваемый набор содержит только tracked required files. Orchestrator создаёт content manifest, проверяет его на host, помещает source в staging и атомарно переключает current release source только после полной передачи. Release manifest сохраняет repository URLs, source commit SHAs, archive/content digests, runtime platform, immutable image digests, exact Helm chart versions/archive digests, release-local ingress-nginx source URL/digest, digest применённого Kubernetes render и timestamp deployment.
+Передаваемый набор содержит только tracked required files. Orchestrator создаёт content manifest, проверяет его на host и помещает exact source release на retained volume. Product current links переключаются атомарно только после полной Product acceptance. Release manifest сохраняет repository URLs, source commit SHAs, archive/content digests, runtime platform, immutable image digests, exact Helm chart versions/archive digests, release-local ingress-nginx source URL/digest, digest применённого Kubernetes render и timestamp deployment.
 
 Platform images собираются на EC2 через Docker Buildx для exact target platform и публикуются в persistent cluster-local OCI registry по immutable digest. User `WorkflowSourceVersion` images продолжают собираться cluster-local rootless BuildKit и принимаются только после platform и publisher validation. Runtime registry и accepted workflow images находятся на retained volume.
 
 Deployment сначала сохраняет versioned ingress-nginx manifest и exact Helm chart archives внутри immutable release, затем собирает все images и source-map artifacts и фиксирует exact image digests в одном Kustomize render. Install не применяет remote URL или mutable chart reference напрямую. Release становится active только после rollout readiness, Product smoke и exact current-assets verification. При failure восстанавливаются previous Helm revisions, previous release-local ingress manifest и previous exact render; частично собранный набор не становится current.
+
+Replacement или snapshot recovery сначала публикует на disposable root только текущий trusted infrastructure control source. Этот control source проверяет retained current link, оба release manifests, exact source/render digests и каждый tracked source byte до восстановления `/opt/workflow-infrastructure/current`. После этого Product-owned `recover`:
+
+- принимает release identity и target platform только из сохранённого manifest;
+- требует уже сохранённые Helm archives и ingress manifest и никогда не скачивает им замену;
+- требует все exact image digests в retained registry;
+- восстанавливает retained PostgreSQL, secrets, ZITADEL, GlitchTip и source maps;
+- применяет сохранённый exact render и переустанавливает renewable credential service;
+- не собирает Product images, не создаёт новый release и не переписывает release manifest.
+
+Таким образом новый disposable k3s восстанавливается из snapshot-owned state с той же release identity. Обычный новый deploy после replacement не является recovery и не может подменять этот контракт.
 
 ## Платформа Runtime
 

@@ -634,6 +634,7 @@ Resources:
                 /srv/workflow-control-center/glitchtip \
                 /srv/workflow-control-center/observability \
                 /srv/workflow-control-center/postgres \
+                /srv/workflow-control-center/release \
                 /srv/workflow-control-center/secrets \
                 /srv/workflow-control-center/workflow-registry \
                 /srv/workflow-control-center/workflow-run

@@ -164,6 +164,7 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
     assert "K3sInstallScriptSha256" in user_data
     assert "sha256sum --check --strict" in user_data
     assert "uv python install 3.14" in user_data
+    assert "/srv/workflow-control-center/release" in user_data
 
     launch_template_reference = {
         "LaunchTemplateId": {"Ref": "DevelopmentLaunchTemplate"},
@@ -836,6 +837,16 @@ def test_replace_uses_controlled_detach_and_creation_guard(
     )
     monkeypatch.setattr(
         environment,
+        "_retained_product_release_link_restore",
+        lambda: operation_list.append("link"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_product_recovery_apply_run",
+        lambda: operation_list.append("recover"),
+    )
+    monkeypatch.setattr(
+        environment,
         "_product_recovery_acceptance_run",
         lambda: operation_list.append("accept"),
     )
@@ -852,6 +863,8 @@ def test_replace_uses_controlled_detach_and_creation_guard(
         "start",
         "disable-guard",
         "publish",
+        "link",
+        "recover",
         "accept",
     ]
 
@@ -898,6 +911,16 @@ def test_restore_combines_snapshot_and_creation_guard_in_controlled_replacement(
     )
     monkeypatch.setattr(
         environment,
+        "_retained_product_release_link_restore",
+        lambda: operation_list.append("link"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_product_recovery_apply_run",
+        lambda: operation_list.append("recover"),
+    )
+    monkeypatch.setattr(
+        environment,
         "_product_recovery_acceptance_run",
         lambda: operation_list.append("accept"),
     )
@@ -915,6 +938,8 @@ def test_restore_combines_snapshot_and_creation_guard_in_controlled_replacement(
         "start",
         "disable-guard",
         "publish",
+        "link",
+        "recover",
         "accept",
     ]
 
@@ -1115,6 +1140,170 @@ def test_connect_forwards_the_remote_ingress_port_to_local_8080(
     }
 
 
+def _retained_product_release_prepare(
+    release_root_path: Path,
+    *,
+    release_name: str,
+) -> None:
+    """Create one internally consistent retained Product release fixture."""
+
+    source_identity_by_name_map: dict[str, dict[str, str]] = {}
+    repository_by_name_map: dict[str, dict[str, object]] = {}
+    for index, repository_name in enumerate(
+        [
+            "workflow-infrastructure",
+            *development_environment.PRODUCT_SOURCE_REPOSITORY_NAME_LIST,
+        ],
+        start=1,
+    ):
+        source_path = release_root_path / "sources" / repository_name / "tracked.txt"
+        source_path.parent.mkdir(parents=True)
+        source_payload = f"{repository_name}-source\n".encode()
+        source_path.write_bytes(source_payload)
+        source_identity = {
+            "archive_sha256": f"{index:x}".zfill(64),
+            "commit_sha": f"{index:x}".zfill(40),
+            "repository_url": development_environment.REPOSITORY_URL_BY_NAME_MAP[
+                repository_name
+            ],
+        }
+        source_identity_by_name_map[repository_name] = source_identity
+        repository_by_name_map[repository_name] = {
+            **source_identity,
+            "file_sha256_by_path_map": {
+                "tracked.txt": hashlib.sha256(source_payload).hexdigest()
+            },
+            "submodule_by_path_map": {},
+        }
+    source_manifest = {
+        "release": release_name,
+        "repository_by_name_map": repository_by_name_map,
+    }
+    source_manifest_bytes = (
+        json.dumps(source_manifest, indent=2, sort_keys=True) + "\n"
+    ).encode()
+    (release_root_path / "source-manifest.json").write_bytes(source_manifest_bytes)
+    render_bytes = b"apiVersion: v1\nkind: List\nitems: []\n"
+    (release_root_path / "render.yaml").write_bytes(render_bytes)
+    (release_root_path / "release-manifest.json").write_text(
+        json.dumps(
+            {
+                "release": release_name,
+                "render_sha256": hashlib.sha256(render_bytes).hexdigest(),
+                "source_by_name_map": source_identity_by_name_map,
+                "source_manifest_sha256": hashlib.sha256(
+                    source_manifest_bytes
+                ).hexdigest(),
+                "target_platform": "linux/arm64",
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def test_host_product_release_activation_is_verified_retained_and_atomic(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Only a byte-exact retained release becomes current on retained and root volumes."""
+
+    retained_release_root_path = tmp_path / "retained/release"
+    release_root_path = retained_release_root_path / "releases/20260728120000000000"
+    current_release_path = retained_release_root_path / "current"
+    current_source_path = tmp_path / "root/current"
+    _retained_product_release_prepare(
+        release_root_path,
+        release_name=release_root_path.name,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_RELEASE_ROOT_PATH",
+        retained_release_root_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_CURRENT_RELEASE_PATH",
+        current_release_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RELEASE_ROOT_PATH",
+        retained_release_root_path / "releases",
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_CURRENT_SOURCE_PATH",
+        current_source_path,
+    )
+    environment = _environment_get(
+        tmp_path / "control/current/sources/workflow-infrastructure"
+    )
+    environment._is_host = True
+
+    environment.host_product_release_activate(release_root_path.name)
+
+    assert current_release_path.is_symlink()
+    assert current_release_path.resolve(strict=True) == release_root_path
+    assert current_source_path.is_symlink()
+    assert current_source_path.resolve(strict=True) == release_root_path
+
+
+def test_host_product_release_restore_rejects_changed_tracked_source(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A snapshot cannot execute Product recovery after one retained tracked byte changes."""
+
+    retained_release_root_path = tmp_path / "retained/release"
+    release_root_path = retained_release_root_path / "releases/20260728120000000000"
+    current_release_path = retained_release_root_path / "current"
+    current_source_path = tmp_path / "root/current"
+    _retained_product_release_prepare(
+        release_root_path,
+        release_name=release_root_path.name,
+    )
+    current_release_path.parent.mkdir(parents=True, exist_ok=True)
+    current_release_path.symlink_to(release_root_path)
+    (
+        release_root_path / "sources" / "workflow-control-center" / "tracked.txt"
+    ).write_text("changed\n", encoding="utf-8")
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_RELEASE_ROOT_PATH",
+        retained_release_root_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_CURRENT_RELEASE_PATH",
+        current_release_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RELEASE_ROOT_PATH",
+        retained_release_root_path / "releases",
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_CURRENT_SOURCE_PATH",
+        current_source_path,
+    )
+    environment = _environment_get(
+        tmp_path / "control/current/sources/workflow-infrastructure"
+    )
+    environment._is_host = True
+
+    with pytest.raises(
+        DevelopmentEnvironmentError,
+        match="source file digest differs",
+    ):
+        environment.host_product_release_restore()
+
+    assert not current_source_path.exists()
+
+
 def test_deploy_activates_release_before_installing_product_and_host_services(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1123,6 +1312,7 @@ def test_deploy_activates_release_before_installing_product_and_host_services(
 
     environment = _environment_get(tmp_path / "workflow-infrastructure")
     remote_command_list_list: list[list[str]] = []
+    remote_release_root_path_list: list[Path] = []
 
     monkeypatch.setattr(environment, "_local_operator_context_validate", lambda: None)
     monkeypatch.setattr(
@@ -1131,18 +1321,27 @@ def test_deploy_activates_release_before_installing_product_and_host_services(
         lambda repository_path, repository_name: None,
     )
     monkeypatch.setattr(environment, "_instance_online_wait", lambda: None)
-    monkeypatch.setattr(
-        environment,
-        "_source_archive_publish",
-        lambda **kwargs: {
+
+    def source_archive_publish(**kwargs: object) -> dict[str, object]:
+        remote_release_root_path = kwargs["remote_release_root_path"]
+        assert isinstance(remote_release_root_path, Path)
+        remote_release_root_path_list.append(remote_release_root_path)
+        repository_name = kwargs["repository_name"]
+        assert isinstance(repository_name, str)
+        return {
             "archive_sha256": "a" * 64,
             "commit_sha": "b" * 40,
             "file_sha256_by_path_map": {},
             "repository_url": development_environment.REPOSITORY_URL_BY_NAME_MAP[
-                kwargs["repository_name"]
+                repository_name
             ],
             "submodule_by_path_map": {},
-        },
+        }
+
+    monkeypatch.setattr(
+        environment,
+        "_source_archive_publish",
+        source_archive_publish,
     )
     monkeypatch.setattr(
         environment,
@@ -1186,11 +1385,10 @@ def test_deploy_activates_release_before_installing_product_and_host_services(
         if command_list[-1] == "linux/arm64"
         and "development_kubernetes_manage.py" in " ".join(command_list)
     )
-    current_symlink_index = next(
+    current_activation_index = next(
         index
         for index, command_list in enumerate(remote_command_list_list)
-        if command_list[:3] == ["sudo", "ln", "-sfn"]
-        and str(development_environment.HOST_CURRENT_SOURCE_PATH) == command_list[-1]
+        if "host-product-release-activate" in command_list
     )
     product_host_install_index = next(
         index
@@ -1209,9 +1407,13 @@ def test_deploy_activates_release_before_installing_product_and_host_services(
     assert (
         host_prepare_index
         < product_deploy_index
-        < current_symlink_index
+        < current_activation_index
         < product_host_install_index
         < controller_host_install_index
+    )
+    assert (
+        remote_release_root_path_list
+        == [development_environment.HOST_RELEASE_ROOT_PATH] * 6
     )
 
 

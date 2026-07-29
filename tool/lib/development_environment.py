@@ -9,7 +9,7 @@ import hashlib
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
 import shlex
 import subprocess
@@ -32,7 +32,9 @@ DATA_PLANE_STACK_NAME = "workflow-control-center-development"
 HOST_CONTROL_CURRENT_SOURCE_PATH = Path("/opt/workflow-infrastructure/control/current")
 HOST_CONTROL_RELEASE_ROOT_PATH = Path("/opt/workflow-infrastructure/control/releases")
 HOST_CURRENT_SOURCE_PATH = Path("/opt/workflow-infrastructure/current")
-HOST_RELEASE_ROOT_PATH = Path("/opt/workflow-infrastructure/releases")
+HOST_RETAINED_RELEASE_ROOT_PATH = Path("/srv/workflow-control-center/release")
+HOST_RETAINED_CURRENT_RELEASE_PATH = HOST_RETAINED_RELEASE_ROOT_PATH / "current"
+HOST_RELEASE_ROOT_PATH = HOST_RETAINED_RELEASE_ROOT_PATH / "releases"
 HOST_STATE_ROOT_PATH = Path("/var/lib/workflow-infrastructure")
 HELM_BINARY_PATH = Path("/usr/local/bin/helm")
 HELM_VERSION = "v4.2.3"
@@ -380,10 +382,17 @@ class DevelopmentEnvironment:
             self._ssh_run(
                 [
                     "sudo",
-                    "ln",
-                    "-sfn",
-                    str(release_root_path),
-                    str(HOST_CURRENT_SOURCE_PATH),
+                    "python3.14",
+                    str(
+                        release_root_path
+                        / "sources"
+                        / "workflow-infrastructure"
+                        / "tool"
+                        / "development_environment_manage.py"
+                    ),
+                    "host-product-release-activate",
+                    "--release",
+                    release_name,
                 ],
                 ssh_control_path=ssh_control_path,
             )
@@ -513,6 +522,243 @@ class DevelopmentEnvironment:
             )
         self._helm_ensure()
         print(f"OK: exact Helm {HELM_VERSION} is installed")
+
+    @staticmethod
+    def _atomic_symlink_replace(*, link_path: Path, target_path: Path) -> None:
+        """Atomically replace one host symlink without exposing a missing-current gap."""
+
+        link_path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        temporary_link_path = link_path.with_name(
+            f".{link_path.name}.tmp-{os.getpid()}"
+        )
+        temporary_link_path.unlink(missing_ok=True)
+        temporary_link_path.symlink_to(target_path)
+        try:
+            os.replace(temporary_link_path, link_path)
+        finally:
+            temporary_link_path.unlink(missing_ok=True)
+
+    def _retained_product_release_validate(self, release_root_path: Path) -> str:
+        """Validate every persisted identity and tracked source byte of one Product release."""
+
+        try:
+            resolved_release_root_path = release_root_path.resolve(strict=True)
+            resolved_release_parent_path = HOST_RELEASE_ROOT_PATH.resolve(strict=True)
+        except OSError as error:
+            raise DevelopmentEnvironmentError(
+                "Retained Product release path is unavailable"
+            ) from error
+        release_name = resolved_release_root_path.name
+        if (
+            resolved_release_root_path.parent != resolved_release_parent_path
+            or not release_name.isdigit()
+            or len(release_name) not in {17, 20}
+        ):
+            raise DevelopmentEnvironmentError(
+                "Retained Product release path has an invalid exact identity"
+            )
+        source_manifest_path = resolved_release_root_path / "source-manifest.json"
+        product_manifest_path = resolved_release_root_path / "release-manifest.json"
+        render_path = resolved_release_root_path / "render.yaml"
+        try:
+            source_manifest_bytes = source_manifest_path.read_bytes()
+            source_manifest = json.loads(source_manifest_bytes)
+            product_manifest = json.loads(
+                product_manifest_path.read_text(encoding="utf-8")
+            )
+            render_bytes = render_path.read_bytes()
+        except (OSError, json.JSONDecodeError) as error:
+            raise DevelopmentEnvironmentError(
+                "Retained Product release manifests are unavailable or malformed"
+            ) from error
+        if (
+            not isinstance(source_manifest, Mapping)
+            or not isinstance(product_manifest, Mapping)
+            or source_manifest.get("release") != release_name
+            or product_manifest.get("release") != release_name
+        ):
+            raise DevelopmentEnvironmentError(
+                "Retained Product release manifests have inconsistent identities"
+            )
+        if (
+            product_manifest.get("source_manifest_sha256")
+            != hashlib.sha256(source_manifest_bytes).hexdigest()
+            or product_manifest.get("render_sha256")
+            != hashlib.sha256(render_bytes).hexdigest()
+        ):
+            raise DevelopmentEnvironmentError(
+                "Retained Product release manifest digests are inconsistent"
+            )
+        target_platform = product_manifest.get("target_platform")
+        if target_platform not in {"linux/amd64", "linux/arm64"}:
+            raise DevelopmentEnvironmentError(
+                "Retained Product release target platform is invalid"
+            )
+
+        repository_by_name_map = source_manifest.get("repository_by_name_map")
+        required_repository_name_set = {
+            "workflow-infrastructure",
+            *PRODUCT_SOURCE_REPOSITORY_NAME_LIST,
+        }
+        if not isinstance(repository_by_name_map, Mapping) or set(
+            repository_by_name_map
+        ) != (required_repository_name_set):
+            raise DevelopmentEnvironmentError(
+                "Retained Product source graph is incomplete"
+            )
+        source_identity_by_name_map: dict[str, dict[str, str]] = {}
+        source_root_path = resolved_release_root_path / "sources"
+        for repository_name, repository_payload in repository_by_name_map.items():
+            if not isinstance(repository_name, str) or not isinstance(
+                repository_payload, Mapping
+            ):
+                raise DevelopmentEnvironmentError(
+                    "Retained Product source entry is malformed"
+                )
+            source_identity: dict[str, str] = {}
+            for field_name, expected_length in (
+                ("archive_sha256", 64),
+                ("commit_sha", 40),
+                ("repository_url", 0),
+            ):
+                field_value = repository_payload.get(field_name)
+                if not isinstance(field_value, str) or not field_value:
+                    raise DevelopmentEnvironmentError(
+                        f"Retained Product source {repository_name} {field_name} is invalid"
+                    )
+                if expected_length:
+                    if (
+                        len(field_value) != expected_length
+                        or field_value != field_value.lower()
+                    ):
+                        raise DevelopmentEnvironmentError(
+                            f"Retained Product source {repository_name} {field_name} is invalid"
+                        )
+                    try:
+                        int(field_value, 16)
+                    except ValueError as error:
+                        raise DevelopmentEnvironmentError(
+                            f"Retained Product source {repository_name} {field_name} is invalid"
+                        ) from error
+                source_identity[field_name] = field_value
+            if (
+                source_identity["repository_url"]
+                != REPOSITORY_URL_BY_NAME_MAP[repository_name]
+            ):
+                raise DevelopmentEnvironmentError(
+                    f"Retained Product source {repository_name} repository URL is invalid"
+                )
+            file_sha256_by_path_map = repository_payload.get("file_sha256_by_path_map")
+            if not isinstance(file_sha256_by_path_map, Mapping):
+                raise DevelopmentEnvironmentError(
+                    f"Retained Product source {repository_name} file graph is invalid"
+                )
+            repository_root_path = source_root_path / repository_name
+            for relative_path_text, expected_sha256 in file_sha256_by_path_map.items():
+                if (
+                    not isinstance(relative_path_text, str)
+                    or not relative_path_text
+                    or not isinstance(expected_sha256, str)
+                    or len(expected_sha256) != 64
+                    or expected_sha256 != expected_sha256.lower()
+                ):
+                    raise DevelopmentEnvironmentError(
+                        f"Retained Product source {repository_name} file identity is invalid"
+                    )
+                try:
+                    int(expected_sha256, 16)
+                except ValueError as error:
+                    raise DevelopmentEnvironmentError(
+                        f"Retained Product source {repository_name} file identity is invalid"
+                    ) from error
+                relative_path = PurePosixPath(relative_path_text)
+                if (
+                    relative_path.is_absolute()
+                    or not relative_path.parts
+                    or relative_path.as_posix() != relative_path_text
+                    or any(part in {"", ".", ".."} for part in relative_path.parts)
+                ):
+                    raise DevelopmentEnvironmentError(
+                        f"Retained Product source {repository_name} path is unsafe"
+                    )
+                source_path = repository_root_path.joinpath(*relative_path.parts)
+                try:
+                    source_payload = (
+                        os.readlink(source_path).encode()
+                        if source_path.is_symlink()
+                        else source_path.read_bytes()
+                    )
+                except OSError as error:
+                    raise DevelopmentEnvironmentError(
+                        f"Retained Product source file is unavailable: "
+                        f"{repository_name}/{relative_path_text}"
+                    ) from error
+                if hashlib.sha256(source_payload).hexdigest() != expected_sha256:
+                    raise DevelopmentEnvironmentError(
+                        f"Retained Product source file digest differs: "
+                        f"{repository_name}/{relative_path_text}"
+                    )
+            source_identity_by_name_map[repository_name] = source_identity
+        if product_manifest.get("source_by_name_map") != source_identity_by_name_map:
+            raise DevelopmentEnvironmentError(
+                "Retained Product and source manifests describe different source identities"
+            )
+        return release_name
+
+    def host_product_release_activate(self, release_name: str) -> None:
+        """Validate and atomically activate one accepted retained Product release."""
+
+        if not self._is_host:
+            raise DevelopmentEnvironmentError(
+                "host-product-release-activate is supported only on the development host"
+            )
+        release_root_path = HOST_RELEASE_ROOT_PATH / release_name
+        accepted_release_name = self._retained_product_release_validate(
+            release_root_path
+        )
+        if accepted_release_name != release_name:
+            raise DevelopmentEnvironmentError(
+                "Retained Product release activation changed exact identity"
+            )
+        self._atomic_symlink_replace(
+            link_path=HOST_RETAINED_CURRENT_RELEASE_PATH,
+            target_path=release_root_path,
+        )
+        self._atomic_symlink_replace(
+            link_path=HOST_CURRENT_SOURCE_PATH,
+            target_path=HOST_RETAINED_CURRENT_RELEASE_PATH,
+        )
+        print(f"OK: retained Product release {release_name} is current")
+
+    def host_product_release_restore(self) -> None:
+        """Validate the snapshot-owned current release and restore its root-volume link."""
+
+        if not self._is_host:
+            raise DevelopmentEnvironmentError(
+                "host-product-release-restore is supported only on the development host"
+            )
+        if not HOST_RETAINED_CURRENT_RELEASE_PATH.is_symlink():
+            raise DevelopmentEnvironmentError(
+                "Retained Product current-release link is unavailable"
+            )
+        try:
+            release_root_path = HOST_RETAINED_CURRENT_RELEASE_PATH.resolve(strict=True)
+        except OSError as error:
+            raise DevelopmentEnvironmentError(
+                "Retained Product current-release link is broken"
+            ) from error
+        if os.readlink(HOST_RETAINED_CURRENT_RELEASE_PATH) != str(release_root_path):
+            raise DevelopmentEnvironmentError(
+                "Retained Product current-release link is not an exact absolute target"
+            )
+        release_name = self._retained_product_release_validate(release_root_path)
+        self._atomic_symlink_replace(
+            link_path=HOST_CURRENT_SOURCE_PATH,
+            target_path=HOST_RETAINED_CURRENT_RELEASE_PATH,
+        )
+        print(
+            f"OK: retained Product release {release_name} root-volume link is restored"
+        )
 
     def _helm_ensure(self) -> None:
         """Install the pinned Helm release atomically after archive verification."""
@@ -705,6 +951,8 @@ WantedBy=multi-user.target
         self.start()
         self._replacement_guard_disable()
         self._infrastructure_source_publish()
+        self._retained_product_release_link_restore()
+        self._product_recovery_apply_run()
         self._product_recovery_acceptance_run()
         print(f"OK: retained state restored and accepted from {snapshot_id}")
 
@@ -726,6 +974,8 @@ WantedBy=multi-user.target
         self.start()
         self._replacement_guard_disable()
         self._infrastructure_source_publish()
+        self._retained_product_release_link_restore()
+        self._product_recovery_apply_run()
         self._product_recovery_acceptance_run()
         print(
             f"OK: replacement instance in slot {replacement_slot} accepted the retained volume"
@@ -1454,6 +1704,38 @@ WantedBy=multi-user.target
                 (
                     f"sudo python3.14 {HOST_CURRENT_SOURCE_PATH}/sources/workflow-control-center/"
                     "tool/development_kubernetes_manage.py recovery-acceptance"
+                )
+            ]
+        )
+
+    def _retained_product_release_link_restore(self) -> None:
+        """Restore `/opt` access only after trusted infrastructure validates retained source."""
+
+        self._ssm_shell_run(
+            [
+                (
+                    f"sudo python3.14 {HOST_CONTROL_CURRENT_SOURCE_PATH}/sources/workflow-infrastructure/"
+                    "tool/development_environment_manage.py host-product-release-restore"
+                )
+            ]
+        )
+
+    def _product_recovery_apply_run(self) -> None:
+        """Reapply the exact retained Product release and reinstall its host service."""
+
+        self._ssm_shell_run(
+            [
+                (
+                    f"sudo python3.14 {HOST_CURRENT_SOURCE_PATH}/sources/workflow-control-center/"
+                    "tool/development_kubernetes_manage.py recover"
+                )
+            ]
+        )
+        self._ssm_shell_run(
+            [
+                (
+                    f"sudo python3.14 {HOST_CURRENT_SOURCE_PATH}/sources/workflow-control-center/"
+                    "tool/development_kubernetes_manage.py host-install"
                 )
             ]
         )

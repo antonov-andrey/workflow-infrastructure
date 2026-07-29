@@ -66,13 +66,13 @@ python tool/development_environment_manage.py deploy
 1. определяет все необходимые source repositories из Product release contract;
 2. проверяет clean worktrees, exact upstream commits и remote URLs;
 3. передаёт только tracked required files через rsync over SSH-over-SSM;
-4. проверяет content manifest на host и атомарно публикует source release;
+4. проверяет content manifest на host и публикует exact source release в retained `release/releases/<release>/`;
 5. из exact infrastructure source атомарно устанавливает checksum-pinned Helm для фактической host architecture;
 6. определяет единую Linux OCI platform по eligible Kubernetes nodes;
 7. сохраняет exact Helm charts и release-local ingress-nginx manifest с SHA-256 provenance;
 8. собирает platform images и source maps, публикует immutable digests в retained local registry;
 9. вызывает Product-owned secret restore, renewable credential refresh, render/apply/smoke path из переданного WCC source;
-10. активирует release и переустанавливает host credential timer только после полной readiness/smoke либо восстанавливает previous Helm revisions, ingress и exact render.
+10. после полной readiness/smoke атомарно переключает retained `release/current` и восстановимую root-volume ссылку `/opt/workflow-infrastructure/current`, затем переустанавливает host credential timer; при failure восстанавливает previous Helm revisions, ingress и exact render, не меняя current links.
 
 Команда не выполняет `git clone` на host и не сохраняет GitHub credentials. Dirty или unpublished source блокирует deployment. AWS credential-process JSON не входит в source/release manifest, retained secret export или operator output; его обновляет Product-owned systemd timer из exact current WCC release.
 
@@ -94,9 +94,18 @@ AWS, infrastructure, cluster и Product findings показываются раз
 python tool/development_environment_manage.py restore --snapshot-id <snapshot-id>
 ```
 
-`restore` создаёт новый encrypted retained volume из exact snapshot, не изменяя source snapshot и старый retained volume, подключает его к replacement instance и запускает полный recovery acceptance. Переключение current retained volume происходит только после успешной проверки Product и обязательного состояния.
+`restore` создаёт новый encrypted retained volume из exact snapshot, не изменяя source snapshot и старый retained volume, подключает его к replacement instance и запускает полный recovery acceptance. Snapshot обязан содержать retained `release/current` и соответствующий exact release; отсутствие или изменение tracked source, manifests, render, Helm archives, ingress artifact либо registry digest закрывает recovery.
 
 `replace` и `restore` задают следующий alternating slot и включённый двухчасовой replacement guard, gracefully останавливают старый instance, доказывают detachment retained EBS и только затем исполняют replacement change set. CloudFormation создаёт новую launch-template version и запускает instance лишь после обновления guard; после запуска проверяется exact version из EC2 metadata. При rollback старый volume повторно подключается к stack-declared остановленному instance до возврата ошибки. Обычный `apply` этот lifecycle не выполняет.
+
+После запуска replacement instance orchestration выполняет один порядок:
+
+1. публикует и устанавливает текущий trusted infrastructure control source на disposable root;
+2. этим source проверяет retained current release manifests и каждый tracked source byte;
+3. только после проверки восстанавливает `/opt/workflow-infrastructure/current`;
+4. запускает Product-owned `recover`, который использует сохранённые image digests, charts, ingress и render без image build, artifact download, нового release или переписывания manifest;
+5. переустанавливает Product credential-refresh service;
+6. запускает отдельный полный recovery acceptance.
 
 Обычная проверка recovery выполняет:
 

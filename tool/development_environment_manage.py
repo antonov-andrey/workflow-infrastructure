@@ -14,7 +14,12 @@ for parent_path in Path(__file__).resolve().parents:
         sys.path.insert(0, str(parent_path))
     break
 
-from tool.lib.development_environment import Clock, CommandRunner, DevelopmentEnvironment, DevelopmentEnvironmentError
+from tool.lib.development_environment import (
+    Clock,
+    CommandRunner,
+    DevelopmentEnvironment,
+    DevelopmentEnvironmentError,
+)
 
 
 def _args_parse(argv_list: list[str]) -> argparse.Namespace:
@@ -41,6 +46,8 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
             "diagnose",
             "host-controller",
             "host-install",
+            "host-product-release-activate",
+            "host-product-release-restore",
             "host-prepare",
             "host-shutdown",
             "replace",
@@ -51,13 +58,24 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
             "stop",
         ],
     )
-    parser.add_argument("--snapshot-id", help="Exact retained-volume snapshot used by restore.")
-    parser.add_argument("ssh_argument_list", nargs=argparse.REMAINDER, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--release", help="Exact retained Product release to activate on the host."
+    )
+    parser.add_argument(
+        "--snapshot-id", help="Exact retained-volume snapshot used by restore."
+    )
+    parser.add_argument(
+        "ssh_argument_list", nargs=argparse.REMAINDER, help=argparse.SUPPRESS
+    )
     args = parser.parse_args(argv_list)
     if args.command == "restore" and not args.snapshot_id:
         parser.error("--snapshot-id is required for restore")
     if args.snapshot_id and args.command != "restore":
         parser.error("--snapshot-id is supported only for restore")
+    if args.command == "host-product-release-activate" and not args.release:
+        parser.error("--release is required for host-product-release-activate")
+    if args.release and args.command != "host-product-release-activate":
+        parser.error("--release is supported only for host-product-release-activate")
     if args.ssh_argument_list and args.command != "ssh":
         parser.error("arguments after the command are supported only for ssh")
     if args.ssh_argument_list[:1] == ["--"]:
@@ -77,7 +95,9 @@ def main(argv_list: list[str]) -> int:
 
     args = _args_parse(argv_list)
     project_root_path = Path(__file__).resolve().parents[1]
-    environment = DevelopmentEnvironment(clock=Clock(), project_root_path=project_root_path, runner=CommandRunner())
+    environment = DevelopmentEnvironment(
+        clock=Clock(), project_root_path=project_root_path, runner=CommandRunner()
+    )
     try:
         if args.command == "apply":
             environment.apply()
@@ -93,6 +113,10 @@ def main(argv_list: list[str]) -> int:
             environment.host_controller()
         elif args.command == "host-install":
             environment.host_install()
+        elif args.command == "host-product-release-activate":
+            environment.host_product_release_activate(args.release)
+        elif args.command == "host-product-release-restore":
+            environment.host_product_release_restore()
         elif args.command == "host-prepare":
             environment.host_prepare()
         elif args.command == "host-shutdown":
