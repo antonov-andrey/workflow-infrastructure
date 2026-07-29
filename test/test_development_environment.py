@@ -2321,6 +2321,21 @@ def test_connect_forwards_the_remote_ingress_port_to_local_8080(
     }
 
 
+def test_cli_interrupt_returns_standard_status_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An operator Ctrl+C must stop a foreground command without a Python traceback."""
+
+    def connect_interrupted(_environment: DevelopmentEnvironment) -> int:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(DevelopmentEnvironment, "connect", connect_interrupted)
+
+    assert development_environment_manage.main(["connect"]) == 130
+    assert capsys.readouterr() == ("", "")
+
+
 def _retained_product_release_prepare(
     release_root_path: Path,
     *,

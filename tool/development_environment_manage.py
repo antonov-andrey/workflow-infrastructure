@@ -148,6 +148,8 @@ def main(argv_list: list[str]) -> int:
     except DevelopmentEnvironmentError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        return 130
     return 0
 
 
