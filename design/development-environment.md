@@ -142,7 +142,7 @@ state exact policy: `ENABLED` обязателен, а `ERROR` является 
 
 ## k3s И Bootstrap
 
-k3s version закрепляется явно. Single-node server включает secrets encryption, не публикует Kubernetes API наружу и не использует встроенный Traefik. Ingress-nginx и все Product manifests отслеживаются проектом `workflow-control-center`.
+k3s version закрепляется явно. Single-node server включает secrets encryption, не публикует Kubernetes API наружу и не использует встроенный Traefik. Ingress-nginx и все Product manifests отслеживаются проектом `workflow-control-center`. Каждый Product Pod явно задаёт `serviceAccountName` и `automountServiceAccountToken`: token разрешён только workload’ам с доказанным Kubernetes API contract, а pinned third-party Helm charts проходят тот же fail-closed workload classification до установки.
 
 Cloud-init/UserData выполняет только:
 
