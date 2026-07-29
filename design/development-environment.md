@@ -131,6 +131,11 @@ backup tag. Текущий volume никогда не входит в cleanup. �
 сохраняет одну непосредственную точку ручного rollback без неограниченного gp3 и
 snapshot fan-out.
 
+DLM schedule использует `CopyTags=true`, поэтому snapshot наследует stack-owned
+volume tags и не повторяет те же keys через `TagsToAdd`. Приёмка проверяет не
+только CloudFormation status и drift, но и provider state exact policy:
+`ENABLED` обязателен, а `ERROR` является отказом apply и явно виден в `status`.
+
 `postgres/` физически объединяет БД `apwid`, `apwid_test`, `zitadel` и `glitchtip`, но их логические lifecycle различаются. Product reset может пересоздать только `apwid`, `apwid_test`, workflow registry, WorkflowRun storage и явно выбранные Product data-plane objects. Он сохраняет ZITADEL users, password hashes, identity-provider links, Product role grants, GlitchTip database, uploaded files и source-map state.
 
 ## k3s И Bootstrap

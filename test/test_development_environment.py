@@ -258,6 +258,8 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
     ]["PolicyDetails"]["Schedules"][0]
     assert snapshot_schedule["CreateRule"]["Interval"] == 24
     assert snapshot_schedule["RetainRule"]["Count"] == 7
+    assert snapshot_schedule["CopyTags"] is True
+    assert "TagsToAdd" not in snapshot_schedule
 
     launch_template_data = resource_by_name_map["DevelopmentLaunchTemplate"][
         "Properties"
@@ -350,6 +352,55 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
         "DevelopmentRoute",
         "InstanceCreationGuardSchedule",
     ]
+
+
+def test_retained_snapshot_policy_requires_provider_enabled_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """CloudFormation success must not hide an inoperable DLM provider policy."""
+
+    environment = _environment_get(tmp_path)
+    policy_payload = {
+        "Policy": {
+            "State": "ERROR",
+            "StatusMessage": "Duplicate tag key 'ManagedBy' specified.",
+        }
+    }
+    monkeypatch.setattr(
+        environment,
+        "_stack_resource_id_by_logical_name_map_get",
+        lambda stack_name: {
+            "RetainedSnapshotLifecyclePolicy": "policy-0123456789abcdef0"
+        },
+    )
+
+    def aws_json_get(aws_argument_list: list[str]) -> dict[str, object]:
+        """Return one controlled DLM provider status."""
+
+        assert aws_argument_list == [
+            "dlm",
+            "get-lifecycle-policy",
+            "--policy-id",
+            "policy-0123456789abcdef0",
+        ]
+        return policy_payload
+
+    monkeypatch.setattr(environment, "_aws_json_get", aws_json_get)
+
+    assert environment._retained_snapshot_policy_status_get() == {
+        "policy_id": "policy-0123456789abcdef0",
+        "state": "ERROR",
+        "status_message": "Duplicate tag key 'ManagedBy' specified.",
+    }
+    with pytest.raises(
+        DevelopmentEnvironmentError,
+        match="Retained snapshot lifecycle policy is ERROR",
+    ):
+        environment._retained_snapshot_policy_validate()
+
+    policy_payload["Policy"] = {"State": "ENABLED", "StatusMessage": ""}
+    environment._retained_snapshot_policy_validate()
 
 
 def test_data_plane_template_adds_compute_trust_without_narrowing_platform_permissions() -> (
@@ -2065,6 +2116,15 @@ def test_status_includes_remote_host_readiness_and_activity(
         "_latest_snapshot_id_get",
         lambda volume_id: "snap-latest",
     )
+    monkeypatch.setattr(
+        environment,
+        "_retained_snapshot_policy_status_get",
+        lambda: {
+            "policy_id": "policy-0123456789abcdef0",
+            "state": "ENABLED",
+            "status_message": "",
+        },
+    )
     monkeypatch.setattr(environment, "_stop_lease_payload_get", lambda: {"state": "on"})
     monkeypatch.setattr(
         environment,
@@ -2080,6 +2140,7 @@ def test_status_includes_remote_host_readiness_and_activity(
     assert payload["host_status_probe"] == "ok"
     assert payload["kubernetes_node_status"] == "ready"
     assert payload["retained_mount_status"] == "ready"
+    assert payload["retained_snapshot_policy"]["state"] == "ENABLED"
     assert payload["ssm_ping_status"] == "Online"
     assert payload["wcc_activity"] == "busy"
 

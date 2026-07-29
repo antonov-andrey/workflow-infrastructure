@@ -245,6 +245,7 @@ class DevelopmentEnvironment:
         self._replacement_guard_disable()
         self._stack_drift_validate(DATA_PLANE_STACK_NAME)
         self._stack_drift_validate(COMPUTE_STACK_NAME)
+        self._retained_snapshot_policy_validate()
         print("OK: development data-plane and compute stacks are applied")
 
     def connect(self) -> int:
@@ -1312,6 +1313,9 @@ WantedBy=multi-user.target
                     ),
                     "retained_volume_source_snapshot_id": output_by_name_map.get(
                         "RetainedVolumeSourceSnapshotId", ""
+                    ),
+                    "retained_snapshot_policy": (
+                        self._retained_snapshot_policy_status_get()
                     ),
                     "ssm_ping_status": ssm_ping_status,
                     "stop_lease": self._stop_lease_payload_get(),
@@ -2662,6 +2666,49 @@ WantedBy=multi-user.target
                 "Retained EBS volume response is malformed"
             )
         return volume_list[0]
+
+    def _retained_snapshot_policy_status_get(self) -> dict[str, str]:
+        """Return safe provider status for the exact stack-owned DLM policy."""
+
+        resource_id_by_logical_name_map = (
+            self._stack_resource_id_by_logical_name_map_get(COMPUTE_STACK_NAME)
+        )
+        policy_id = resource_id_by_logical_name_map.get(
+            "RetainedSnapshotLifecyclePolicy"
+        )
+        if not policy_id:
+            raise DevelopmentEnvironmentError(
+                "Compute stack has no retained snapshot lifecycle policy"
+            )
+        payload = self._aws_json_get(
+            ["dlm", "get-lifecycle-policy", "--policy-id", policy_id]
+        )
+        policy = payload.get("Policy")
+        if not isinstance(policy, dict):
+            raise DevelopmentEnvironmentError(
+                "DLM retained snapshot policy response is malformed"
+            )
+        state = policy.get("State")
+        status_message = policy.get("StatusMessage", "")
+        if not isinstance(state, str) or not isinstance(status_message, str):
+            raise DevelopmentEnvironmentError(
+                "DLM retained snapshot policy status is malformed"
+            )
+        return {
+            "policy_id": policy_id,
+            "state": state,
+            "status_message": status_message,
+        }
+
+    def _retained_snapshot_policy_validate(self) -> None:
+        """Require the stack-owned snapshot policy to be operational, not only in sync."""
+
+        status = self._retained_snapshot_policy_status_get()
+        if status["state"] != "ENABLED":
+            raise DevelopmentEnvironmentError(
+                "Retained snapshot lifecycle policy is "
+                f"{status['state']}: {status['status_message'] or 'no provider detail'}"
+            )
 
     def _latest_snapshot_id_get(self, volume_id: str) -> str:
         payload = self._aws_json_get(

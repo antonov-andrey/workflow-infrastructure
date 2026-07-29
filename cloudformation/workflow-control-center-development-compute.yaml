@@ -274,13 +274,6 @@ Resources:
             Name: Daily retained volume snapshots
             RetainRule:
               Count: 7
-            TagsToAdd:
-              - Key: Project
-                Value: !Ref NotificationTagValue
-              - Key: Environment
-                Value: development
-              - Key: ManagedBy
-                Value: DLM
       State: ENABLED
       Tags:
         - Key: Name
