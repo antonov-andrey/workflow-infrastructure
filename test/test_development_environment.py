@@ -480,6 +480,8 @@ def test_price_lookup_requires_one_exact_current_price(
                 "term": {
                     "priceDimensions": {
                         "dimension": {
+                            "beginRange": "0",
+                            "endRange": "Inf",
                             "pricePerUnit": {"USD": "0.0800000000"},
                             "unit": "GB-Mo",
                         }
@@ -500,6 +502,75 @@ def test_price_lookup_requires_one_exact_current_price(
         usage_type="EBS:VolumeUsage.gp3",
     )
     assert price == Decimal("0.0800000000")
+
+
+def test_price_dimension_lookup_preserves_every_tier_and_service(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Usage-based review must retain exact tier boundaries instead of cherry-picking one rate."""
+
+    environment = _environment_get(tmp_path)
+    product_payload = {
+        "product": {"attributes": {"usagetype": "Requests-Tier1"}},
+        "terms": {
+            "OnDemand": {
+                "term": {
+                    "priceDimensions": {
+                        "second": {
+                            "beginRange": "1000",
+                            "endRange": "Inf",
+                            "pricePerUnit": {"USD": "0.0000040000"},
+                            "unit": "Requests",
+                        },
+                        "first": {
+                            "beginRange": "0",
+                            "endRange": "1000",
+                            "pricePerUnit": {"USD": "0.0000050000"},
+                            "unit": "Requests",
+                        },
+                    }
+                }
+            }
+        },
+    }
+
+    def aws_json_get(aws_argument_list: list[str]) -> dict[str, object]:
+        """Verify the exact service and filters while returning controlled tiers."""
+
+        assert aws_argument_list[:5] == [
+            "pricing",
+            "get-products",
+            "--service-code",
+            "AmazonS3",
+            "--max-results",
+        ]
+        assert (
+            "Type=TERM_MATCH,Field=regionCode,Value=us-east-1"
+            in aws_argument_list
+        )
+        return {"PriceList": [json.dumps(product_payload)]}
+
+    monkeypatch.setattr(environment, "_aws_json_get", aws_json_get)
+
+    assert environment._price_dimension_list_get(
+        service_code="AmazonS3",
+        filter_by_field_map={"regionCode": "us-east-1"},
+        usage_type="Requests-Tier1",
+    ) == [
+        {
+            "begin_range": "0",
+            "end_range": "1000",
+            "price_per_unit_usd": "0.0000050000",
+            "unit": "Requests",
+        },
+        {
+            "begin_range": "1000",
+            "end_range": "Inf",
+            "price_per_unit_usd": "0.0000040000",
+            "unit": "Requests",
+        },
+    ]
 
 
 def test_cost_review_includes_one_bounded_retained_rollback_volume(
@@ -529,6 +600,38 @@ def test_cost_review_includes_one_bounded_retained_rollback_volume(
 
     monkeypatch.setattr(environment, "_price_usd_get", price_usd_get)
 
+    def price_dimension_list_get(
+        *,
+        service_code: str,
+        filter_by_field_map: dict[str, str],
+        usage_type: str,
+    ) -> list[dict[str, str]]:
+        """Return one controlled current meter rate for every usage service."""
+
+        del service_code, filter_by_field_map
+        return [
+            {
+                "begin_range": "0",
+                "end_range": "Inf",
+                "price_per_unit_usd": (
+                    "1.0000000000"
+                    if usage_type == "us-east-1-KMS-Keys"
+                    else "0.0100000000"
+                ),
+                "unit": (
+                    "Keys"
+                    if usage_type == "us-east-1-KMS-Keys"
+                    else "Requests"
+                ),
+            }
+        ]
+
+    monkeypatch.setattr(
+        environment,
+        "_price_dimension_list_get",
+        price_dimension_list_get,
+    )
+
     environment._cost_review_record()
 
     payload = json.loads(
@@ -537,6 +640,7 @@ def test_cost_review_includes_one_bounded_retained_rollback_volume(
     assert payload["assumption"] == {
         "active_hour_count_monthly": 80,
         "gp3_gib_count_max": 260,
+        "kms_customer_managed_key_count": 1,
         "snapshot_retention_count": 7,
         "snapshot_source_volume_gib_count_max": 80,
         "snapshot_stored_gib_count_max": 560,
@@ -544,20 +648,29 @@ def test_cost_review_includes_one_bounded_retained_rollback_volume(
     assert payload["estimated_monthly_usd"] == {
         "compute": "8.00",
         "gp3_max": "20.80",
+        "kms_customer_managed_key": "1.00",
         "snapshot_max": "28.00",
-        "total_fixed_max": "56.80",
+        "total_fixed_max": "57.80",
     }
     assert payload["architecture_delta_monthly_usd"] == {
         "bounded_retained_rollback_volume_max": "6.40",
         "total_max": "6.40",
     }
-    assert set(payload["unchanged_usage_based_service_by_name_map"]) == {
+    assert set(payload["usage_based_service_by_name_map"]) == {
         "api_gateway",
         "athena",
         "data_transfer",
         "glue",
         "kms",
         "s3",
+    }
+    assert payload["usage_based_service_by_name_map"]["kms"][
+        "price_meter_by_name_map"
+    ]["customer_managed_key"]["price_dimension_list"][0] == {
+        "begin_range": "0",
+        "end_range": "Inf",
+        "price_per_unit_usd": "1.0000000000",
+        "unit": "Keys",
     }
 
 

@@ -225,6 +225,14 @@ volume. Семь daily snapshots создаются только для current 
 `7 × 80 GiB = 560 GiB`: incremental block reuse может уменьшить фактический объём,
 но не используется как недоказанное условие расчёта максимума.
 
+Перед compute apply cost review получает из AWS Price List API текущие exact
+regional price dimensions для S3 Standard storage и requests, customer-managed
+KMS keys и requests, Glue Data Catalog storage и requests, Athena scanned data,
+REST API Gateway requests и Internet data transfer. Для tiered meters сохраняются
+все диапазоны, а не один выбранный rate. Их утверждённый usage baseline не
+превращается в выдуманное фиксированное потребление: записывается, что quantity
+архитектурного delta равна нулю, пока соответствующий contract не изменён.
+
 ## Разрушающий Cutover
 
 Переход с laptop kind на EC2 k3s выполняется до production и не поддерживает параллельные local/remote deployment branches. После полной remote acceptance local-kind tooling, overlays и operational path удаляются.

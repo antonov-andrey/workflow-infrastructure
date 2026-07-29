@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import hashlib
 import io
 import json
@@ -1510,31 +1510,169 @@ WantedBy=multi-user.target
         snapshot_stored_gib_count_max = (
             snapshot_retention_count * snapshot_source_volume_gib_count_max
         )
+        usage_price_meter_spec_by_service_name_map = {
+            "api_gateway": {
+                "rest_api_request": (
+                    "AmazonApiGateway",
+                    {
+                        "operation": "ApiGatewayRequest",
+                        "regionCode": AWS_REGION,
+                        "usagetype": "USE1-ApiGatewayRequest",
+                    },
+                    "USE1-ApiGatewayRequest",
+                ),
+            },
+            "athena": {
+                "data_scanned": (
+                    "AmazonAthena",
+                    {
+                        "regionCode": AWS_REGION,
+                        "usagetype": "USE1-DataScannedInTB",
+                    },
+                    "USE1-DataScannedInTB",
+                ),
+            },
+            "data_transfer": {
+                "internet_outbound": (
+                    "AWSDataTransfer",
+                    {
+                        "fromRegionCode": AWS_REGION,
+                        "toLocation": "External",
+                        "transferType": "AWS Outbound",
+                        "usagetype": "DataTransfer-Out-Bytes",
+                    },
+                    "DataTransfer-Out-Bytes",
+                ),
+            },
+            "glue": {
+                "catalog_request": (
+                    "AWSGlue",
+                    {
+                        "regionCode": AWS_REGION,
+                        "usagetype": "USE1-Catalog-Request",
+                    },
+                    "USE1-Catalog-Request",
+                ),
+                "catalog_storage": (
+                    "AWSGlue",
+                    {
+                        "regionCode": AWS_REGION,
+                        "usagetype": "USE1-Catalog-Storage",
+                    },
+                    "USE1-Catalog-Storage",
+                ),
+            },
+            "kms": {
+                "customer_managed_key": (
+                    "awskms",
+                    {
+                        "regionCode": AWS_REGION,
+                        "usagetype": "us-east-1-KMS-Keys",
+                    },
+                    "us-east-1-KMS-Keys",
+                ),
+                "request": (
+                    "awskms",
+                    {
+                        "regionCode": AWS_REGION,
+                        "usagetype": "us-east-1-KMS-Requests",
+                    },
+                    "us-east-1-KMS-Requests",
+                ),
+            },
+            "s3": {
+                "standard_storage": (
+                    "AmazonS3",
+                    {
+                        "regionCode": AWS_REGION,
+                        "storageClass": "General Purpose",
+                        "usagetype": "TimedStorage-ByteHrs",
+                        "volumeType": "Standard",
+                    },
+                    "TimedStorage-ByteHrs",
+                ),
+                "tier_1_request": (
+                    "AmazonS3",
+                    {
+                        "group": "S3-API-Tier1",
+                        "regionCode": AWS_REGION,
+                        "usagetype": "Requests-Tier1",
+                    },
+                    "Requests-Tier1",
+                ),
+                "tier_2_request": (
+                    "AmazonS3",
+                    {
+                        "group": "S3-API-Tier2",
+                        "regionCode": AWS_REGION,
+                        "usagetype": "Requests-Tier2",
+                    },
+                    "Requests-Tier2",
+                ),
+            },
+        }
+        usage_based_service_by_name_map: dict[str, dict[str, object]] = {}
+        price_dimension_list_by_service_meter_map: dict[
+            tuple[str, str], list[dict[str, str]]
+        ] = {}
+        for (
+            service_name,
+            price_meter_spec_by_name_map,
+        ) in usage_price_meter_spec_by_service_name_map.items():
+            price_meter_by_name_map = {}
+            for meter_name, (
+                service_code,
+                filter_by_field_map,
+                usage_type,
+            ) in price_meter_spec_by_name_map.items():
+                price_dimension_list = self._price_dimension_list_get(
+                    service_code=service_code,
+                    filter_by_field_map=filter_by_field_map,
+                    usage_type=usage_type,
+                )
+                price_dimension_list_by_service_meter_map[
+                    (service_name, meter_name)
+                ] = price_dimension_list
+                price_meter_by_name_map[meter_name] = {
+                    "price_dimension_list": price_dimension_list,
+                    "service_code": service_code,
+                    "usage_type": usage_type,
+                }
+            usage_based_service_by_name_map[service_name] = {
+                "architecture_delta_monthly_usd": "0.00",
+                "assumption": (
+                    "Existing approved usage quantity is unchanged; "
+                    "architecture delta quantity is zero."
+                ),
+                "price_meter_by_name_map": price_meter_by_name_map,
+            }
+        kms_key_price_dimension_list = (
+            price_dimension_list_by_service_meter_map[
+                ("kms", "customer_managed_key")
+            ]
+        )
+        kms_key_price_set = {
+            Decimal(price_dimension["price_per_unit_usd"])
+            for price_dimension in kms_key_price_dimension_list
+            if price_dimension["unit"] == "Keys"
+        }
+        if len(kms_key_price_set) != 1:
+            raise DevelopmentEnvironmentError(
+                "AWS Pricing did not return one KMS key price"
+            )
+        kms_key_monthly_price = next(iter(kms_key_price_set))
+        kms_customer_managed_key_count = Decimal(1)
         estimated_compute_monthly = instance_hour_price * active_hour_count_monthly
         estimated_gp3_monthly_max = gp3_gib_month_price * gp3_gib_count_max
         estimated_snapshot_monthly_max = (
             snapshot_gib_month_price * snapshot_stored_gib_count_max
         )
+        estimated_kms_key_monthly = (
+            kms_key_monthly_price * kms_customer_managed_key_count
+        )
         retained_rollback_monthly_delta_max = (
             gp3_gib_month_price * Decimal(80)
         )
-        unchanged_usage_based_service_by_name_map = {
-            service_name: {
-                "architecture_delta_monthly_usd": "0.00",
-                "assumption": (
-                    "Existing approved usage-based data-plane or transfer "
-                    "contract is unchanged."
-                ),
-            }
-            for service_name in (
-                "api_gateway",
-                "athena",
-                "data_transfer",
-                "glue",
-                "kms",
-                "s3",
-            )
-        }
         review_payload = {
             "architecture_delta_monthly_usd": {
                 "bounded_retained_rollback_volume_max": str(
@@ -1548,6 +1686,9 @@ WantedBy=multi-user.target
             "assumption": {
                 "active_hour_count_monthly": int(active_hour_count_monthly),
                 "gp3_gib_count_max": int(gp3_gib_count_max),
+                "kms_customer_managed_key_count": int(
+                    kms_customer_managed_key_count
+                ),
                 "snapshot_retention_count": int(snapshot_retention_count),
                 "snapshot_source_volume_gib_count_max": int(
                     snapshot_source_volume_gib_count_max
@@ -1561,6 +1702,9 @@ WantedBy=multi-user.target
                 "gp3_max": str(
                     estimated_gp3_monthly_max.quantize(Decimal("0.01"))
                 ),
+                "kms_customer_managed_key": str(
+                    estimated_kms_key_monthly.quantize(Decimal("0.01"))
+                ),
                 "snapshot_max": str(
                     estimated_snapshot_monthly_max.quantize(Decimal("0.01"))
                 ),
@@ -1568,19 +1712,19 @@ WantedBy=multi-user.target
                     (
                         estimated_compute_monthly
                         + estimated_gp3_monthly_max
+                        + estimated_kms_key_monthly
                         + estimated_snapshot_monthly_max
                     ).quantize(Decimal("0.01"))
                 ),
             },
             "price_usd": {
                 "gp3_gib_month": str(gp3_gib_month_price),
+                "kms_customer_managed_key_month": str(kms_key_monthly_price),
                 "m7g_xlarge_hour": str(instance_hour_price),
                 "snapshot_gib_month": str(snapshot_gib_month_price),
             },
             "t_calculate": self._clock.now().isoformat().replace("+00:00", "Z"),
-            "unchanged_usage_based_service_by_name_map": (
-                unchanged_usage_based_service_by_name_map
-            ),
+            "usage_based_service_by_name_map": usage_based_service_by_name_map,
         }
         review_path = self._project_root_path / ".local" / "cost-review.json"
         review_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -2619,14 +2763,41 @@ WantedBy=multi-user.target
         self,
         filter_by_field_map: dict[str, str],
         *,
+        service_code: str = "AmazonEC2",
         unit: str,
         usage_type: str,
     ) -> Decimal:
+        price_dimension_list = self._price_dimension_list_get(
+            service_code=service_code,
+            filter_by_field_map=filter_by_field_map,
+            usage_type=usage_type,
+        )
+        price_set = {
+            Decimal(price_dimension["price_per_unit_usd"])
+            for price_dimension in price_dimension_list
+            if price_dimension["unit"] == unit
+        }
+        if len(price_set) != 1:
+            raise DevelopmentEnvironmentError(
+                f"AWS Pricing returned {len(price_set)} distinct {unit} prices "
+                f"for usage type {usage_type or 'instance'}"
+            )
+        return next(iter(price_set))
+
+    def _price_dimension_list_get(
+        self,
+        *,
+        service_code: str,
+        filter_by_field_map: dict[str, str],
+        usage_type: str,
+    ) -> list[dict[str, str]]:
+        """Return every exact current on-demand price tier for one AWS meter."""
+
         aws_argument_list = [
             "pricing",
             "get-products",
             "--service-code",
-            "AmazonEC2",
+            service_code,
             "--max-results",
             "100",
         ]
@@ -2638,7 +2809,7 @@ WantedBy=multi-user.target
         price_list = payload.get("PriceList", [])
         if not isinstance(price_list, list):
             raise DevelopmentEnvironmentError("AWS Pricing response is malformed")
-        price_set: set[Decimal] = set()
+        price_dimension_set: set[tuple[str, str, str, str]] = set()
         for product_text in price_list:
             if not isinstance(product_text, str):
                 raise DevelopmentEnvironmentError("AWS Pricing product is malformed")
@@ -2658,7 +2829,10 @@ WantedBy=multi-user.target
                 continue
             if usage_type and attribute_by_name_map.get("usagetype") != usage_type:
                 continue
-            term_by_code_map = product_payload.get("terms", {}).get("OnDemand", {})
+            term_root = product_payload.get("terms", {})
+            term_by_code_map = (
+                term_root.get("OnDemand", {}) if isinstance(term_root, dict) else {}
+            )
             if not isinstance(term_by_code_map, dict):
                 continue
             for term_payload in term_by_code_map.values():
@@ -2668,10 +2842,7 @@ WantedBy=multi-user.target
                 if not isinstance(dimension_by_code_map, dict):
                     continue
                 for dimension_payload in dimension_by_code_map.values():
-                    if (
-                        not isinstance(dimension_payload, dict)
-                        or dimension_payload.get("unit") != unit
-                    ):
+                    if not isinstance(dimension_payload, dict):
                         continue
                     price_per_unit = dimension_payload.get("pricePerUnit", {})
                     price_text = (
@@ -2679,13 +2850,46 @@ WantedBy=multi-user.target
                         if isinstance(price_per_unit, dict)
                         else None
                     )
-                    if isinstance(price_text, str):
-                        price_set.add(Decimal(price_text))
-        if len(price_set) != 1:
+                    begin_range = dimension_payload.get("beginRange")
+                    end_range = dimension_payload.get("endRange")
+                    dimension_unit = dimension_payload.get("unit")
+                    if not all(
+                        isinstance(value, str)
+                        for value in (
+                            begin_range,
+                            end_range,
+                            price_text,
+                            dimension_unit,
+                        )
+                    ):
+                        continue
+                    try:
+                        Decimal(begin_range)
+                        Decimal(price_text)
+                    except (InvalidOperation, ValueError) as error:
+                        raise DevelopmentEnvironmentError(
+                            "AWS Pricing dimension is invalid"
+                        ) from error
+                    price_dimension_set.add(
+                        (begin_range, end_range, price_text, dimension_unit)
+                    )
+        if not price_dimension_set:
             raise DevelopmentEnvironmentError(
-                f"AWS Pricing returned {len(price_set)} distinct {unit} prices for usage type {usage_type or 'instance'}"
+                f"AWS Pricing returned no price dimensions for {service_code} "
+                f"usage type {usage_type or 'unspecified'}"
             )
-        return next(iter(price_set))
+        return [
+            {
+                "begin_range": begin_range,
+                "end_range": end_range,
+                "price_per_unit_usd": price_text,
+                "unit": unit,
+            }
+            for begin_range, end_range, price_text, unit in sorted(
+                price_dimension_set,
+                key=lambda price_dimension: Decimal(price_dimension[0]),
+            )
+        ]
 
     def _remote_text_write(
         self, *, remote_path: Path, text: str, ssh_control_path: Path
