@@ -265,7 +265,7 @@ Resources:
           - Key: workflow-control-center-retained-backup
             Value: enabled
         Schedules:
-          - CopyTags: true
+          - CopyTags: false
             CreateRule:
               Interval: 24
               IntervalUnit: HOURS
@@ -274,6 +274,15 @@ Resources:
             Name: Daily retained volume snapshots
             RetainRule:
               Count: 7
+            TagsToAdd:
+              - Key: Name
+                Value: workflow-control-center-development-retained-snapshot
+              - Key: Project
+                Value: !Ref NotificationTagValue
+              - Key: Environment
+                Value: development
+              - Key: ManagedBy
+                Value: DLM
       State: ENABLED
       Tags:
         - Key: Name

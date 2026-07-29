@@ -258,8 +258,16 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
     ]["PolicyDetails"]["Schedules"][0]
     assert snapshot_schedule["CreateRule"]["Interval"] == 24
     assert snapshot_schedule["RetainRule"]["Count"] == 7
-    assert snapshot_schedule["CopyTags"] is True
-    assert "TagsToAdd" not in snapshot_schedule
+    assert snapshot_schedule["CopyTags"] is False
+    assert snapshot_schedule["TagsToAdd"] == [
+        {
+            "Key": "Name",
+            "Value": "workflow-control-center-development-retained-snapshot",
+        },
+        {"Key": "Project", "Value": {"Ref": "NotificationTagValue"}},
+        {"Key": "Environment", "Value": "development"},
+        {"Key": "ManagedBy", "Value": "DLM"},
+    ]
 
     launch_template_data = resource_by_name_map["DevelopmentLaunchTemplate"][
         "Properties"
