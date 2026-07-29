@@ -432,6 +432,68 @@ def test_data_plane_template_adds_compute_trust_without_narrowing_platform_permi
     assert template["Parameters"]["UiOrigin"]["Default"] == "http://localhost:8080"
 
 
+def test_data_plane_buckets_expose_ranges_and_reject_explicit_wrong_encryption() -> None:
+    """Direct S3 may use bucket defaults, but explicit encryption must use the exact stack key."""
+
+    project_root_path = Path(__file__).resolve().parents[1]
+    template = _template_get(
+        project_root_path, "workflow-control-center-development.yaml"
+    )
+    resource_by_name_map = template["Resources"]
+    assert isinstance(resource_by_name_map, dict)
+    expected_exposed_header_set = {
+        "Accept-Ranges",
+        "Content-Length",
+        "Content-Range",
+        "ETag",
+        "x-amz-checksum-sha256",
+        "x-amz-version-id",
+    }
+    for bucket_name in ("DataBucket", "SecretBucket", "ResultBucket"):
+        cors_rule = resource_by_name_map[bucket_name]["Properties"][
+            "CorsConfiguration"
+        ]["CorsRules"][0]
+        assert set(cors_rule["ExposedHeaders"]) == expected_exposed_header_set
+
+    for bucket_name in (
+        "DataBucket",
+        "SecretBucket",
+        "ResultBucket",
+        "ObservabilityBucket",
+    ):
+        statement_by_sid_map = {
+            statement["Sid"]: statement
+            for statement in resource_by_name_map[f"{bucket_name}Policy"][
+                "Properties"
+            ]["PolicyDocument"]["Statement"]
+        }
+        assert statement_by_sid_map["DenyExplicitNonKmsEncryption"][
+            "Condition"
+        ] == {
+            "Null": {"s3:x-amz-server-side-encryption": "false"},
+            "StringNotEquals": {
+                "s3:x-amz-server-side-encryption": "aws:kms"
+            },
+        }
+        assert statement_by_sid_map["DenyUnexpectedKmsKey"]["Condition"] == {
+            "Null": {
+                "s3:x-amz-server-side-encryption-aws-kms-key-id": "false"
+            },
+            "StringNotEquals": {
+                "s3:x-amz-server-side-encryption-aws-kms-key-id": {
+                    "Fn::GetAtt": ["StorageKmsKey", "Arn"]
+                }
+            },
+        }
+        assert statement_by_sid_map["DenyCustomerProvidedEncryption"][
+            "Condition"
+        ] == {
+            "Null": {
+                "s3:x-amz-server-side-encryption-customer-algorithm": "false"
+            }
+        }
+
+
 def test_runtime_platform_accepts_one_linux_arm64_platform(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -194,6 +194,9 @@ Resources:
             AllowedOrigins:
               - !Ref UiOrigin
             ExposedHeaders:
+              - Accept-Ranges
+              - Content-Length
+              - Content-Range
               - ETag
               - x-amz-checksum-sha256
               - x-amz-version-id
@@ -253,6 +256,9 @@ Resources:
             AllowedOrigins:
               - !Ref UiOrigin
             ExposedHeaders:
+              - Accept-Ranges
+              - Content-Length
+              - Content-Range
               - ETag
               - x-amz-checksum-sha256
               - x-amz-version-id
@@ -309,6 +315,9 @@ Resources:
             AllowedOrigins:
               - !Ref UiOrigin
             ExposedHeaders:
+              - Accept-Ranges
+              - Content-Length
+              - Content-Range
               - ETag
               - x-amz-checksum-sha256
               - x-amz-version-id
@@ -644,6 +653,34 @@ Resources:
             Condition:
               StringNotEquals:
                 s3:ResourceAccount: !Ref AWS::AccountId
+          - Sid: DenyExplicitNonKmsEncryption
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub ${DataBucket.Arn}/*
+            Condition:
+              'Null':
+                s3:x-amz-server-side-encryption: 'false'
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: aws:kms
+          - Sid: DenyUnexpectedKmsKey
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub ${DataBucket.Arn}/*
+            Condition:
+              'Null':
+                s3:x-amz-server-side-encryption-aws-kms-key-id: 'false'
+              StringNotEquals:
+                s3:x-amz-server-side-encryption-aws-kms-key-id: !GetAtt StorageKmsKey.Arn
+          - Sid: DenyCustomerProvidedEncryption
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub ${DataBucket.Arn}/*
+            Condition:
+              'Null':
+                s3:x-amz-server-side-encryption-customer-algorithm: 'false'
 
   LakeFormationDataAccessPolicy:
     Type: AWS::IAM::Policy
@@ -705,6 +742,34 @@ Resources:
             Condition:
               StringNotEquals:
                 s3:ResourceAccount: !Ref AWS::AccountId
+          - Sid: DenyExplicitNonKmsEncryption
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub ${SecretBucket.Arn}/*
+            Condition:
+              'Null':
+                s3:x-amz-server-side-encryption: 'false'
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: aws:kms
+          - Sid: DenyUnexpectedKmsKey
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub ${SecretBucket.Arn}/*
+            Condition:
+              'Null':
+                s3:x-amz-server-side-encryption-aws-kms-key-id: 'false'
+              StringNotEquals:
+                s3:x-amz-server-side-encryption-aws-kms-key-id: !GetAtt StorageKmsKey.Arn
+          - Sid: DenyCustomerProvidedEncryption
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub ${SecretBucket.Arn}/*
+            Condition:
+              'Null':
+                s3:x-amz-server-side-encryption-customer-algorithm: 'false'
 
   ResultBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -733,6 +798,34 @@ Resources:
             Condition:
               StringNotEquals:
                 s3:ResourceAccount: !Ref AWS::AccountId
+          - Sid: DenyExplicitNonKmsEncryption
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub ${ResultBucket.Arn}/*
+            Condition:
+              'Null':
+                s3:x-amz-server-side-encryption: 'false'
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: aws:kms
+          - Sid: DenyUnexpectedKmsKey
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub ${ResultBucket.Arn}/*
+            Condition:
+              'Null':
+                s3:x-amz-server-side-encryption-aws-kms-key-id: 'false'
+              StringNotEquals:
+                s3:x-amz-server-side-encryption-aws-kms-key-id: !GetAtt StorageKmsKey.Arn
+          - Sid: DenyCustomerProvidedEncryption
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub ${ResultBucket.Arn}/*
+            Condition:
+              'Null':
+                s3:x-amz-server-side-encryption-customer-algorithm: 'false'
 
   ObservabilityBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -761,6 +854,34 @@ Resources:
             Condition:
               StringNotEquals:
                 s3:ResourceAccount: !Ref AWS::AccountId
+          - Sid: DenyExplicitNonKmsEncryption
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub ${ObservabilityBucket.Arn}/*
+            Condition:
+              'Null':
+                s3:x-amz-server-side-encryption: 'false'
+              StringNotEquals:
+                s3:x-amz-server-side-encryption: aws:kms
+          - Sid: DenyUnexpectedKmsKey
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub ${ObservabilityBucket.Arn}/*
+            Condition:
+              'Null':
+                s3:x-amz-server-side-encryption-aws-kms-key-id: 'false'
+              StringNotEquals:
+                s3:x-amz-server-side-encryption-aws-kms-key-id: !GetAtt StorageKmsKey.Arn
+          - Sid: DenyCustomerProvidedEncryption
+            Effect: Deny
+            Principal: '*'
+            Action: s3:PutObject
+            Resource: !Sub ${ObservabilityBucket.Arn}/*
+            Condition:
+              'Null':
+                s3:x-amz-server-side-encryption-customer-algorithm: 'false'
 
   DataLakeSettings:
     Type: AWS::LakeFormation::DataLakeSettings
