@@ -1444,6 +1444,94 @@ def test_deploy_activates_release_before_installing_product_and_host_services(
     )
 
 
+def test_ssm_shell_run_waits_for_real_operation_and_registration_delay(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Run Command polling must outlive the AWS CLI default waiter."""
+
+    environment = _environment_get(tmp_path)
+    response_list = [
+        subprocess.CompletedProcess(
+            [],
+            255,
+            "",
+            "InvocationDoesNotExist: command is not registered yet",
+        ),
+        subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps({"Status": "Pending"}),
+            "",
+        ),
+        subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps({"Status": "InProgress"}),
+            "",
+        ),
+        subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps(
+                {
+                    "StandardErrorContent": "",
+                    "StandardOutputContent": "accepted\n",
+                    "Status": "Success",
+                }
+            ),
+            "",
+        ),
+    ]
+    monkeypatch.setattr(environment, "_ssm_command_start", lambda commands: "cmd-1")
+    monkeypatch.setattr(environment, "_instance_id_get", lambda: "i-123")
+    monkeypatch.setattr(
+        environment,
+        "_aws_run",
+        lambda arguments, check=True: response_list.pop(0),
+    )
+
+    environment._ssm_shell_run(["long recovery"])
+
+    assert response_list == []
+    assert environment._clock.monotonic() == 15
+    assert capsys.readouterr().out == "accepted\n"
+
+
+def test_ssm_shell_run_timeout_preserves_remote_command_for_diagnosis(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A local wait timeout must report but not cancel the remote operation."""
+
+    environment = _environment_get(tmp_path)
+    monkeypatch.setattr(development_environment, "SSM_COMMAND_TIMEOUT_SECONDS", 10)
+    monkeypatch.setattr(environment, "_ssm_command_start", lambda commands: "cmd-2")
+    monkeypatch.setattr(environment, "_instance_id_get", lambda: "i-123")
+    monkeypatch.setattr(
+        environment,
+        "_aws_run",
+        lambda arguments, check=True: subprocess.CompletedProcess(
+            [],
+            0,
+            json.dumps({"Status": "InProgress"}),
+            "",
+        ),
+    )
+
+    with pytest.raises(
+        DevelopmentEnvironmentError,
+        match=(
+            "SSM command cmd-2 did not finish within 10 seconds; "
+            "the remote command was not cancelled"
+        ),
+    ):
+        environment._ssm_shell_run(["long recovery"])
+
+    assert environment._clock.monotonic() == 10
+
+
 def test_host_prepare_installs_checksum_pinned_helm_atomically(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -69,6 +69,7 @@ REPOSITORY_URL_BY_NAME_MAP = {
     "workflow-infrastructure": "git@github.com:antonov-andrey/workflow-infrastructure.git",
 }
 SSM_DOCUMENT_PORT_FORWARD = "AWS-StartPortForwardingSession"
+SSM_COMMAND_TIMEOUT_SECONDS = 3600
 SSM_ONLINE_TIMEOUT_SECONDS = 1800
 STACK_POLL_INTERVAL_SECONDS = 5
 STACK_TIMEOUT_SECONDS = 3600
@@ -2173,27 +2174,31 @@ shutil.rmtree(root_path)
 
     def _ssm_shell_run(self, shell_command_list: list[str]) -> None:
         command_id = self._ssm_command_start(shell_command_list)
-        self._aws_run(
-            [
-                "ssm",
-                "wait",
-                "command-executed",
-                "--command-id",
-                command_id,
-                "--instance-id",
-                self._instance_id_get(),
-            ]
-        )
-        payload = self._aws_json_get(
-            [
-                "ssm",
-                "get-command-invocation",
-                "--command-id",
-                command_id,
-                "--instance-id",
-                self._instance_id_get(),
-            ]
-        )
+        instance_id = self._instance_id_get()
+        t_deadline = self._clock.monotonic() + SSM_COMMAND_TIMEOUT_SECONDS
+        payload: dict[str, object] | None = None
+        while self._clock.monotonic() < t_deadline:
+            payload = self._ssm_command_invocation_payload_get(
+                command_id=command_id,
+                instance_id=instance_id,
+            )
+            if payload is None or payload.get("Status") in {
+                "Delayed",
+                "InProgress",
+                "Pending",
+            }:
+                self._clock.sleep(STACK_POLL_INTERVAL_SECONDS)
+                continue
+            break
+        if payload is None or payload.get("Status") in {
+            "Delayed",
+            "InProgress",
+            "Pending",
+        }:
+            raise DevelopmentEnvironmentError(
+                f"SSM command {command_id} did not finish within "
+                f"{SSM_COMMAND_TIMEOUT_SECONDS} seconds; the remote command was not cancelled"
+            )
         print(payload.get("StandardOutputContent", ""), end="")
         error_text = payload.get("StandardErrorContent", "")
         if error_text:
@@ -2202,6 +2207,52 @@ shutil.rmtree(root_path)
             raise DevelopmentEnvironmentError(
                 f"SSM command {command_id} failed with {payload.get('Status')}"
             )
+
+    def _ssm_command_invocation_payload_get(
+        self, *, command_id: str, instance_id: str
+    ) -> dict[str, object] | None:
+        """Return one SSM invocation, tolerating its short registration delay.
+
+        Args:
+            command_id: Exact Run Command identifier.
+            instance_id: Exact target instance identifier.
+
+        Returns:
+            Invocation payload, or ``None`` while the invocation is not registered.
+        """
+
+        result = self._aws_run(
+            [
+                "ssm",
+                "get-command-invocation",
+                "--command-id",
+                command_id,
+                "--instance-id",
+                instance_id,
+                "--output",
+                "json",
+            ],
+            check=False,
+        )
+        if result.returncode != 0:
+            error_text = (result.stderr or result.stdout).strip()
+            if "InvocationDoesNotExist" in error_text:
+                return None
+            raise DevelopmentEnvironmentError(
+                f"Unable to inspect SSM command {command_id}: "
+                f"{error_text or f'exit {result.returncode}'}"
+            )
+        try:
+            payload = json.loads(result.stdout or "{}")
+        except json.JSONDecodeError as error:
+            raise DevelopmentEnvironmentError(
+                f"SSM command {command_id} returned invalid JSON"
+            ) from error
+        if not isinstance(payload, dict):
+            raise DevelopmentEnvironmentError(
+                f"SSM command {command_id} returned unexpected JSON"
+            )
+        return payload
 
     def _stack_apply(
         self,

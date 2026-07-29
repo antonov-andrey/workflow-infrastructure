@@ -80,6 +80,12 @@ Compute stack создаёт отдельную VPC, одну public subnet, Int
 
 Security group не имеет входящих правил для `22`, `80` или `443`. Обычная консоль работает через Session Manager, SSH/SCP/rsync/Remote SSH — через SSH-over-SSM, а Product HTTP — через один SSM port-forwarding session. Локальный вход Product использует `http://localhost:8080`; виртуальные hosts ZITADEL и GlitchTip используют соответствующие `*.localhost:8080` origins. Внешний публичный Product endpoint отсутствует.
 
+Длительные host-control операции через SSM Run Command ожидаются по фактическому
+invocation status, а не по короткому default waiter AWS CLI. Локальный orchestrator
+допускает до одного часа на завершение одной операции восстановления или установки,
+показывает точный command ID при timeout и не отменяет продолжающуюся удалённую
+операцию автоматически.
+
 IMDSv2 обязателен, hop limit равен `1`. Kubernetes workloads дополнительно не имеют маршрута к `169.254.169.254`. NetworkPolicy явно разделяет Product, workflow, browser, VPN, database, observability, registry и builder boundaries.
 
 ## Диски И Постоянное Состояние

@@ -55,6 +55,12 @@ python tool/development_environment_manage.py ssh -- <ssh-arguments>
 
 `ssh` использует SSH-over-SSM и поддерживает обычные SSH, SCP, rsync и Remote SSH IDE flows без inbound port `22`. Persistent SSH private key или public ingress не создаются.
 
+Host bootstrap, Product recovery и recovery acceptance выполняются через SSM Run
+Command. Orchestrator опрашивает фактический invocation status до одного часа,
+переживает краткую задержку регистрации invocation и при timeout сообщает command
+ID, не отменяя удалённую операцию. Её состояние и output после такого timeout
+проверяются через `aws ssm get-command-invocation`.
+
 ## Развёртывание Product
 
 ```bash
