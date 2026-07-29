@@ -44,6 +44,21 @@ python tool/development_environment_manage.py status
 
 `stop` выполняет тот же graceful cordon/drain/service-stop path, что и idle controller, затем удаляет pending schedule после доказанной остановки. `status` показывает instance, SSM sessions, stop lease, retained volume, latest snapshot, k3s, current release и безопасный WCC activity summary без secret values.
 
+Реальная сокращённая проверка AWS lifecycle выполняется отдельно и является
+разрушающей:
+
+```bash
+python tool/development_environment_manage.py lifecycle-acceptance
+```
+
+Она допускается только при `WCC activity=idle`, не меняет production policy
+`30 minutes / 2 hours`, временно останавливает обычный host controller и на том же
+EventBridge Scheduler target доказывает create, renewal после исходного deadline,
+fail-safe stop после прекращения renewal и `ActionAfterCompletion=DELETE`. Затем
+команда запускает тот же instance, восстанавливает обычный двухчасовой lease,
+controller, k3s и Product recovery acceptance. Любая промежуточная ошибка запускает
+тот же restoration path.
+
 ## Подключение
 
 ```bash

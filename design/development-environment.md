@@ -266,3 +266,10 @@ CloudFormation acceptance доказывает exact account/region, stack owner
 Deployment acceptance доказывает clean exact source manifests, native target platform, immutable image digests, registry persistence, rollback previous release, Product readiness, source-map publication и отсутствие credentials в source, logs, images и retained archives.
 
 Operational acceptance доказывает SSM console, port forwarding, SSH-over-SSM, 30-minute idle stop, useful-work lease renewal beyond two hours, fail-safe stop after renewal loss и все три recovery scenarios. Product acceptance следует `workflow-control-center` и выполняется через current deployed assets по SSM tunnel.
+
+Provider-independent lifecycle policy проверяется controlled clock. Отдельная
+operator-only `lifecycle-acceptance` использует фиксированную сокращённую
+конфигурацию только для реального AWS перехода create-renew-expire-delete,
+останавливает production controller на время проверки и всегда восстанавливает
+обычные интервалы, controller и Product readiness. Сокращённые интервалы не являются
+runtime configuration production service.

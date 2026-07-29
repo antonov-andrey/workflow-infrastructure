@@ -51,6 +51,7 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
             "host-prepare",
             "host-shutdown",
             "host-status",
+            "lifecycle-acceptance",
             "replace",
             "restore",
             "ssh",
@@ -130,6 +131,8 @@ def main(argv_list: list[str]) -> int:
             environment.host_shutdown()
         elif args.command == "host-status":
             environment.host_status(args.retained_volume_id)
+        elif args.command == "lifecycle-acceptance":
+            environment.lifecycle_acceptance()
         elif args.command == "replace":
             environment.replace()
         elif args.command == "restore":

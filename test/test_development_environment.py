@@ -2635,6 +2635,161 @@ def test_host_controller_discards_stale_idle_proof_on_restart(
     assert shutdown_time_list == [datetime(2026, 7, 28, 12, 30, tzinfo=UTC)]
 
 
+def test_lifecycle_acceptance_uses_short_real_lease_then_restores_production(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Short acceptance must prove renewal and fail-safe stop without changing policy."""
+
+    clock = ClockFixed()
+    environment = DevelopmentEnvironment(
+        clock=clock,
+        project_root_path=tmp_path,
+        runner=CommandRunner(),
+    )
+    event_list: list[object] = []
+    lease_duration_list: list[timedelta] = []
+
+    monkeypatch.setattr(
+        environment, "_local_operator_context_validate", lambda: event_list.append("context")
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stack_drift_validate",
+        lambda stack_name: event_list.append(("drift", stack_name)),
+    )
+    monkeypatch.setattr(
+        environment, "_instance_id_get", lambda: "i-0123456789abcdef0"
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stack_output_by_name_map_get",
+        lambda stack_name: {"RetainedVolumeId": "vol-0123456789abcdef0"},
+    )
+    monkeypatch.setattr(
+        environment,
+        "_host_status_payload_get",
+        lambda **kwargs: {"wcc_activity": "idle"},
+    )
+    monkeypatch.setattr(
+        environment,
+        "_ssm_shell_run",
+        lambda command_list: event_list.append(("ssm", command_list)),
+    )
+
+    def stop_lease_upsert(
+        *, lease_duration: timedelta = development_environment.LEASE_DURATION
+    ) -> None:
+        lease_duration_list.append(lease_duration)
+        event_list.append(("lease", lease_duration, clock.t_now))
+
+    monkeypatch.setattr(environment, "_stop_lease_upsert", stop_lease_upsert)
+
+    def stop_lease_payload_get() -> dict[str, object]:
+        if clock.t_now >= datetime(2026, 7, 28, 12, 5, 30, tzinfo=UTC):
+            return {"state": "absent"}
+        return {
+            "schedule_expression": (
+                "initial" if len(lease_duration_list) == 1 else "renewed"
+            ),
+            "state": "ENABLED",
+        }
+
+    monkeypatch.setattr(
+        environment, "_stop_lease_payload_get", stop_lease_payload_get
+    )
+
+    def instance_state_get(instance_id: str) -> str:
+        assert instance_id == "i-0123456789abcdef0"
+        if clock.t_now >= datetime(2026, 7, 28, 12, 5, 30, tzinfo=UTC):
+            return "stopped"
+        return "running"
+
+    monkeypatch.setattr(environment, "_instance_state_get", instance_state_get)
+    monkeypatch.setattr(
+        environment, "start", lambda: event_list.append(("start", clock.t_now))
+    )
+    monkeypatch.setattr(
+        environment,
+        "_product_recovery_acceptance_run",
+        lambda: event_list.append("product-acceptance"),
+    )
+
+    environment.lifecycle_acceptance()
+
+    assert lease_duration_list == [
+        development_environment.LIFECYCLE_ACCEPTANCE_INITIAL_LEASE_DURATION,
+        development_environment.LIFECYCLE_ACCEPTANCE_RENEWED_LEASE_DURATION,
+    ]
+    assert ("start", datetime(2026, 7, 28, 12, 5, 30, tzinfo=UTC)) in event_list
+    assert event_list[-1] == "product-acceptance"
+
+
+def test_lifecycle_acceptance_failure_restores_controller_and_production_lease(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A failed acceptance probe must not leave the fail-safe controller disabled."""
+
+    environment = _environment_get(tmp_path)
+    event_list: list[object] = []
+    lease_call_count = 0
+
+    monkeypatch.setattr(environment, "_local_operator_context_validate", lambda: None)
+    monkeypatch.setattr(environment, "_stack_drift_validate", lambda stack_name: None)
+    monkeypatch.setattr(
+        environment, "_instance_id_get", lambda: "i-0123456789abcdef0"
+    )
+    monkeypatch.setattr(
+        environment, "_instance_state_get", lambda instance_id: "running"
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stack_output_by_name_map_get",
+        lambda stack_name: {"RetainedVolumeId": "vol-0123456789abcdef0"},
+    )
+    monkeypatch.setattr(
+        environment,
+        "_host_status_payload_get",
+        lambda **kwargs: {"wcc_activity": "idle"},
+    )
+    monkeypatch.setattr(
+        environment,
+        "_ssm_shell_run",
+        lambda command_list: event_list.append(("ssm", command_list)),
+    )
+
+    def stop_lease_upsert(
+        *, lease_duration: timedelta = development_environment.LEASE_DURATION
+    ) -> None:
+        nonlocal lease_call_count
+        lease_call_count += 1
+        event_list.append(("lease", lease_duration))
+        if lease_call_count == 1:
+            raise DevelopmentEnvironmentError("acceptance scheduler failure")
+
+    monkeypatch.setattr(environment, "_stop_lease_upsert", stop_lease_upsert)
+    monkeypatch.setattr(
+        environment,
+        "_host_readiness_wait",
+        lambda: event_list.append("readiness"),
+    )
+
+    with pytest.raises(
+        DevelopmentEnvironmentError, match="acceptance scheduler failure"
+    ):
+        environment.lifecycle_acceptance()
+
+    assert event_list[-3:] == [
+        ("lease", development_environment.LEASE_DURATION),
+        (
+            "ssm",
+            ["sudo systemctl start workflow-control-center-host-controller"],
+        ),
+        "readiness",
+    ]
+
+
 def test_start_never_calls_ec2_when_initial_stop_lease_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

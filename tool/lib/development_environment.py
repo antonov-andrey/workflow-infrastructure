@@ -57,6 +57,11 @@ LEASE_DURATION = timedelta(hours=2)
 LEASE_GROUP_NAME = "workflow-control-center-development"
 LEASE_NAME = "workflow-control-center-development-stop"
 LEASE_RENEW_INTERVAL = timedelta(minutes=30)
+LIFECYCLE_ACCEPTANCE_INITIAL_LEASE_DURATION = timedelta(minutes=2)
+LIFECYCLE_ACCEPTANCE_RENEW_DELAY_SECONDS = 45
+LIFECYCLE_ACCEPTANCE_RENEWED_LEASE_DURATION = timedelta(minutes=4)
+LIFECYCLE_ACCEPTANCE_RENEWAL_PROOF_DELAY = timedelta(minutes=3, seconds=15)
+LIFECYCLE_ACCEPTANCE_STOP_GRACE = timedelta(minutes=2)
 PRODUCT_SOURCE_REPOSITORY_NAME_LIST = [
     "browser-runtime",
     "vpn-runtime",
@@ -958,6 +963,95 @@ WantedBy=multi-user.target
         else:
             self._runner.run(["systemctl", "stop", "k3s"], check=False)
         self._runner.run(["systemctl", "poweroff"], should_capture=False)
+
+    def lifecycle_acceptance(self) -> None:
+        """Exercise the real renewable stop lease with bounded acceptance timings.
+
+        This disruptive operator-only check leaves the production controller policy
+        unchanged. It temporarily stops that controller, creates and renews the real
+        EventBridge Scheduler lease, proves that the original deadline is superseded,
+        then proves fail-safe EC2 stop and schedule auto-deletion before restoring the
+        ordinary two-hour lease and complete host readiness.
+        """
+
+        self._local_operator_context_validate()
+        self._stack_drift_validate(COMPUTE_STACK_NAME)
+        instance_id = self._instance_id_get()
+        if self._instance_state_get(instance_id) != "running":
+            raise DevelopmentEnvironmentError(
+                "Lifecycle acceptance requires the development instance to be running"
+            )
+        host_status_payload = self._host_status_payload_get(
+            retained_volume_id=self._stack_output_by_name_map_get(
+                COMPUTE_STACK_NAME
+            )["RetainedVolumeId"]
+        )
+        if host_status_payload.get("wcc_activity") != "idle":
+            raise DevelopmentEnvironmentError(
+                "Lifecycle acceptance requires an idle Product"
+            )
+
+        is_environment_restored = False
+        try:
+            self._ssm_shell_run(
+                [
+                    "sudo systemctl stop workflow-control-center-host-controller",
+                    (
+                        "test \"$(systemctl is-active "
+                        "workflow-control-center-host-controller || true)\" = inactive"
+                    ),
+                ]
+            )
+            t_initial_lease = self._clock.now()
+            self._stop_lease_upsert(
+                lease_duration=LIFECYCLE_ACCEPTANCE_INITIAL_LEASE_DURATION
+            )
+            initial_expression = self._stop_lease_payload_get().get(
+                "schedule_expression"
+            )
+            self._clock.sleep(LIFECYCLE_ACCEPTANCE_RENEW_DELAY_SECONDS)
+
+            t_renewed_lease = self._clock.now()
+            self._stop_lease_upsert(
+                lease_duration=LIFECYCLE_ACCEPTANCE_RENEWED_LEASE_DURATION
+            )
+            renewed_expression = self._stop_lease_payload_get().get(
+                "schedule_expression"
+            )
+            if initial_expression == renewed_expression:
+                raise DevelopmentEnvironmentError(
+                    "Lifecycle acceptance lease renewal did not change its deadline"
+                )
+
+            self._wait_until(
+                t_initial_lease + LIFECYCLE_ACCEPTANCE_RENEWAL_PROOF_DELAY
+            )
+            if self._instance_state_get(instance_id) != "running":
+                raise DevelopmentEnvironmentError(
+                    "Lifecycle acceptance instance stopped at the superseded deadline"
+                )
+            self._instance_stopped_wait(
+                instance_id=instance_id,
+                t_deadline=(
+                    t_renewed_lease
+                    + LIFECYCLE_ACCEPTANCE_RENEWED_LEASE_DURATION
+                    + LIFECYCLE_ACCEPTANCE_STOP_GRACE
+                ),
+            )
+            self._stop_lease_absence_wait(
+                t_deadline=self._clock.now()
+                + LIFECYCLE_ACCEPTANCE_STOP_GRACE
+            )
+            self.start()
+            self._product_recovery_acceptance_run()
+            is_environment_restored = True
+        finally:
+            if not is_environment_restored:
+                self._lifecycle_acceptance_environment_restore(instance_id)
+        print(
+            "OK: real AWS lifecycle acceptance renewed the lease, "
+            "failed safe, and restored the development environment"
+        )
 
     def restore(self, snapshot_id: str) -> None:
         """Replace the retained volume from one exact snapshot and run recovery acceptance.
@@ -3575,11 +3669,17 @@ shutil.rmtree(root_path)
             "target_arn": target_payload.get("Arn"),
         }
 
-    def _stop_lease_upsert(self) -> None:
+    def _stop_lease_upsert(
+        self, *, lease_duration: timedelta = LEASE_DURATION
+    ) -> None:
         """Create or renew a lease that resolves the current instance at expiry."""
 
         output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
-        t_stop = self._clock.now() + LEASE_DURATION
+        if lease_duration <= timedelta():
+            raise DevelopmentEnvironmentError(
+                "Stop lease duration must be positive"
+            )
+        t_stop = self._clock.now() + lease_duration
         schedule_expression = f"at({t_stop.strftime('%Y-%m-%dT%H:%M:%S')})"
         target_arn = output_by_name_map["StopLeaseTargetArn"]
         target_payload = {
@@ -3631,6 +3731,71 @@ shutil.rmtree(root_path)
             or lease_payload.get("target_arn") != target_arn
         ):
             raise DevelopmentEnvironmentError("Stop lease was not proven enabled")
+
+    def _wait_until(self, t_deadline: datetime) -> None:
+        """Wait until one UTC deadline without changing the operational policy."""
+
+        while self._clock.now() < t_deadline:
+            remaining_seconds = (t_deadline - self._clock.now()).total_seconds()
+            self._clock.sleep(min(STACK_POLL_INTERVAL_SECONDS, remaining_seconds))
+
+    def _instance_stopped_wait(
+        self, *, instance_id: str, t_deadline: datetime
+    ) -> None:
+        """Wait for the acceptance lease target to stop the exact instance."""
+
+        while self._clock.now() < t_deadline:
+            state = self._instance_state_get(instance_id)
+            if state == "stopped":
+                return
+            if state not in {"running", "stopping"}:
+                raise DevelopmentEnvironmentError(
+                    f"Lifecycle acceptance reached unexpected instance state {state}"
+                )
+            self._clock.sleep(STACK_POLL_INTERVAL_SECONDS)
+        raise DevelopmentEnvironmentError(
+            "Lifecycle acceptance lease did not stop the instance before its deadline"
+        )
+
+    def _stop_lease_absence_wait(self, *, t_deadline: datetime) -> None:
+        """Wait for Scheduler to auto-delete the completed acceptance lease."""
+
+        while self._clock.now() < t_deadline:
+            if self._stop_lease_payload_get().get("state") == "absent":
+                return
+            self._clock.sleep(STACK_POLL_INTERVAL_SECONDS)
+        raise DevelopmentEnvironmentError(
+            "Lifecycle acceptance lease was not auto-deleted"
+        )
+
+    def _lifecycle_acceptance_environment_restore(self, instance_id: str) -> None:
+        """Best-effort restore of the ordinary controller and two-hour lease."""
+
+        state = self._instance_state_get(instance_id)
+        if state == "pending":
+            self._instance_online_wait()
+            state = "running"
+        if state == "running":
+            self._stop_lease_upsert()
+            self._ssm_shell_run(
+                [
+                    "sudo systemctl start workflow-control-center-host-controller"
+                ]
+            )
+            self._host_readiness_wait()
+            return
+        if state == "stopping":
+            self._aws_run(
+                ["ec2", "wait", "instance-stopped", "--instance-ids", instance_id]
+            )
+            state = "stopped"
+        if state == "stopped":
+            self.start()
+            return
+        raise DevelopmentEnvironmentError(
+            "Lifecycle acceptance could not restore the environment from "
+            f"instance state {state}"
+        )
 
     def _template_validate(self, template_path: Path) -> None:
         self._runner.run(
