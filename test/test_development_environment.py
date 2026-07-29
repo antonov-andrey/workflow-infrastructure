@@ -537,13 +537,15 @@ def test_cost_review_includes_one_bounded_retained_rollback_volume(
     assert payload["assumption"] == {
         "active_hour_count_monthly": 80,
         "gp3_gib_count_max": 260,
-        "snapshot_gib_count_max": 80,
+        "snapshot_retention_count": 7,
+        "snapshot_source_volume_gib_count_max": 80,
+        "snapshot_stored_gib_count_max": 560,
     }
     assert payload["estimated_monthly_usd"] == {
         "compute": "8.00",
         "gp3_max": "20.80",
-        "snapshot_max": "4.00",
-        "total_fixed_max": "32.80",
+        "snapshot_max": "28.00",
+        "total_fixed_max": "56.80",
     }
     assert payload["architecture_delta_monthly_usd"] == {
         "bounded_retained_rollback_volume_max": "6.40",

@@ -221,6 +221,9 @@ Net projected recurring monthly delta накапливается от после
 Максимальный fixed gp3 checkpoint равен `260 GiB`: `100 GiB` root/scratch,
 `80 GiB` current retained volume и не более одного `80 GiB` предыдущего rollback
 volume. Семь daily snapshots создаются только для current retained volume.
+Консервативная верхняя граница их billed snapshot storage равна
+`7 × 80 GiB = 560 GiB`: incremental block reuse может уменьшить фактический объём,
+но не используется как недоказанное условие расчёта максимума.
 
 ## Разрушающий Cutover
 

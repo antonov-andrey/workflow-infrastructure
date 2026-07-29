@@ -1505,11 +1505,15 @@ WantedBy=multi-user.target
         )
         active_hour_count_monthly = Decimal(80)
         gp3_gib_count_max = Decimal(260)
-        snapshot_gib_count_max = Decimal(80)
+        snapshot_retention_count = Decimal(7)
+        snapshot_source_volume_gib_count_max = Decimal(80)
+        snapshot_stored_gib_count_max = (
+            snapshot_retention_count * snapshot_source_volume_gib_count_max
+        )
         estimated_compute_monthly = instance_hour_price * active_hour_count_monthly
         estimated_gp3_monthly_max = gp3_gib_month_price * gp3_gib_count_max
         estimated_snapshot_monthly_max = (
-            snapshot_gib_month_price * snapshot_gib_count_max
+            snapshot_gib_month_price * snapshot_stored_gib_count_max
         )
         retained_rollback_monthly_delta_max = (
             gp3_gib_month_price * Decimal(80)
@@ -1544,7 +1548,13 @@ WantedBy=multi-user.target
             "assumption": {
                 "active_hour_count_monthly": int(active_hour_count_monthly),
                 "gp3_gib_count_max": int(gp3_gib_count_max),
-                "snapshot_gib_count_max": int(snapshot_gib_count_max),
+                "snapshot_retention_count": int(snapshot_retention_count),
+                "snapshot_source_volume_gib_count_max": int(
+                    snapshot_source_volume_gib_count_max
+                ),
+                "snapshot_stored_gib_count_max": int(
+                    snapshot_stored_gib_count_max
+                ),
             },
             "estimated_monthly_usd": {
                 "compute": str(estimated_compute_monthly.quantize(Decimal("0.01"))),
