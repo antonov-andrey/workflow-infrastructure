@@ -2691,7 +2691,7 @@ def test_lifecycle_acceptance_uses_short_real_lease_then_restores_production(
     monkeypatch.setattr(environment, "_stop_lease_upsert", stop_lease_upsert)
 
     def stop_lease_payload_get() -> dict[str, object]:
-        if clock.t_now >= datetime(2026, 7, 28, 12, 5, 30, tzinfo=UTC):
+        if clock.t_now >= datetime(2026, 7, 28, 12, 7, 30, tzinfo=UTC):
             return {"state": "absent"}
         return {
             "schedule_expression": (
@@ -2706,7 +2706,7 @@ def test_lifecycle_acceptance_uses_short_real_lease_then_restores_production(
 
     def instance_state_get(instance_id: str) -> str:
         assert instance_id == "i-0123456789abcdef0"
-        if clock.t_now >= datetime(2026, 7, 28, 12, 5, 30, tzinfo=UTC):
+        if clock.t_now >= datetime(2026, 7, 28, 12, 7, 30, tzinfo=UTC):
             return "stopped"
         return "running"
 
@@ -2726,7 +2726,7 @@ def test_lifecycle_acceptance_uses_short_real_lease_then_restores_production(
         development_environment.LIFECYCLE_ACCEPTANCE_INITIAL_LEASE_DURATION,
         development_environment.LIFECYCLE_ACCEPTANCE_RENEWED_LEASE_DURATION,
     ]
-    assert ("start", datetime(2026, 7, 28, 12, 5, 30, tzinfo=UTC)) in event_list
+    assert ("start", datetime(2026, 7, 28, 12, 7, 30, tzinfo=UTC)) in event_list
     assert event_list[-1] == "product-acceptance"
 
 
