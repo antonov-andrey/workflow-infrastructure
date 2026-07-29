@@ -131,12 +131,17 @@ def test_cli_keeps_standard_options_after_commands_and_only_forwards_ssh_argumen
     ssh_args = development_environment_manage._args_parse(
         ["ssh", "--", "-L", "8080:localhost:8080"]
     )
+    host_status_args = development_environment_manage._args_parse(
+        ["host-status", "--retained-volume-id", "vol-0123456789abcdef0"]
+    )
 
     assert restore_args.snapshot_id == "snap-0123456789abcdef0"
     assert restore_args.ssh_argument_list == []
     assert activation_args.release == "20260728120000000000"
     assert activation_args.ssh_argument_list == []
     assert ssh_args.ssh_argument_list == ["-L", "8080:localhost:8080"]
+    assert host_status_args.retained_volume_id == "vol-0123456789abcdef0"
+    assert host_status_args.ssh_argument_list == []
 
 
 def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
@@ -495,6 +500,110 @@ def test_price_lookup_requires_one_exact_current_price(
         usage_type="EBS:VolumeUsage.gp3",
     )
     assert price == Decimal("0.0800000000")
+
+
+def test_cost_review_includes_one_bounded_retained_rollback_volume(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The checkpoint must price root, current retained, and one previous rollback."""
+
+    environment = _environment_get(tmp_path)
+
+    def price_usd_get(
+        filter_by_field_map: dict[str, str],
+        *,
+        unit: str,
+        usage_type: str,
+    ) -> Decimal:
+        """Return controlled prices for each declared cost dimension."""
+
+        del filter_by_field_map
+        if unit == "Hrs":
+            assert usage_type == ""
+            return Decimal("0.10")
+        if usage_type == "EBS:VolumeUsage.gp3":
+            return Decimal("0.08")
+        assert usage_type == "EBS:SnapshotUsage"
+        return Decimal("0.05")
+
+    monkeypatch.setattr(environment, "_price_usd_get", price_usd_get)
+
+    environment._cost_review_record()
+
+    payload = json.loads(
+        (tmp_path / ".local/cost-review.json").read_text(encoding="utf-8")
+    )
+    assert payload["assumption"] == {
+        "active_hour_count_monthly": 80,
+        "gp3_gib_count_max": 260,
+        "snapshot_gib_count_max": 80,
+    }
+    assert payload["estimated_monthly_usd"] == {
+        "compute": "8.00",
+        "gp3_max": "20.80",
+        "snapshot_max": "4.00",
+        "total_fixed_max": "32.80",
+    }
+    assert payload["architecture_delta_monthly_usd"] == {
+        "bounded_retained_rollback_volume_max": "6.40",
+        "total_max": "6.40",
+    }
+    assert set(payload["unchanged_usage_based_service_by_name_map"]) == {
+        "api_gateway",
+        "athena",
+        "data_transfer",
+        "glue",
+        "kms",
+        "s3",
+    }
+
+
+def test_drift_preflight_requires_complete_stack_parameters_and_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Mutation preflight must prove the complete live stack contract before drift."""
+
+    environment = _environment_get(tmp_path)
+    operation_list: list[str] = []
+    monkeypatch.setattr(
+        environment,
+        "_stack_payload_get",
+        lambda stack_name, is_required: {
+            "StackStatus": "UPDATE_COMPLETE"
+        },
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stack_parameter_by_name_map_get",
+        lambda stack_name: operation_list.append("parameters") or {"A": "B"},
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stack_output_by_name_map_get",
+        lambda stack_name: operation_list.append("outputs") or {"A": "B"},
+    )
+
+    def aws_json_get(argument_list: list[str]) -> dict[str, object]:
+        """Return the controlled drift lifecycle."""
+
+        if argument_list[1] == "detect-stack-drift":
+            operation_list.append("detect")
+            return {"StackDriftDetectionId": "drift-1"}
+        operation_list.append("inspect")
+        return {
+            "DetectionStatus": "DETECTION_COMPLETE",
+            "StackDriftStatus": "IN_SYNC",
+        }
+
+    monkeypatch.setattr(environment, "_aws_json_get", aws_json_get)
+
+    environment._stack_drift_validate("stack-a")
+
+    assert operation_list == ["parameters", "outputs", "detect", "inspect"]
+    assert capsys.readouterr().out == "OK: stack stack-a drift is IN_SYNC\n"
 
 
 def test_source_archive_is_deterministic_and_excludes_untracked_files(
@@ -960,6 +1069,95 @@ def test_restore_proves_distinct_snapshot_volume_and_retires_old_backup_target(
     ]
 
 
+def test_restore_cleanup_keeps_current_and_deletes_only_owned_stale_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A new restore bounds retained gp3 storage to current plus one rollback."""
+
+    environment = _environment_get(tmp_path)
+    current_volume_id = "vol-0123456789abcdef0"
+    retired_volume_id = "vol-0fedcba9876543210"
+    common_tag_list = [
+        {"Key": "Environment", "Value": "development"},
+        {"Key": "ManagedBy", "Value": "CloudFormation"},
+        {
+            "Key": "Name",
+            "Value": "workflow-control-center-development-retained",
+        },
+        {"Key": "Project", "Value": "workflow-control-center"},
+        {
+            "Key": "aws:cloudformation:stack-name",
+            "Value": development_environment.COMPUTE_STACK_NAME,
+        },
+    ]
+    current_volume_payload = {
+        "Attachments": [{"InstanceId": "i-current"}],
+        "Encrypted": True,
+        "KmsKeyId": "arn:aws:kms:us-east-1:463564115167:key/test",
+        "Size": 80,
+        "State": "in-use",
+        "Tags": [
+            *common_tag_list,
+            {
+                "Key": "workflow-control-center-retained-backup",
+                "Value": "enabled",
+            },
+        ],
+        "VolumeId": current_volume_id,
+    }
+    retired_volume_payload = {
+        "Attachments": [],
+        "Encrypted": True,
+        "KmsKeyId": "arn:aws:kms:us-east-1:463564115167:key/test",
+        "Size": 80,
+        "State": "available",
+        "Tags": common_tag_list,
+        "VolumeId": retired_volume_id,
+    }
+    aws_argument_list_list: list[list[str]] = []
+    monkeypatch.setattr(
+        environment,
+        "_retained_volume_payload_get",
+        lambda **kwargs: current_volume_payload,
+    )
+    monkeypatch.setattr(
+        environment,
+        "_aws_json_get",
+        lambda arguments: {
+            "Volumes": [current_volume_payload, retired_volume_payload]
+        },
+    )
+
+    def aws_run(
+        argument_list: list[str],
+        *,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        """Record exact stale-volume deletion commands."""
+
+        del check
+        aws_argument_list_list.append(argument_list)
+        return subprocess.CompletedProcess(argument_list, 0, "{}", "")
+
+    monkeypatch.setattr(environment, "_aws_run", aws_run)
+
+    environment._retired_retained_volume_cleanup(
+        current_volume_id=current_volume_id
+    )
+
+    assert aws_argument_list_list == [
+        ["ec2", "delete-volume", "--volume-id", retired_volume_id],
+        [
+            "ec2",
+            "wait",
+            "volume-deleted",
+            "--volume-ids",
+            retired_volume_id,
+        ],
+    ]
+
+
 def test_instance_launch_template_version_must_match_stack_latest_output(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1125,22 +1323,34 @@ def test_replace_uses_controlled_detach_and_creation_guard(
             "ReplacementGuardScheduleState": "ENABLED",
         },
     )
-    monkeypatch.setattr(environment, "stop", lambda: operation_list.append("stop"))
+    monkeypatch.setattr(
+        environment,
+        "_stack_drift_validate",
+        lambda stack_name: operation_list.append("drift"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "stop",
+        lambda **kwargs: operation_list.append(
+            ("stop", kwargs["should_validate_drift"])
+        ),
+    )
     monkeypatch.setattr(
         environment,
         "_replacement_stack_apply",
         lambda **kwargs: operation_list.append(kwargs["parameter_by_name_map"]),
     )
-    monkeypatch.setattr(environment, "start", lambda: operation_list.append("start"))
+    monkeypatch.setattr(
+        environment,
+        "start",
+        lambda **kwargs: operation_list.append(
+            ("start", kwargs["should_publish_infrastructure_source"])
+        ),
+    )
     monkeypatch.setattr(
         environment,
         "_replacement_guard_disable",
         lambda: operation_list.append("disable-guard"),
-    )
-    monkeypatch.setattr(
-        environment,
-        "_infrastructure_source_publish",
-        lambda: operation_list.append("publish"),
     )
     monkeypatch.setattr(
         environment,
@@ -1161,15 +1371,15 @@ def test_replace_uses_controlled_detach_and_creation_guard(
     environment.replace()
 
     assert operation_list == [
-        "stop",
+        "drift",
+        ("stop", False),
         {
             "InstanceSlot": "b",
             "ReplacementGuardScheduleExpression": "at(2026-07-28T14:00:00)",
             "ReplacementGuardScheduleState": "ENABLED",
         },
-        "start",
+        ("start", True),
         "disable-guard",
-        "publish",
         "link",
         "recover",
         "accept",
@@ -1199,7 +1409,18 @@ def test_restore_combines_snapshot_and_creation_guard_in_controlled_replacement(
             "ReplacementGuardScheduleState": "ENABLED",
         },
     )
-    monkeypatch.setattr(environment, "stop", lambda: operation_list.append("stop"))
+    monkeypatch.setattr(
+        environment,
+        "_stack_drift_validate",
+        lambda stack_name: operation_list.append("drift"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "stop",
+        lambda **kwargs: operation_list.append(
+            ("stop", kwargs["should_validate_drift"])
+        ),
+    )
     monkeypatch.setattr(
         environment,
         "_retained_volume_restore_plan_get",
@@ -1230,16 +1451,24 @@ def test_restore_combines_snapshot_and_creation_guard_in_controlled_replacement(
             ("disable-backup", kwargs["volume_id"])
         ),
     )
-    monkeypatch.setattr(environment, "start", lambda: operation_list.append("start"))
+    monkeypatch.setattr(
+        environment,
+        "_retired_retained_volume_cleanup",
+        lambda **kwargs: operation_list.append(
+            ("cleanup-retired", kwargs["current_volume_id"])
+        ),
+    )
+    monkeypatch.setattr(
+        environment,
+        "start",
+        lambda **kwargs: operation_list.append(
+            ("start", kwargs["should_publish_infrastructure_source"])
+        ),
+    )
     monkeypatch.setattr(
         environment,
         "_replacement_guard_disable",
         lambda: operation_list.append("disable-guard"),
-    )
-    monkeypatch.setattr(
-        environment,
-        "_infrastructure_source_publish",
-        lambda: operation_list.append("publish"),
     )
     monkeypatch.setattr(
         environment,
@@ -1260,7 +1489,9 @@ def test_restore_combines_snapshot_and_creation_guard_in_controlled_replacement(
     environment.restore("snap-0123456789abcdef0")
 
     assert operation_list == [
-        "stop",
+        "drift",
+        ("cleanup-retired", "vol-source"),
+        ("stop", False),
         {
             "InstanceSlot": "b",
             "ReplacementGuardScheduleExpression": "at(2026-07-28T14:00:00)",
@@ -1274,9 +1505,8 @@ def test_restore_combines_snapshot_and_creation_guard_in_controlled_replacement(
             "vol-source",
         ),
         ("disable-backup", "vol-source"),
-        "start",
+        ("start", True),
         "disable-guard",
-        "publish",
         "link",
         "recover",
         "accept",
@@ -1353,6 +1583,16 @@ def test_start_creates_stop_lease_before_ec2_start(
         return subprocess.CompletedProcess([], 0, "{}", "")
 
     monkeypatch.setattr(environment, "_local_operator_context_validate", lambda: None)
+    monkeypatch.setattr(
+        environment,
+        "_stack_drift_validate",
+        lambda stack_name: operation_list.append("drift"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_source_repository_validate",
+        lambda *args, **kwargs: operation_list.append("validate-source"),
+    )
     monkeypatch.setattr(environment, "_instance_id_get", lambda: "i-0123456789abcdef0")
     monkeypatch.setattr(
         environment, "_instance_state_get", lambda instance_id: "stopped"
@@ -1362,15 +1602,371 @@ def test_start_creates_stop_lease_before_ec2_start(
     )
     monkeypatch.setattr(
         environment,
+        "_ssm_shell_result_get",
+        lambda *args, **kwargs: operation_list.append("cloud-init") or {},
+    )
+    monkeypatch.setattr(
+        environment,
+        "_infrastructure_source_publish",
+        lambda: operation_list.append("publish-source"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_host_readiness_wait",
+        lambda: operation_list.append("ready"),
+    )
+    monkeypatch.setattr(
+        environment,
         "_stop_lease_upsert",
         lambda: operation_list.append("lease"),
     )
     monkeypatch.setattr(environment, "_aws_run", aws_run)
 
+    environment.start(should_publish_infrastructure_source=True)
+    assert operation_list[0] == "drift"
+    assert operation_list[1] == "validate-source"
+    assert operation_list[2] == "lease"
+    assert operation_list[3].startswith("ec2 start-instances")
+    assert operation_list[4:] == [
+        "online",
+        "cloud-init",
+        "publish-source",
+        "ready",
+    ]
+
+
+def test_ordinary_start_reuses_installed_controller_without_source_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A lifecycle-only start must not become an implicit source deployment."""
+
+    environment = _environment_get(tmp_path)
+    operation_list: list[str] = []
+    monkeypatch.setattr(environment, "_local_operator_context_validate", lambda: None)
+    monkeypatch.setattr(
+        environment,
+        "_stack_drift_validate",
+        lambda stack_name: operation_list.append("drift"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_source_repository_validate",
+        lambda *args, **kwargs: pytest.fail("source validation is not required"),
+    )
+    monkeypatch.setattr(environment, "_instance_id_get", lambda: "i-running")
+    monkeypatch.setattr(
+        environment, "_instance_state_get", lambda instance_id: "running"
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stop_lease_upsert",
+        lambda: operation_list.append("lease"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_instance_online_wait",
+        lambda: operation_list.append("online"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_ssm_shell_result_get",
+        lambda *args, **kwargs: operation_list.append("cloud-init") or {},
+    )
+    monkeypatch.setattr(
+        environment,
+        "_infrastructure_source_publish",
+        lambda: pytest.fail("ordinary start must not publish source"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_host_readiness_wait",
+        lambda: operation_list.append("ready"),
+    )
+
     environment.start()
-    assert operation_list[0] == "lease"
-    assert operation_list[1].startswith("ec2 start-instances")
-    assert operation_list[2] == "online"
+
+    assert operation_list == ["drift", "lease", "online", "cloud-init", "ready"]
+
+
+def test_host_readiness_waits_for_foundation_and_controller(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Final readiness requires both the host foundation and lifecycle controller."""
+
+    environment = _environment_get(tmp_path)
+    operation_list: list[str] = []
+    common_status_payload = {
+        "current_release": "",
+        "host_status_probe": "ok",
+        "k3s_service_status": "active",
+        "kubernetes_node_status": "ready",
+        "retained_mount_status": "ready",
+        "wcc_activity": "busy",
+    }
+    status_payload_list = [
+        {
+            **common_status_payload,
+            "kubernetes_node_status": "not-ready",
+            "host_controller_service_status": "active",
+            "host_controller_unit_status": "loaded",
+        },
+        {
+            **common_status_payload,
+            "host_controller_service_status": "active",
+            "host_controller_unit_status": "loaded",
+        },
+    ]
+    monkeypatch.setattr(
+        environment,
+        "_stack_output_by_name_map_get",
+        lambda stack_name: {"RetainedVolumeId": "vol-0123456789abcdef0"},
+    )
+
+    def host_status_payload_get(*, retained_volume_id: str) -> dict[str, str]:
+        """Return one controlled readiness transition."""
+
+        assert retained_volume_id == "vol-0123456789abcdef0"
+        operation_list.append("probe")
+        return status_payload_list.pop(0)
+
+    monkeypatch.setattr(
+        environment, "_host_status_payload_get", host_status_payload_get
+    )
+
+    environment._host_readiness_wait()
+
+    assert operation_list == ["probe", "probe"]
+    assert status_payload_list == []
+    assert environment._clock.monotonic() == 5
+
+
+def test_host_status_probe_normalizes_only_safe_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Remote status accepts the fixed safe schema and uses a bounded SSM command."""
+
+    environment = _environment_get(tmp_path)
+    expected_payload = {
+        "current_release": "20260728123456789012",
+        "host_controller_service_status": "active",
+        "host_controller_unit_status": "loaded",
+        "host_status_probe": "ok",
+        "k3s_service_status": "active",
+        "kubernetes_node_status": "ready",
+        "retained_mount_status": "ready",
+        "wcc_activity": "idle",
+    }
+    command_list_list: list[list[str]] = []
+
+    def ssm_shell_result_get(
+        shell_command_list: list[str],
+        *,
+        timeout_seconds: int,
+    ) -> dict[str, object]:
+        """Capture the exact status command and return safe output."""
+
+        assert (
+            timeout_seconds
+            == development_environment.HOST_STATUS_COMMAND_TIMEOUT_SECONDS
+        )
+        command_list_list.append(shell_command_list)
+        return {
+            "StandardOutputContent": json.dumps(expected_payload),
+            "Status": "Success",
+        }
+
+    monkeypatch.setattr(
+        environment, "_ssm_shell_result_get", ssm_shell_result_get
+    )
+
+    assert (
+        environment._host_status_payload_get(
+            retained_volume_id="vol-0123456789abcdef0"
+        )
+        == expected_payload
+    )
+    assert len(command_list_list) == 1
+    assert command_list_list[0][0].startswith(
+        "python3.14 /opt/workflow-infrastructure/control/current/"
+    )
+    assert (
+        "host-status --retained-volume-id vol-0123456789abcdef0"
+        in command_list_list[0][0]
+    )
+
+
+def test_host_status_collects_exact_mount_node_release_and_activity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Host-side status proves the retained device and reports no secret content."""
+
+    environment = _environment_get(tmp_path)
+    retained_root_path = tmp_path / "srv"
+    release_root_path = retained_root_path / "release" / "releases"
+    current_release_path = retained_root_path / "release" / "current"
+    release_path = release_root_path / "20260728123456789012"
+    release_path.mkdir(parents=True)
+    current_release_path.symlink_to(release_path)
+    device_root_path = tmp_path / "device-by-id"
+    device_root_path.mkdir()
+    actual_device_path = tmp_path / "nvme1n1"
+    actual_device_path.touch()
+    expected_device_path = device_root_path / (
+        "nvme-Amazon_Elastic_Block_Store_vol0123456789abcdef0"
+    )
+    expected_device_path.symlink_to(actual_device_path)
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_EBS_DEVICE_BY_ID_ROOT_PATH",
+        device_root_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_ROOT_PATH",
+        retained_root_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_RELEASE_ROOT_PATH",
+        retained_root_path / "release",
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_CURRENT_RELEASE_PATH",
+        current_release_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RELEASE_ROOT_PATH",
+        release_root_path,
+    )
+
+    def run(
+        argument_list: list[str],
+        *,
+        check: bool = True,
+        input_text: str | None = None,
+        should_capture: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        """Return controlled host command results."""
+
+        del check, input_text, should_capture
+        if argument_list[0] == "findmnt":
+            output = f"{actual_device_path} xfs {retained_root_path}\n"
+        elif argument_list[:2] == ["systemctl", "is-active"]:
+            output = "active\n"
+        elif argument_list[:3] == ["k3s", "kubectl", "get"]:
+            output = json.dumps(
+                {
+                    "items": [
+                        {
+                            "status": {
+                                "conditions": [
+                                    {"status": "True", "type": "Ready"}
+                                ]
+                            }
+                        }
+                    ]
+                }
+            )
+        elif argument_list[:2] == ["systemctl", "show"]:
+            output = "loaded\n"
+        else:
+            pytest.fail(f"Unexpected host status command: {argument_list}")
+        return subprocess.CompletedProcess(argument_list, 0, output, "")
+
+    monkeypatch.setattr(environment._runner, "run", run)
+    monkeypatch.setattr(
+        environment, "_host_product_activity_get", lambda: "idle"
+    )
+
+    assert environment._host_status_local_payload_get(
+        retained_volume_id="vol-0123456789abcdef0"
+    ) == {
+        "current_release": "20260728123456789012",
+        "host_controller_service_status": "active",
+        "host_controller_unit_status": "loaded",
+        "host_status_probe": "ok",
+        "k3s_service_status": "active",
+        "kubernetes_node_status": "ready",
+        "retained_mount_status": "ready",
+        "wcc_activity": "idle",
+    }
+
+
+def test_status_includes_remote_host_readiness_and_activity(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Status must expose safe runtime state, not only CloudFormation resources."""
+
+    environment = _environment_get(tmp_path)
+    output_by_name_map = {
+        "InstanceId": "i-0123456789abcdef0",
+        "InstanceType": "m7g.xlarge",
+        "RetainedVolumeId": "vol-0123456789abcdef0",
+        "RetainedVolumeSlot": "a",
+        "RetainedVolumeSourceSnapshotId": "snap-source",
+    }
+    host_status_payload = {
+        "current_release": "20260728123456789012",
+        "host_controller_service_status": "active",
+        "host_controller_unit_status": "loaded",
+        "host_status_probe": "ok",
+        "k3s_service_status": "active",
+        "kubernetes_node_status": "ready",
+        "retained_mount_status": "ready",
+        "wcc_activity": "busy",
+    }
+    monkeypatch.setattr(environment, "_local_operator_context_validate", lambda: None)
+    monkeypatch.setattr(
+        environment,
+        "_stack_payload_get",
+        lambda stack_name, is_required: {"StackStatus": "UPDATE_COMPLETE"},
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stack_output_by_name_map_get",
+        lambda stack_name: output_by_name_map,
+    )
+    monkeypatch.setattr(
+        environment, "_instance_state_get", lambda instance_id: "running"
+    )
+    monkeypatch.setattr(
+        environment,
+        "_instance_ssm_ping_status_get",
+        lambda instance_id: "Online",
+    )
+    monkeypatch.setattr(
+        environment, "_active_session_count_get", lambda instance_id: 1
+    )
+    monkeypatch.setattr(
+        environment,
+        "_latest_snapshot_id_get",
+        lambda volume_id: "snap-latest",
+    )
+    monkeypatch.setattr(environment, "_stop_lease_payload_get", lambda: {"state": "on"})
+    monkeypatch.setattr(
+        environment,
+        "_host_status_payload_get",
+        lambda **kwargs: host_status_payload,
+    )
+
+    environment.status()
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["compute_stack_status"] == "UPDATE_COMPLETE"
+    assert payload["current_release"] == "20260728123456789012"
+    assert payload["host_status_probe"] == "ok"
+    assert payload["kubernetes_node_status"] == "ready"
+    assert payload["retained_mount_status"] == "ready"
+    assert payload["ssm_ping_status"] == "Online"
+    assert payload["wcc_activity"] == "busy"
 
 
 def test_stop_lease_uses_renewable_tag_resolving_target(
@@ -1654,6 +2250,11 @@ def test_deploy_activates_release_before_installing_product_and_host_services(
     remote_release_root_path_list: list[Path] = []
 
     monkeypatch.setattr(environment, "_local_operator_context_validate", lambda: None)
+    monkeypatch.setattr(
+        environment,
+        "_stack_drift_validate",
+        lambda stack_name: None,
+    )
     monkeypatch.setattr(
         environment,
         "_source_repository_validate",
@@ -2042,6 +2643,16 @@ def test_start_never_calls_ec2_when_initial_stop_lease_fails(
 
     environment = _environment_get(tmp_path)
     monkeypatch.setattr(environment, "_local_operator_context_validate", lambda: None)
+    monkeypatch.setattr(
+        environment,
+        "_stack_drift_validate",
+        lambda stack_name: None,
+    )
+    monkeypatch.setattr(
+        environment,
+        "_source_repository_validate",
+        lambda *args, **kwargs: None,
+    )
     monkeypatch.setattr(
         environment,
         "_instance_id_get",

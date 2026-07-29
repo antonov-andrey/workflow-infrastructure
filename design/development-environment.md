@@ -123,8 +123,13 @@ snapshot принадлежит development account, завершён, заши�
 утверждённый volume. После update он доказывает новый physical ID, exact
 `SnapshotId`, encryption и attachment, а затем исключает оставленный старый volume
 из DLM target tag. Поэтому daily lifecycle продолжает обслуживать только current
-retained volume, а старые retained volumes остаются точками ручного rollback без
-нового ежедневного snapshot fan-out.
+retained volume. Cost boundary разрешает одновременно только current volume и один
+предыдущий rollback volume: перед следующим restore orchestrator удаляет более
+старый volume только после доказательства exact stack ownership, encryption,
+одинакового размера и KMS key, состояния `available`, отсутствия attachments и DLM
+backup tag. Текущий volume никогда не входит в cleanup. В результате restore
+сохраняет одну непосредственную точку ручного rollback без неограниченного gp3 и
+snapshot fan-out.
 
 `postgres/` физически объединяет БД `apwid`, `apwid_test`, `zitadel` и `glitchtip`, но их логические lifecycle различаются. Product reset может пересоздать только `apwid`, `apwid_test`, workflow registry, WorkflowRun storage и явно выбранные Product data-plane objects. Он сохраняет ZITADEL users, password hashes, identity-provider links, Product role grants, GlitchTip database, uploaded files и source-map state.
 
@@ -137,10 +142,9 @@ Cloud-init/UserData выполняет только:
 - форматирование и mount retained volume;
 - установку минимальных base packages без `apt upgrade`;
 - загрузку `install.sh` из exact k3s release tag, проверку declared SHA-256 и установку той же закреплённой k3s version;
-- установку Docker/Buildx и настройку SSM/systemd;
-- запуск host lifecycle controller.
+- установку Docker/Buildx и настройку SSM/systemd substrate.
 
-UserData не содержит исходники приложения, Product secrets, deployment logic или GitHub credentials. Project-owned host tools работают в воспроизводимом Python 3.14 virtual environment.
+UserData не содержит infrastructure/Product source, Product secrets, deployment logic или GitHub credentials и потому не может владеть host lifecycle controller. Create/replacement flow ждёт успешный cloud-init, через SSM публикует exact clean infrastructure control source на disposable root, устанавливает controller из его воспроизводимого Python 3.14 virtual environment и доказывает mount, k3s, node и controller readiness до отключения replacement guard. Обычный stop/start переиспользует уже установленный controller и не выполняет source deploy.
 
 Перед каждым Product deploy exact переданный source release выполняет source-owned host preparation. Он атомарно устанавливает только закреплённый Helm release для фактической host architecture после проверки declared SHA-256; отсутствие или другая версия Helm не компенсируются package-manager latest, непроверенным install script или состоянием workstation. Этот шаг выполняется до Product image/chart path и повторяется без изменений при замене instance.
 
@@ -213,6 +217,10 @@ Net projected recurring monthly delta накапливается от после
 - неограничиваемая или недоказуемая стоимость требует согласования.
 
 Одноразовый projected spend свыше `USD 10` согласуется отдельно. Границы production, account ownership и security действуют независимо от стоимости. Auto-stop и renewable lease являются lifecycle architecture, а не substitute AWS Budget.
+
+Максимальный fixed gp3 checkpoint равен `260 GiB`: `100 GiB` root/scratch,
+`80 GiB` current retained volume и не более одного `80 GiB` предыдущего rollback
+volume. Семь daily snapshots создаются только для current retained volume.
 
 ## Разрушающий Cutover
 

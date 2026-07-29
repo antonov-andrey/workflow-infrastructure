@@ -50,6 +50,7 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
             "host-product-release-restore",
             "host-prepare",
             "host-shutdown",
+            "host-status",
             "replace",
             "restore",
             "ssh",
@@ -64,6 +65,10 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--snapshot-id", help="Exact retained-volume snapshot used by restore."
     )
+    parser.add_argument(
+        "--retained-volume-id",
+        help="Exact retained EBS volume expected by host-status.",
+    )
     args, remaining_argument_list = parser.parse_known_args(argv_list)
     args.ssh_argument_list = remaining_argument_list
     if args.command == "restore" and not args.snapshot_id:
@@ -74,6 +79,10 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
         parser.error("--release is required for host-product-release-activate")
     if args.release and args.command != "host-product-release-activate":
         parser.error("--release is supported only for host-product-release-activate")
+    if args.command == "host-status" and not args.retained_volume_id:
+        parser.error("--retained-volume-id is required for host-status")
+    if args.retained_volume_id and args.command != "host-status":
+        parser.error("--retained-volume-id is supported only for host-status")
     if args.ssh_argument_list and args.command != "ssh":
         parser.error("arguments after the command are supported only for ssh")
     if args.ssh_argument_list[:1] == ["--"]:
@@ -119,6 +128,8 @@ def main(argv_list: list[str]) -> int:
             environment.host_prepare()
         elif args.command == "host-shutdown":
             environment.host_shutdown()
+        elif args.command == "host-status":
+            environment.host_status(args.retained_volume_id)
         elif args.command == "replace":
             environment.replace()
         elif args.command == "restore":

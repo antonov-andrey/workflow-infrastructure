@@ -34,7 +34,9 @@ DATA_PLANE_STACK_NAME = "workflow-control-center-development"
 HOST_CONTROL_CURRENT_SOURCE_PATH = Path("/opt/workflow-infrastructure/control/current")
 HOST_CONTROL_RELEASE_ROOT_PATH = Path("/opt/workflow-infrastructure/control/releases")
 HOST_CURRENT_SOURCE_PATH = Path("/opt/workflow-infrastructure/current")
-HOST_RETAINED_RELEASE_ROOT_PATH = Path("/srv/workflow-control-center/release")
+HOST_EBS_DEVICE_BY_ID_ROOT_PATH = Path("/dev/disk/by-id")
+HOST_RETAINED_ROOT_PATH = Path("/srv/workflow-control-center")
+HOST_RETAINED_RELEASE_ROOT_PATH = HOST_RETAINED_ROOT_PATH / "release"
 HOST_RETAINED_CURRENT_RELEASE_PATH = HOST_RETAINED_RELEASE_ROOT_PATH / "current"
 HOST_RELEASE_ROOT_PATH = HOST_RETAINED_RELEASE_ROOT_PATH / "releases"
 HOST_STATE_ROOT_PATH = Path("/var/lib/workflow-infrastructure")
@@ -73,6 +75,8 @@ REPOSITORY_URL_BY_NAME_MAP = {
 SSM_DOCUMENT_PORT_FORWARD = "AWS-StartPortForwardingSession"
 SSM_COMMAND_TIMEOUT_SECONDS = 3600
 SSM_ONLINE_TIMEOUT_SECONDS = 1800
+HOST_READY_TIMEOUT_SECONDS = 1800
+HOST_STATUS_COMMAND_TIMEOUT_SECONDS = 120
 STACK_POLL_INTERVAL_SECONDS = 5
 STACK_TIMEOUT_SECONDS = 3600
 
@@ -183,6 +187,11 @@ class DevelopmentEnvironment:
         )
         self._cost_review_record()
         self._stack_drift_validate(DATA_PLANE_STACK_NAME)
+        compute_stack_exists = bool(
+            self._stack_payload_get(COMPUTE_STACK_NAME, is_required=False)
+        )
+        if compute_stack_exists:
+            self._stack_drift_validate(COMPUTE_STACK_NAME)
         data_resource_id_by_logical_name_map = (
             self._stack_resource_id_by_logical_name_map_get(DATA_PLANE_STACK_NAME)
         )
@@ -211,9 +220,9 @@ class DevelopmentEnvironment:
             ):
                 raise DevelopmentEnvironmentError(
                     "Stable data-plane physical resource identity changed"
-                )
+        )
         compute_parameter_by_name_map: dict[str, str] = {}
-        if not self._stack_payload_get(COMPUTE_STACK_NAME, is_required=False):
+        if not compute_stack_exists:
             compute_parameter_by_name_map.update(
                 self._replacement_guard_parameter_by_name_map_get()
             )
@@ -227,9 +236,8 @@ class DevelopmentEnvironment:
         )
         self._retained_volume_attachment_validate()
         self._instance_launch_template_version_validate()
-        self.start()
+        self.start(should_publish_infrastructure_source=True)
         self._replacement_guard_disable()
-        self._infrastructure_source_publish()
         self._stack_drift_validate(DATA_PLANE_STACK_NAME)
         self._stack_drift_validate(COMPUTE_STACK_NAME)
         print("OK: development data-plane and compute stacks are applied")
@@ -303,6 +311,8 @@ class DevelopmentEnvironment:
             self._source_repository_validate(
                 self._workspace_root_path / repository_name, repository_name
             )
+        self._stack_drift_validate(DATA_PLANE_STACK_NAME)
+        self._stack_drift_validate(COMPUTE_STACK_NAME)
         self._instance_online_wait()
         release_name = self._clock.now().strftime("%Y%m%d%H%M%S%f")
         source_manifest_by_repository_name_map: dict[str, dict[str, object]] = {}
@@ -525,6 +535,25 @@ class DevelopmentEnvironment:
             )
         self._helm_ensure()
         print(f"OK: exact Helm {HELM_VERSION} is installed")
+
+    def host_status(self, retained_volume_id: str) -> None:
+        """Print safe host state from one exact infrastructure release.
+
+        Args:
+            retained_volume_id: Exact retained EBS volume expected at the Product root.
+        """
+
+        if not self._is_host:
+            raise DevelopmentEnvironmentError(
+                "host-status is supported only from an exact source release "
+                "on the development host"
+            )
+        payload = self._host_status_payload_validate(
+            self._host_status_local_payload_get(
+                retained_volume_id=retained_volume_id
+            )
+        )
+        print(json.dumps(payload, sort_keys=True))
 
     @staticmethod
     def _atomic_symlink_replace(*, link_path: Path, target_path: Path) -> None:
@@ -951,7 +980,11 @@ WantedBy=multi-user.target
             restore_parameter_by_name_map,
         ) = self._retained_volume_restore_plan_get(snapshot_id=snapshot_id)
         replacement_parameter_by_name_map.update(restore_parameter_by_name_map)
-        self.stop()
+        self._stack_drift_validate(COMPUTE_STACK_NAME)
+        self._retired_retained_volume_cleanup(
+            current_volume_id=source_volume_id
+        )
+        self.stop(should_validate_drift=False)
         self._replacement_stack_apply(
             parameter_by_name_map=replacement_parameter_by_name_map
         )
@@ -960,9 +993,8 @@ WantedBy=multi-user.target
             source_volume_id=source_volume_id,
         )
         self._retained_volume_backup_disable(volume_id=source_volume_id)
-        self.start()
+        self.start(should_publish_infrastructure_source=True)
         self._replacement_guard_disable()
-        self._infrastructure_source_publish()
         self._retained_product_release_link_restore()
         self._product_recovery_apply_run()
         self._product_recovery_acceptance_run()
@@ -979,13 +1011,13 @@ WantedBy=multi-user.target
             self._replacement_parameter_by_name_map_get()
         )
         replacement_slot = replacement_parameter_by_name_map["InstanceSlot"]
-        self.stop()
+        self._stack_drift_validate(COMPUTE_STACK_NAME)
+        self.stop(should_validate_drift=False)
         self._replacement_stack_apply(
             parameter_by_name_map=replacement_parameter_by_name_map
         )
-        self.start()
+        self.start(should_publish_infrastructure_source=True)
         self._replacement_guard_disable()
-        self._infrastructure_source_publish()
         self._retained_product_release_link_restore()
         self._product_recovery_apply_run()
         self._product_recovery_acceptance_run()
@@ -1109,10 +1141,22 @@ WantedBy=multi-user.target
             result = self._runner.run(command_list, check=False, should_capture=False)
             return result.returncode
 
-    def start(self) -> None:
-        """Create the external stop lease before starting and verify host readiness."""
+    def start(
+        self, *, should_publish_infrastructure_source: bool = False
+    ) -> None:
+        """Create the external stop lease before starting and verify host readiness.
+
+        Args:
+            should_publish_infrastructure_source: Whether a newly replaced host needs
+                the already validated exact controller source installed before proof.
+        """
 
         self._local_operator_context_validate()
+        self._stack_drift_validate(COMPUTE_STACK_NAME)
+        if should_publish_infrastructure_source:
+            self._source_repository_validate(
+                self._project_root_path, "workflow-infrastructure"
+            )
         instance_id = self._instance_id_get()
         self._stop_lease_upsert()
         state = self._instance_state_get(instance_id)
@@ -1123,6 +1167,13 @@ WantedBy=multi-user.target
                 f"Instance cannot start from state {state}"
             )
         self._instance_online_wait()
+        self._ssm_shell_result_get(
+            ["cloud-init status --wait"],
+            timeout_seconds=HOST_READY_TIMEOUT_SECONDS,
+        )
+        if should_publish_infrastructure_source:
+            self._infrastructure_source_publish()
+        self._host_readiness_wait()
         print(f"OK: development instance {instance_id} is ready")
 
     def status(self) -> None:
@@ -1140,13 +1191,15 @@ WantedBy=multi-user.target
         if compute_stack:
             output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
             instance_id = output_by_name_map["InstanceId"]
+            instance_state = self._instance_state_get(instance_id)
+            ssm_ping_status = self._instance_ssm_ping_status_get(instance_id)
             payload.update(
                 {
                     "active_ssm_session_count": self._active_session_count_get(
                         instance_id
                     ),
                     "instance_id": instance_id,
-                    "instance_state": self._instance_state_get(instance_id),
+                    "instance_state": instance_state,
                     "instance_type": output_by_name_map["InstanceType"],
                     "latest_retained_snapshot_id": (
                         self._latest_snapshot_id_get(
@@ -1163,15 +1216,32 @@ WantedBy=multi-user.target
                     "retained_volume_source_snapshot_id": output_by_name_map.get(
                         "RetainedVolumeSourceSnapshotId", ""
                     ),
+                    "ssm_ping_status": ssm_ping_status,
                     "stop_lease": self._stop_lease_payload_get(),
                 }
             )
+            host_status_payload = self._host_status_unavailable_payload_get()
+            if instance_state == "running" and ssm_ping_status == "Online":
+                try:
+                    host_status_payload = self._host_status_payload_get(
+                        retained_volume_id=output_by_name_map["RetainedVolumeId"]
+                    )
+                except DevelopmentEnvironmentError:
+                    pass
+            payload.update(host_status_payload)
         print(json.dumps(payload, indent=2, sort_keys=True))
 
-    def stop(self) -> None:
-        """Run graceful remote shutdown, prove EC2 stop, and remove the pending lease."""
+    def stop(self, *, should_validate_drift: bool = True) -> None:
+        """Run graceful remote shutdown, prove EC2 stop, and remove the pending lease.
+
+        Args:
+            should_validate_drift: Whether this lifecycle boundary must run compute
+                drift detection; controlled replacement already does it once.
+        """
 
         self._local_operator_context_validate()
+        if should_validate_drift:
+            self._stack_drift_validate(COMPUTE_STACK_NAME)
         instance_id = self._instance_id_get()
         state = self._instance_state_get(instance_id)
         if state == "stopped":
@@ -1337,30 +1407,60 @@ WantedBy=multi-user.target
             usage_type="EBS:SnapshotUsage",
         )
         active_hour_count_monthly = Decimal(80)
-        gp3_gib_count = Decimal(180)
+        gp3_gib_count_max = Decimal(260)
         snapshot_gib_count_max = Decimal(80)
         estimated_compute_monthly = instance_hour_price * active_hour_count_monthly
-        estimated_gp3_monthly = gp3_gib_month_price * gp3_gib_count
+        estimated_gp3_monthly_max = gp3_gib_month_price * gp3_gib_count_max
         estimated_snapshot_monthly_max = (
             snapshot_gib_month_price * snapshot_gib_count_max
         )
+        retained_rollback_monthly_delta_max = (
+            gp3_gib_month_price * Decimal(80)
+        )
+        unchanged_usage_based_service_by_name_map = {
+            service_name: {
+                "architecture_delta_monthly_usd": "0.00",
+                "assumption": (
+                    "Existing approved usage-based data-plane or transfer "
+                    "contract is unchanged."
+                ),
+            }
+            for service_name in (
+                "api_gateway",
+                "athena",
+                "data_transfer",
+                "glue",
+                "kms",
+                "s3",
+            )
+        }
         review_payload = {
+            "architecture_delta_monthly_usd": {
+                "bounded_retained_rollback_volume_max": str(
+                    retained_rollback_monthly_delta_max.quantize(Decimal("0.01"))
+                ),
+                "total_max": str(
+                    retained_rollback_monthly_delta_max.quantize(Decimal("0.01"))
+                ),
+            },
             "architecture_checkpoint": "approved-2026-07-28",
             "assumption": {
                 "active_hour_count_monthly": int(active_hour_count_monthly),
-                "gp3_gib_count": int(gp3_gib_count),
+                "gp3_gib_count_max": int(gp3_gib_count_max),
                 "snapshot_gib_count_max": int(snapshot_gib_count_max),
             },
             "estimated_monthly_usd": {
                 "compute": str(estimated_compute_monthly.quantize(Decimal("0.01"))),
-                "gp3": str(estimated_gp3_monthly.quantize(Decimal("0.01"))),
+                "gp3_max": str(
+                    estimated_gp3_monthly_max.quantize(Decimal("0.01"))
+                ),
                 "snapshot_max": str(
                     estimated_snapshot_monthly_max.quantize(Decimal("0.01"))
                 ),
                 "total_fixed_max": str(
                     (
                         estimated_compute_monthly
-                        + estimated_gp3_monthly
+                        + estimated_gp3_monthly_max
                         + estimated_snapshot_monthly_max
                     ).quantize(Decimal("0.01"))
                 ),
@@ -1371,8 +1471,8 @@ WantedBy=multi-user.target
                 "snapshot_gib_month": str(snapshot_gib_month_price),
             },
             "t_calculate": self._clock.now().isoformat().replace("+00:00", "Z"),
-            "variable_cost_note": (
-                "Existing S3, KMS, Glue, Athena, API Gateway, data transfer, and request costs remain usage-based."
+            "unchanged_usage_based_service_by_name_map": (
+                unchanged_usage_based_service_by_name_map
             ),
         }
         review_path = self._project_root_path / ".local" / "cost-review.json"
@@ -1470,26 +1570,433 @@ WantedBy=multi-user.target
         )
         t_deadline = self._clock.monotonic() + SSM_ONLINE_TIMEOUT_SECONDS
         while self._clock.monotonic() < t_deadline:
-            payload = self._aws_json_get(
-                [
-                    "ssm",
-                    "describe-instance-information",
-                    "--filters",
-                    f"Key=InstanceIds,Values={instance_id}",
-                ]
-            )
-            information_list = payload.get("InstanceInformationList", [])
-            if (
-                isinstance(information_list, list)
-                and information_list
-                and isinstance(information_list[0], dict)
-                and information_list[0].get("PingStatus") == "Online"
-            ):
+            if self._instance_ssm_ping_status_get(instance_id) == "Online":
                 return
             self._clock.sleep(STACK_POLL_INTERVAL_SECONDS)
         raise DevelopmentEnvironmentError(
             f"Instance {instance_id} did not become SSM Online"
         )
+
+    def _instance_ssm_ping_status_get(self, instance_id: str) -> str:
+        """Return the current SSM managed-node ping status.
+
+        Args:
+            instance_id: Exact target EC2 instance identifier.
+
+        Returns:
+            SSM ping status or ``Unavailable`` when the node is not registered.
+        """
+
+        payload = self._aws_json_get(
+            [
+                "ssm",
+                "describe-instance-information",
+                "--filters",
+                f"Key=InstanceIds,Values={instance_id}",
+            ]
+        )
+        information_list = payload.get("InstanceInformationList", [])
+        if not isinstance(information_list, list):
+            raise DevelopmentEnvironmentError(
+                "SSM instance information response is malformed"
+            )
+        if not information_list:
+            return "Unavailable"
+        if len(information_list) != 1 or not isinstance(information_list[0], dict):
+            raise DevelopmentEnvironmentError(
+                "SSM instance information response is malformed"
+            )
+        ping_status = information_list[0].get("PingStatus")
+        if ping_status not in {"ConnectionLost", "Inactive", "Online"}:
+            raise DevelopmentEnvironmentError(
+                "SSM instance ping status is malformed"
+            )
+        return ping_status
+
+    def _host_readiness_wait(self) -> None:
+        """Prove retained storage, k3s, node, and lifecycle-controller readiness."""
+
+        retained_volume_id = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)[
+            "RetainedVolumeId"
+        ]
+        t_deadline = self._clock.monotonic() + HOST_READY_TIMEOUT_SECONDS
+        host_status_payload = self._host_status_unavailable_payload_get()
+        while self._clock.monotonic() < t_deadline:
+            try:
+                host_status_payload = self._host_status_payload_get(
+                    retained_volume_id=retained_volume_id
+                )
+            except DevelopmentEnvironmentError:
+                self._clock.sleep(STACK_POLL_INTERVAL_SECONDS)
+                continue
+            foundation_is_ready = (
+                host_status_payload["retained_mount_status"] == "ready"
+                and host_status_payload["k3s_service_status"] == "active"
+                and host_status_payload["kubernetes_node_status"] == "ready"
+            )
+            controller_is_ready = (
+                host_status_payload["host_controller_unit_status"] == "loaded"
+                and host_status_payload["host_controller_service_status"] == "active"
+            )
+            if foundation_is_ready and controller_is_ready:
+                return
+            self._clock.sleep(STACK_POLL_INTERVAL_SECONDS)
+        safe_status_text = json.dumps(host_status_payload, sort_keys=True)
+        raise DevelopmentEnvironmentError(
+            "Development host did not become ready within "
+            f"{HOST_READY_TIMEOUT_SECONDS} seconds; last safe status: "
+            f"{safe_status_text}"
+        )
+
+    def _host_status_payload_get(
+        self, *, retained_volume_id: str
+    ) -> dict[str, str]:
+        """Inspect safe host state through one bounded SSM Run Command.
+
+        Args:
+            retained_volume_id: Exact retained EBS volume expected at the Product root.
+
+        Returns:
+            Safe normalized host status fields.
+        """
+
+        self._retained_volume_id_validate(retained_volume_id)
+        result_payload = self._ssm_shell_result_get(
+            [
+                shlex.join(
+                    [
+                        "python3.14",
+                        str(
+                            HOST_CONTROL_CURRENT_SOURCE_PATH
+                            / "sources"
+                            / "workflow-infrastructure"
+                            / "tool"
+                            / "development_environment_manage.py"
+                        ),
+                        "host-status",
+                        "--retained-volume-id",
+                        retained_volume_id,
+                    ]
+                )
+            ],
+            timeout_seconds=HOST_STATUS_COMMAND_TIMEOUT_SECONDS,
+        )
+        output_text = result_payload.get("StandardOutputContent")
+        if not isinstance(output_text, str):
+            raise DevelopmentEnvironmentError(
+                "Development host status output is malformed"
+            )
+        try:
+            payload = json.loads(output_text)
+        except json.JSONDecodeError as error:
+            raise DevelopmentEnvironmentError(
+                "Development host status output is invalid"
+            ) from error
+        return self._host_status_payload_validate(payload)
+
+    def _host_status_local_payload_get(
+        self, *, retained_volume_id: str
+    ) -> dict[str, str]:
+        """Collect safe state directly on the development host.
+
+        Args:
+            retained_volume_id: Exact retained EBS volume expected at the Product root.
+
+        Returns:
+            Safe host status fields.
+        """
+
+        self._retained_volume_id_validate(retained_volume_id)
+        k3s_service_status = self._host_service_status_get("k3s")
+        host_controller_service_status = self._host_service_status_get(
+            "workflow-control-center-host-controller"
+        )
+        host_controller_unit_result = self._runner.run(
+            [
+                "systemctl",
+                "show",
+                "--property=LoadState",
+                "--value",
+                "workflow-control-center-host-controller",
+            ],
+            check=False,
+        )
+        host_controller_unit_status = host_controller_unit_result.stdout.strip()
+        if host_controller_unit_status not in {"loaded", "masked", "not-found"}:
+            host_controller_unit_status = "unknown"
+
+        return {
+            "current_release": self._host_current_release_get(),
+            "host_controller_service_status": host_controller_service_status,
+            "host_controller_unit_status": host_controller_unit_status,
+            "host_status_probe": "ok",
+            "k3s_service_status": k3s_service_status,
+            "kubernetes_node_status": self._host_kubernetes_node_status_get(
+                k3s_service_status=k3s_service_status
+            ),
+            "retained_mount_status": self._host_retained_mount_status_get(
+                retained_volume_id=retained_volume_id
+            ),
+            "wcc_activity": self._host_product_activity_get(),
+        }
+
+    @staticmethod
+    def _host_current_release_get() -> str:
+        """Return the safe exact retained release name or its invalid state."""
+
+        if not HOST_RETAINED_CURRENT_RELEASE_PATH.is_symlink():
+            return ""
+        try:
+            current_release_path = HOST_RETAINED_CURRENT_RELEASE_PATH.resolve(
+                strict=True
+            )
+        except OSError:
+            return "invalid"
+        release_name = current_release_path.name
+        if (
+            current_release_path.parent == HOST_RELEASE_ROOT_PATH
+            and len(release_name) == 20
+            and release_name.isdigit()
+        ):
+            return release_name
+        return "invalid"
+
+    def _host_kubernetes_node_status_get(
+        self, *, k3s_service_status: str
+    ) -> str:
+        """Return normalized readiness across every node in the local k3s cluster.
+
+        Args:
+            k3s_service_status: Already normalized k3s systemd state.
+
+        Returns:
+            ``ready``, ``not-ready``, or ``unavailable``.
+        """
+
+        if k3s_service_status != "active":
+            return "unavailable"
+        node_result = self._runner.run(
+            [
+                "k3s",
+                "kubectl",
+                "get",
+                "nodes",
+                "--output",
+                "json",
+                "--request-timeout=10s",
+            ],
+            check=False,
+        )
+        if node_result.returncode != 0:
+            return "unavailable"
+        try:
+            node_payload = json.loads(node_result.stdout)
+            node_list = node_payload["items"]
+            readiness_list = [
+                next(
+                    condition["status"]
+                    for condition in node["status"]["conditions"]
+                    if condition["type"] == "Ready"
+                )
+                for node in node_list
+            ]
+        except (
+            KeyError,
+            StopIteration,
+            TypeError,
+            json.JSONDecodeError,
+        ):
+            return "unavailable"
+        if readiness_list and all(status == "True" for status in readiness_list):
+            return "ready"
+        return "not-ready"
+
+    def _host_retained_mount_status_get(self, *, retained_volume_id: str) -> str:
+        """Prove the exact retained EBS device is the Product XFS mount.
+
+        Args:
+            retained_volume_id: Exact retained EBS volume expected at the mount.
+
+        Returns:
+            ``ready``, ``unmounted``, or ``wrong-device``.
+        """
+
+        retained_device_path = HOST_EBS_DEVICE_BY_ID_ROOT_PATH / (
+            "nvme-Amazon_Elastic_Block_Store_"
+            + retained_volume_id.replace("-", "")
+        )
+        findmnt_result = self._runner.run(
+            [
+                "findmnt",
+                "--noheadings",
+                "--output",
+                "SOURCE,FSTYPE,TARGET",
+                "--target",
+                str(HOST_RETAINED_ROOT_PATH),
+            ],
+            check=False,
+        )
+        if findmnt_result.returncode != 0:
+            return "unmounted"
+        findmnt_field_list = findmnt_result.stdout.strip().split()
+        if len(findmnt_field_list) != 3:
+            return "wrong-device"
+        source_text, filesystem_type, target_text = findmnt_field_list
+        try:
+            actual_device_path = Path(source_text).resolve(strict=True)
+            expected_device_path = retained_device_path.resolve(strict=True)
+        except OSError:
+            return "wrong-device"
+        if (
+            actual_device_path == expected_device_path
+            and filesystem_type == "xfs"
+            and target_text == str(HOST_RETAINED_ROOT_PATH)
+        ):
+            return "ready"
+        return "wrong-device"
+
+    def _host_service_status_get(self, unit_name: str) -> str:
+        """Return one normalized systemd service state.
+
+        Args:
+            unit_name: Exact systemd unit name.
+
+        Returns:
+            Safe normalized active state.
+        """
+
+        result = self._runner.run(
+            ["systemctl", "is-active", unit_name],
+            check=False,
+        )
+        status = result.stdout.strip()
+        if status not in {
+            "active",
+            "activating",
+            "deactivating",
+            "failed",
+            "inactive",
+            "maintenance",
+            "reloading",
+        }:
+            return "unknown"
+        return status
+
+    @staticmethod
+    def _retained_volume_id_validate(retained_volume_id: str) -> None:
+        """Validate one exact EBS volume identifier used at a command boundary.
+
+        Args:
+            retained_volume_id: Candidate EBS volume identifier.
+        """
+
+        volume_suffix = retained_volume_id.removeprefix("vol-")
+        if (
+            not retained_volume_id.startswith("vol-")
+            or not volume_suffix
+            or any(character not in "0123456789abcdef" for character in volume_suffix)
+        ):
+            raise DevelopmentEnvironmentError("Retained volume ID is malformed")
+
+    @staticmethod
+    def _host_status_payload_validate(payload: object) -> dict[str, str]:
+        """Validate the fixed safe host-status response contract.
+
+        Args:
+            payload: Decoded host-status response.
+
+        Returns:
+            Normalized safe status fields.
+        """
+
+        if not isinstance(payload, dict):
+            raise DevelopmentEnvironmentError(
+                "Development host status output is malformed"
+            )
+        expected_field_set = {
+            "current_release",
+            "host_controller_service_status",
+            "host_controller_unit_status",
+            "host_status_probe",
+            "k3s_service_status",
+            "kubernetes_node_status",
+            "retained_mount_status",
+            "wcc_activity",
+        }
+        if set(payload) != expected_field_set or any(
+            not isinstance(value, str) for value in payload.values()
+        ):
+            raise DevelopmentEnvironmentError(
+                "Development host status output is malformed"
+            )
+        current_release = payload["current_release"]
+        if current_release not in {"", "invalid"} and (
+            len(current_release) != 20 or not current_release.isdigit()
+        ):
+            raise DevelopmentEnvironmentError(
+                "Development host current release is malformed"
+            )
+        allowed_value_by_field_map = {
+            "host_controller_service_status": {
+                "active",
+                "activating",
+                "deactivating",
+                "failed",
+                "inactive",
+                "maintenance",
+                "reloading",
+                "unknown",
+            },
+            "host_controller_unit_status": {
+                "loaded",
+                "masked",
+                "not-found",
+                "unknown",
+            },
+            "host_status_probe": {"ok"},
+            "k3s_service_status": {
+                "active",
+                "activating",
+                "deactivating",
+                "failed",
+                "inactive",
+                "maintenance",
+                "reloading",
+                "unknown",
+            },
+            "kubernetes_node_status": {
+                "not-ready",
+                "ready",
+                "unavailable",
+            },
+            "retained_mount_status": {
+                "ready",
+                "unmounted",
+                "wrong-device",
+            },
+            "wcc_activity": {"busy", "idle"},
+        }
+        for field, allowed_value_set in allowed_value_by_field_map.items():
+            if payload[field] not in allowed_value_set:
+                raise DevelopmentEnvironmentError(
+                    f"Development host status field {field} is malformed"
+                )
+        return {field: str(value) for field, value in payload.items()}
+
+    @staticmethod
+    def _host_status_unavailable_payload_get() -> dict[str, str]:
+        """Return stable status fields when the remote host cannot be inspected."""
+
+        return {
+            "current_release": "",
+            "host_controller_service_status": "unavailable",
+            "host_controller_unit_status": "unavailable",
+            "host_status_probe": "unavailable",
+            "k3s_service_status": "unavailable",
+            "kubernetes_node_status": "unavailable",
+            "retained_mount_status": "unavailable",
+            "wcc_activity": "unavailable",
+        }
 
     def _instance_state_get(self, instance_id: str) -> str:
         payload = self._aws_json_get(
@@ -1801,6 +2308,85 @@ WantedBy=multi-user.target
             raise DevelopmentEnvironmentError(
                 "Previous retained volume still belongs to the daily backup set"
             )
+
+    def _retired_retained_volume_cleanup(
+        self, *, current_volume_id: str
+    ) -> None:
+        """Delete stale rollback volumes before creating the next bounded rollback.
+
+        Args:
+            current_volume_id: Current stack-owned retained volume that must survive.
+        """
+
+        self._retained_volume_id_validate(current_volume_id)
+        current_volume_payload = self._retained_volume_payload_get(
+            volume_id=current_volume_id
+        )
+        payload = self._aws_json_get(
+            [
+                "ec2",
+                "describe-volumes",
+                "--filters",
+                "Name=tag:Name,Values=workflow-control-center-development-retained",
+                "Name=tag:Project,Values=workflow-control-center",
+                "Name=tag:Environment,Values=development",
+                "Name=tag:ManagedBy,Values=CloudFormation",
+            ]
+        )
+        volume_list = payload.get("Volumes", [])
+        if not isinstance(volume_list, list) or any(
+            not isinstance(volume, dict) for volume in volume_list
+        ):
+            raise DevelopmentEnvironmentError(
+                "Retained rollback volume inventory is malformed"
+            )
+        for volume_payload in volume_list:
+            volume_id = volume_payload.get("VolumeId")
+            if volume_id == current_volume_id:
+                continue
+            if not isinstance(volume_id, str):
+                raise DevelopmentEnvironmentError(
+                    "Retained rollback volume identity is malformed"
+                )
+            self._retained_volume_id_validate(volume_id)
+            tag_by_name_map = {
+                tag["Key"]: tag["Value"]
+                for tag in volume_payload.get("Tags", [])
+                if isinstance(tag, dict)
+                and isinstance(tag.get("Key"), str)
+                and isinstance(tag.get("Value"), str)
+            }
+            required_tag_by_name_map = {
+                "Environment": "development",
+                "ManagedBy": "CloudFormation",
+                "Name": "workflow-control-center-development-retained",
+                "Project": "workflow-control-center",
+                "aws:cloudformation:stack-name": COMPUTE_STACK_NAME,
+            }
+            if any(
+                tag_by_name_map.get(tag_name) != tag_value
+                for tag_name, tag_value in required_tag_by_name_map.items()
+            ):
+                raise DevelopmentEnvironmentError(
+                    f"Retained rollback volume {volume_id} ownership is ambiguous"
+                )
+            if (
+                volume_payload.get("State") != "available"
+                or volume_payload.get("Attachments") != []
+                or volume_payload.get("Encrypted") is not True
+                or volume_payload.get("Size") != current_volume_payload.get("Size")
+                or volume_payload.get("KmsKeyId")
+                != current_volume_payload.get("KmsKeyId")
+                or "workflow-control-center-retained-backup" in tag_by_name_map
+            ):
+                raise DevelopmentEnvironmentError(
+                    f"Retained rollback volume {volume_id} is not safe to replace"
+                )
+            self._aws_run(["ec2", "delete-volume", "--volume-id", volume_id])
+            self._aws_run(
+                ["ec2", "wait", "volume-deleted", "--volume-ids", volume_id]
+            )
+            print(f"OK: stale retained rollback volume {volume_id} deleted")
 
     def _retained_volume_payload_get(self, *, volume_id: str) -> dict[str, object]:
         """Return one exact retained EBS volume payload.
@@ -2354,9 +2940,34 @@ shutil.rmtree(root_path)
         return command_id
 
     def _ssm_shell_run(self, shell_command_list: list[str]) -> None:
+        payload = self._ssm_shell_result_get(shell_command_list)
+        print(payload.get("StandardOutputContent", ""), end="")
+        error_text = payload.get("StandardErrorContent", "")
+        if error_text:
+            print(error_text, end="", file=os.sys.stderr)
+
+    def _ssm_shell_result_get(
+        self,
+        shell_command_list: list[str],
+        *,
+        timeout_seconds: int | None = None,
+    ) -> dict[str, object]:
+        """Run one SSM shell command and return its successful invocation.
+
+        Args:
+            shell_command_list: Exact AWS-RunShellScript command list.
+            timeout_seconds: Optional local polling deadline; the default is the
+                current standard SSM timeout. Remote execution is never cancelled.
+
+        Returns:
+            Successful SSM command invocation payload.
+        """
+
+        if timeout_seconds is None:
+            timeout_seconds = SSM_COMMAND_TIMEOUT_SECONDS
         command_id = self._ssm_command_start(shell_command_list)
         instance_id = self._instance_id_get()
-        t_deadline = self._clock.monotonic() + SSM_COMMAND_TIMEOUT_SECONDS
+        t_deadline = self._clock.monotonic() + timeout_seconds
         payload: dict[str, object] | None = None
         while self._clock.monotonic() < t_deadline:
             payload = self._ssm_command_invocation_payload_get(
@@ -2378,16 +2989,13 @@ shutil.rmtree(root_path)
         }:
             raise DevelopmentEnvironmentError(
                 f"SSM command {command_id} did not finish within "
-                f"{SSM_COMMAND_TIMEOUT_SECONDS} seconds; the remote command was not cancelled"
+                f"{timeout_seconds} seconds; the remote command was not cancelled"
             )
-        print(payload.get("StandardOutputContent", ""), end="")
-        error_text = payload.get("StandardErrorContent", "")
-        if error_text:
-            print(error_text, end="", file=os.sys.stderr)
         if payload.get("Status") != "Success":
             raise DevelopmentEnvironmentError(
                 f"SSM command {command_id} failed with {payload.get('Status')}"
             )
+        return payload
 
     def _ssm_command_invocation_payload_get(
         self, *, command_id: str, instance_id: str
@@ -2753,6 +3361,19 @@ shutil.rmtree(root_path)
         return submodule_by_path_map
 
     def _stack_drift_validate(self, stack_name: str) -> None:
+        stack_payload = self._stack_payload_get(stack_name, is_required=True)
+        if stack_payload.get("StackStatus") not in {
+            "CREATE_COMPLETE",
+            "UPDATE_COMPLETE",
+        }:
+            raise DevelopmentEnvironmentError(
+                f"Stack {stack_name} is not in a complete operational state"
+            )
+        self._stack_parameter_by_name_map_get(stack_name)
+        if not self._stack_output_by_name_map_get(stack_name):
+            raise DevelopmentEnvironmentError(
+                f"Stack {stack_name} has no validated outputs"
+            )
         payload = self._aws_json_get(
             ["cloudformation", "detect-stack-drift", "--stack-name", stack_name]
         )

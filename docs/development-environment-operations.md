@@ -40,7 +40,7 @@ python tool/development_environment_manage.py stop
 python tool/development_environment_manage.py status
 ```
 
-`start` сначала создаёт one-time external stop schedule на два часа и не запускает instance, если schedule не создан. Schedule вызывает stack-owned tag-resolving stop function. CloudFormation create/replacement отдельно защищает stack-owned replacement guard, который включается до instance по dependency и выключается только после readiness и доказанного renewable lease. После start команда ждёт EC2, SSM, retained mount, k3s и host controller readiness.
+`start` сначала создаёт one-time external stop schedule на два часа и не запускает instance, если schedule не создан. Schedule вызывает stack-owned tag-resolving stop function. CloudFormation create/replacement отдельно защищает stack-owned replacement guard, который включается до instance по dependency и выключается только после readiness и доказанного renewable lease. После start команда ждёт EC2, SSM, успешный cloud-init, exact retained mount, k3s, Kubernetes node и host controller readiness. Внутренние create/replacement flows после cloud-init устанавливают exact проверенный infrastructure source и controller до финального proof; обычный lifecycle-only `start` переиспользует уже установленный controller и не превращается в неявный deploy.
 
 `stop` выполняет тот же graceful cordon/drain/service-stop path, что и idle controller, затем удаляет pending schedule после доказанной остановки. `status` показывает instance, SSM sessions, stop lease, retained volume, latest snapshot, k3s, current release и безопасный WCC activity summary без secret values.
 
@@ -114,8 +114,11 @@ CloudFormation не обновляет `AWS::EC2::Volume.SnapshotId` in place. S
 restore создаёт новый physical volume даже при повторном восстановлении. После
 точной проверки нового volume старый `Retain` volume теряет только DLM backup tag:
 его данные сохраняются, но семь новых daily snapshots больше не создаются для
-неактивного volume. `status` показывает current retained-volume slot и source
-snapshot.
+неактивного volume. Одновременно допускаются current и только один предыдущий
+rollback volume. Перед следующим restore более старый rollback удаляется лишь после
+проверки exact stack tags, encryption, размера, KMS key, состояния `available`,
+пустых attachments и отсутствия DLM tag; current volume cleanup не затрагивает.
+`status` показывает current retained-volume slot и source snapshot.
 
 `replace` и `restore` задают следующий alternating slot и включённый двухчасовой replacement guard, gracefully останавливают старый instance, доказывают detachment retained EBS и только затем исполняют replacement change set. CloudFormation создаёт новую launch-template version и запускает instance лишь после обновления guard; после запуска проверяется exact version из EC2 metadata. При rollback старый volume повторно подключается к stack-declared остановленному instance до возврата ошибки. Обычный `apply` этот lifecycle не выполняет.
 
@@ -140,4 +143,4 @@ snapshot.
 
 Initial cutover с laptop kind сохраняет identity и observability state логическими exports, но пересоздаёт Product databases, workflow state, registry и development Data/Secret/Result/Athena state. Local cluster и его данные остаются на laptop до полной remote acceptance.
 
-Удаление старого local-kind state, старого retained volume, snapshots, identity state или GlitchTip state не является частью обычного deploy/restore и выполняется только отдельной точной операцией.
+Удаление старого local-kind state, current retained volume, единственного текущего rollback volume, snapshots, identity state или GlitchTip state не является частью обычного deploy и выполняется только отдельной точной операцией. Единственное исключение — bounded cleanup более старого rollback volume в начале следующего explicit `restore`.
