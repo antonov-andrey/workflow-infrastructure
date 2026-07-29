@@ -64,10 +64,8 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--snapshot-id", help="Exact retained-volume snapshot used by restore."
     )
-    parser.add_argument(
-        "ssh_argument_list", nargs=argparse.REMAINDER, help=argparse.SUPPRESS
-    )
-    args = parser.parse_args(argv_list)
+    args, remaining_argument_list = parser.parse_known_args(argv_list)
+    args.ssh_argument_list = remaining_argument_list
     if args.command == "restore" and not args.snapshot_id:
         parser.error("--snapshot-id is required for restore")
     if args.snapshot_id and args.command != "restore":

@@ -15,6 +15,7 @@ import tarfile
 from cfnlint.decode import decode
 import pytest
 
+from tool import development_environment_manage
 from tool.lib import development_environment
 from tool.lib.development_environment import (
     Clock,
@@ -110,6 +111,32 @@ def _template_get(project_root_path: Path, template_name: str) -> dict[str, obje
     assert error_list == []
     assert isinstance(template, dict)
     return template
+
+
+def test_cli_keeps_standard_options_after_commands_and_only_forwards_ssh_arguments() -> (
+    None
+):
+    """Restore and activation options must not be consumed by the SSH remainder."""
+
+    restore_args = development_environment_manage._args_parse(
+        ["restore", "--snapshot-id", "snap-0123456789abcdef0"]
+    )
+    activation_args = development_environment_manage._args_parse(
+        [
+            "host-product-release-activate",
+            "--release",
+            "20260728120000000000",
+        ]
+    )
+    ssh_args = development_environment_manage._args_parse(
+        ["ssh", "--", "-L", "8080:localhost:8080"]
+    )
+
+    assert restore_args.snapshot_id == "snap-0123456789abcdef0"
+    assert restore_args.ssh_argument_list == []
+    assert activation_args.release == "20260728120000000000"
+    assert activation_args.ssh_argument_list == []
+    assert ssh_args.ssh_argument_list == ["-L", "8080:localhost:8080"]
 
 
 def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
