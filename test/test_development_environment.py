@@ -148,6 +148,65 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
     )
     resource_by_name_map = template["Resources"]
     assert isinstance(resource_by_name_map, dict)
+    assert template["Parameters"]["RetainedVolumeSlot"]["AllowedValues"] == [
+        "base",
+        "a",
+        "b",
+    ]
+    assert template["Rules"]["RetainedVolumeSourceIsConsistent"] == {
+        "Assertions": [
+            {
+                "Assert": {
+                    "Fn::Or": [
+                        {
+                            "Fn::And": [
+                                {
+                                    "Fn::Equals": [
+                                        {"Ref": "RetainedVolumeSlot"},
+                                        "base",
+                                    ]
+                                },
+                                {
+                                    "Fn::Equals": [
+                                        {"Ref": "RetainedVolumeSnapshotId"},
+                                        "",
+                                    ]
+                                },
+                            ]
+                        },
+                        {
+                            "Fn::And": [
+                                {
+                                    "Fn::Not": [
+                                        {
+                                            "Fn::Equals": [
+                                                {"Ref": "RetainedVolumeSlot"},
+                                                "base",
+                                            ]
+                                        }
+                                    ]
+                                },
+                                {
+                                    "Fn::Not": [
+                                        {
+                                            "Fn::Equals": [
+                                                {"Ref": "RetainedVolumeSnapshotId"},
+                                                "",
+                                            ]
+                                        }
+                                    ]
+                                },
+                            ]
+                        },
+                    ]
+                },
+                "AssertDescription": (
+                    "The base slot has no snapshot and restored slots require one "
+                    "exact snapshot."
+                ),
+            }
+        ]
+    }
 
     resource_type_set = {
         resource["Type"]
@@ -159,11 +218,35 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
     security_group = resource_by_name_map["DevelopmentSecurityGroup"]
     assert "SecurityGroupIngress" not in security_group["Properties"]
 
-    retained_volume = resource_by_name_map["RetainedVolume"]
-    assert retained_volume["DeletionPolicy"] == "Retain"
-    assert retained_volume["UpdateReplacePolicy"] == "Retain"
-    assert retained_volume["Properties"]["Encrypted"] is True
-    assert retained_volume["Properties"]["VolumeType"] == "gp3"
+    retained_volume_by_name_map = {
+        name: resource_by_name_map[name]
+        for name in (
+            "RetainedVolume",
+            "RetainedVolumeRestoreA",
+            "RetainedVolumeRestoreB",
+        )
+    }
+    for retained_volume in retained_volume_by_name_map.values():
+        assert retained_volume["DeletionPolicy"] == "Retain"
+        assert retained_volume["UpdateReplacePolicy"] == "Retain"
+        assert retained_volume["Properties"]["Encrypted"] is True
+        assert retained_volume["Properties"]["VolumeType"] == "gp3"
+    assert retained_volume_by_name_map["RetainedVolume"]["Condition"] == (
+        "UseRetainedVolumeBase"
+    )
+    assert "SnapshotId" not in retained_volume_by_name_map["RetainedVolume"]["Properties"]
+    assert retained_volume_by_name_map["RetainedVolumeRestoreA"]["Condition"] == (
+        "UseRetainedVolumeRestoreA"
+    )
+    assert retained_volume_by_name_map["RetainedVolumeRestoreB"]["Condition"] == (
+        "UseRetainedVolumeRestoreB"
+    )
+    assert retained_volume_by_name_map["RetainedVolumeRestoreA"]["Properties"][
+        "SnapshotId"
+    ] == {"Ref": "RetainedVolumeSnapshotId"}
+    assert retained_volume_by_name_map["RetainedVolumeRestoreB"]["Properties"][
+        "SnapshotId"
+    ] == {"Ref": "RetainedVolumeSnapshotId"}
 
     snapshot_schedule = resource_by_name_map["RetainedSnapshotLifecyclePolicy"][
         "Properties"
@@ -201,10 +284,33 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
         resource_by_name_map["DevelopmentInstance"]["Properties"]["LaunchTemplate"]
         == launch_template_reference
     )
+    retained_volume_reference = {
+        "Fn::If": [
+            "UseRetainedVolumeBase",
+            {"Ref": "RetainedVolume"},
+            {
+                "Fn::If": [
+                    "UseRetainedVolumeRestoreA",
+                    {"Ref": "RetainedVolumeRestoreA"},
+                    {"Ref": "RetainedVolumeRestoreB"},
+                ]
+            },
+        ]
+    }
     assert resource_by_name_map["RetainedVolumeAttachment"]["Properties"] == {
         "Device": "/dev/sdf",
         "InstanceId": {"Ref": "DevelopmentInstance"},
-        "VolumeId": {"Ref": "RetainedVolume"},
+        "VolumeId": retained_volume_reference,
+    }
+    assert launch_template_data["UserData"]["Fn::Base64"]["Fn::Sub"][1][
+        "RetainedVolumeId"
+    ] == retained_volume_reference
+    assert template["Outputs"]["RetainedVolumeId"]["Value"] == retained_volume_reference
+    assert template["Outputs"]["RetainedVolumeSlot"]["Value"] == {
+        "Ref": "RetainedVolumeSlot"
+    }
+    assert template["Outputs"]["RetainedVolumeSourceSnapshotId"]["Value"] == {
+        "Ref": "RetainedVolumeSnapshotId"
     }
     assert template["Outputs"]["LatestLaunchTemplateVersion"]["Value"] == {
         "Fn::GetAtt": ["DevelopmentLaunchTemplate", "LatestVersionNumber"]
@@ -584,6 +690,11 @@ def test_ordinary_compute_apply_rejects_every_possible_stable_identity_replaceme
             "logical_resource_id": "RetainedVolumeAttachment",
             "replacement": "False",
         },
+        {
+            "action": "Remove",
+            "logical_resource_id": "RetainedVolumeRestoreA",
+            "replacement": "False",
+        },
     ]
 
     assert environment._protected_identity_change_violation_list_get(
@@ -591,7 +702,11 @@ def test_ordinary_compute_apply_rejects_every_possible_stable_identity_replaceme
         protected_identity_logical_id_set=(
             development_environment.COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET
         ),
-    ) == ["DevelopmentInstance", "RetainedVolumeAttachment"]
+    ) == [
+        "DevelopmentInstance",
+        "RetainedVolumeAttachment",
+        "RetainedVolumeRestoreA",
+    ]
 
 
 def test_replacement_parameters_select_next_slot_and_enable_creation_guard(
@@ -677,6 +792,171 @@ def test_replacement_detaches_retained_volume_only_after_proven_stop(
             "--volume-ids",
             "vol-retained",
         ],
+    ]
+
+
+@pytest.mark.parametrize(
+    ("current_slot", "next_slot"),
+    [
+        ("base", "a"),
+        ("a", "b"),
+        ("b", "a"),
+    ],
+)
+def test_restore_plan_alternates_declarative_retained_volume_resources(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    current_slot: str,
+    next_slot: str,
+) -> None:
+    """Every restore selects a new logical volume while ordinary replacement does not."""
+
+    environment = _environment_get(tmp_path)
+    validation_argument_list: list[dict[str, str]] = []
+    monkeypatch.setattr(
+        environment,
+        "_stack_output_by_name_map_get",
+        lambda stack_name: {
+            "RetainedVolumeId": "vol-source",
+            "RetainedVolumeSlot": current_slot,
+        },
+    )
+    monkeypatch.setattr(
+        environment,
+        "_retained_volume_snapshot_source_validate",
+        lambda **kwargs: validation_argument_list.append(kwargs),
+    )
+
+    assert environment._retained_volume_restore_plan_get(
+        snapshot_id="snap-0123456789abcdef0"
+    ) == (
+        "vol-source",
+        {
+            "RetainedVolumeSlot": next_slot,
+            "RetainedVolumeSnapshotId": "snap-0123456789abcdef0",
+        },
+    )
+    assert validation_argument_list == [
+        {
+            "snapshot_id": "snap-0123456789abcdef0",
+            "source_volume_id": "vol-source",
+        }
+    ]
+
+
+def test_restore_source_must_be_completed_owned_encrypted_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Restore preflight rejects a snapshot before stopping the current instance."""
+
+    environment = _environment_get(tmp_path)
+    snapshot_payload = {
+        "Encrypted": True,
+        "OwnerId": development_environment.AWS_ACCOUNT_ID,
+        "SnapshotId": "snap-0123456789abcdef0",
+        "State": "completed",
+        "VolumeSize": 80,
+    }
+    monkeypatch.setattr(
+        environment,
+        "_retained_volume_payload_get",
+        lambda **kwargs: {"Size": 80},
+    )
+    monkeypatch.setattr(
+        environment,
+        "_aws_json_get",
+        lambda arguments: {"Snapshots": [snapshot_payload]},
+    )
+
+    environment._retained_volume_snapshot_source_validate(
+        snapshot_id="snap-0123456789abcdef0",
+        source_volume_id="vol-source",
+    )
+
+    snapshot_payload["State"] = "pending"
+    with pytest.raises(
+        DevelopmentEnvironmentError,
+        match="not an exact usable encrypted source",
+    ):
+        environment._retained_volume_snapshot_source_validate(
+            snapshot_id="snap-0123456789abcdef0",
+            source_volume_id="vol-source",
+        )
+
+
+def test_restore_proves_distinct_snapshot_volume_and_retires_old_backup_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A successful restore must switch physical identity and one active DLM target."""
+
+    environment = _environment_get(tmp_path)
+    old_volume_payload = {
+        "Attachments": [],
+        "State": "available",
+        "Tags": [
+            {
+                "Key": "workflow-control-center-retained-backup",
+                "Value": "enabled",
+            }
+        ],
+    }
+    aws_argument_list_list: list[list[str]] = []
+    monkeypatch.setattr(
+        environment,
+        "_stack_output_by_name_map_get",
+        lambda stack_name: {"RetainedVolumeId": "vol-restored"},
+    )
+    monkeypatch.setattr(
+        environment,
+        "_retained_volume_payload_get",
+        lambda **kwargs: (
+            {
+                "Encrypted": True,
+                "SnapshotId": "snap-0123456789abcdef0",
+                "Tags": [
+                    {
+                        "Key": "workflow-control-center-retained-backup",
+                        "Value": "enabled",
+                    }
+                ],
+            }
+            if kwargs["volume_id"] == "vol-restored"
+            else old_volume_payload
+        ),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_retained_volume_state_get",
+        lambda **kwargs: ("available", []),
+    )
+
+    def aws_run(
+        argument_list: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        aws_argument_list_list.append(argument_list)
+        old_volume_payload["Tags"] = []
+        return subprocess.CompletedProcess(argument_list, 0, "{}", "")
+
+    monkeypatch.setattr(environment, "_aws_run", aws_run)
+
+    environment._retained_volume_snapshot_restore_validate(
+        snapshot_id="snap-0123456789abcdef0",
+        source_volume_id="vol-source",
+    )
+    environment._retained_volume_backup_disable(volume_id="vol-source")
+
+    assert aws_argument_list_list == [
+        [
+            "ec2",
+            "delete-tags",
+            "--resources",
+            "vol-source",
+            "--tags",
+            "Key=workflow-control-center-retained-backup",
+        ]
     ]
 
 
@@ -922,8 +1202,33 @@ def test_restore_combines_snapshot_and_creation_guard_in_controlled_replacement(
     monkeypatch.setattr(environment, "stop", lambda: operation_list.append("stop"))
     monkeypatch.setattr(
         environment,
+        "_retained_volume_restore_plan_get",
+        lambda **kwargs: (
+            "vol-source",
+            {
+                "RetainedVolumeSlot": "a",
+                "RetainedVolumeSnapshotId": kwargs["snapshot_id"],
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        environment,
         "_replacement_stack_apply",
         lambda **kwargs: operation_list.append(kwargs["parameter_by_name_map"]),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_retained_volume_snapshot_restore_validate",
+        lambda **kwargs: operation_list.append(
+            ("validate-volume", kwargs["snapshot_id"], kwargs["source_volume_id"])
+        ),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_retained_volume_backup_disable",
+        lambda **kwargs: operation_list.append(
+            ("disable-backup", kwargs["volume_id"])
+        ),
     )
     monkeypatch.setattr(environment, "start", lambda: operation_list.append("start"))
     monkeypatch.setattr(
@@ -960,8 +1265,15 @@ def test_restore_combines_snapshot_and_creation_guard_in_controlled_replacement(
             "InstanceSlot": "b",
             "ReplacementGuardScheduleExpression": "at(2026-07-28T14:00:00)",
             "ReplacementGuardScheduleState": "ENABLED",
+            "RetainedVolumeSlot": "a",
             "RetainedVolumeSnapshotId": "snap-0123456789abcdef0",
         },
+        (
+            "validate-volume",
+            "snap-0123456789abcdef0",
+            "vol-source",
+        ),
+        ("disable-backup", "vol-source"),
         "start",
         "disable-guard",
         "publish",

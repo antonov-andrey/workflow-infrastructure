@@ -64,6 +64,15 @@ Parameters:
     MinValue: 80
     Description: Size of the encrypted retained Product state volume.
 
+  RetainedVolumeSlot:
+    Type: String
+    Default: base
+    AllowedValues:
+      - base
+      - a
+      - b
+    Description: Stable base volume or alternating restored-volume resource slot.
+
   RetainedVolumeSnapshotId:
     Type: String
     Default: ''
@@ -98,9 +107,24 @@ Parameters:
       - 'true'
     Description: Whether to create the no-hourly-charge S3 gateway endpoint.
 
+Rules:
+  RetainedVolumeSourceIsConsistent:
+    Assertions:
+      - Assert:
+          Fn::Or:
+            - Fn::And:
+                - !Equals [!Ref RetainedVolumeSlot, base]
+                - !Equals [!Ref RetainedVolumeSnapshotId, '']
+            - Fn::And:
+                - !Not [!Equals [!Ref RetainedVolumeSlot, base]]
+                - !Not [!Equals [!Ref RetainedVolumeSnapshotId, '']]
+        AssertDescription: The base slot has no snapshot and restored slots require one exact snapshot.
+
 Conditions:
-  HasRetainedVolumeSnapshot: !Not [!Equals [!Ref RetainedVolumeSnapshotId, '']]
   IsAmd64: !Equals [!Ref ComputeArchitecture, amd64]
+  UseRetainedVolumeBase: !Equals [!Ref RetainedVolumeSlot, base]
+  UseRetainedVolumeRestoreA: !Equals [!Ref RetainedVolumeSlot, a]
+  UseRetainedVolumeRestoreB: !Equals [!Ref RetainedVolumeSlot, b]
   UseS3GatewayEndpoint: !Equals [!Ref S3GatewayEndpointEnabled, 'true']
 
 Resources:
@@ -310,13 +334,59 @@ Resources:
 
   RetainedVolume:
     Type: AWS::EC2::Volume
+    Condition: UseRetainedVolumeBase
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
       AvailabilityZone: !GetAtt DevelopmentSubnet.AvailabilityZone
       Encrypted: true
       Size: !Ref RetainedVolumeSizeGiB
-      SnapshotId: !If [HasRetainedVolumeSnapshot, !Ref RetainedVolumeSnapshotId, !Ref AWS::NoValue]
+      VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development-retained
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: workflow-control-center-retained-backup
+          Value: enabled
+
+  RetainedVolumeRestoreA:
+    Type: AWS::EC2::Volume
+    Condition: UseRetainedVolumeRestoreA
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AvailabilityZone: !GetAtt DevelopmentSubnet.AvailabilityZone
+      Encrypted: true
+      Size: !Ref RetainedVolumeSizeGiB
+      SnapshotId: !Ref RetainedVolumeSnapshotId
+      VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development-retained
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: workflow-control-center-retained-backup
+          Value: enabled
+
+  RetainedVolumeRestoreB:
+    Type: AWS::EC2::Volume
+    Condition: UseRetainedVolumeRestoreB
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AvailabilityZone: !GetAtt DevelopmentSubnet.AvailabilityZone
+      Encrypted: true
+      Size: !Ref RetainedVolumeSizeGiB
+      SnapshotId: !Ref RetainedVolumeSnapshotId
       VolumeType: gp3
       Tags:
         - Key: Name
@@ -669,7 +739,13 @@ Resources:
               systemctl enable --now k3s workflow-control-center-imds-deny
               systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service 2>/dev/null \
                 || systemctl enable --now amazon-ssm-agent
-            - RetainedVolumeId: !Ref RetainedVolume
+            - RetainedVolumeId: !If
+                - UseRetainedVolumeBase
+                - !Ref RetainedVolume
+                - !If
+                  - UseRetainedVolumeRestoreA
+                  - !Ref RetainedVolumeRestoreA
+                  - !Ref RetainedVolumeRestoreB
       LaunchTemplateName: workflow-control-center-development
       TagSpecifications:
         - ResourceType: launch-template
@@ -698,7 +774,13 @@ Resources:
     Properties:
       Device: /dev/sdf
       InstanceId: !Ref DevelopmentInstance
-      VolumeId: !Ref RetainedVolume
+      VolumeId: !If
+        - UseRetainedVolumeBase
+        - !Ref RetainedVolume
+        - !If
+          - UseRetainedVolumeRestoreA
+          - !Ref RetainedVolumeRestoreA
+          - !Ref RetainedVolumeRestoreB
 
 Outputs:
   AccountId:
@@ -720,7 +802,17 @@ Outputs:
   ReplacementGuardScheduleName:
     Value: !Ref InstanceCreationGuardSchedule
   RetainedVolumeId:
-    Value: !Ref RetainedVolume
+    Value: !If
+      - UseRetainedVolumeBase
+      - !Ref RetainedVolume
+      - !If
+        - UseRetainedVolumeRestoreA
+        - !Ref RetainedVolumeRestoreA
+        - !Ref RetainedVolumeRestoreB
+  RetainedVolumeSlot:
+    Value: !Ref RetainedVolumeSlot
+  RetainedVolumeSourceSnapshotId:
+    Value: !Ref RetainedVolumeSnapshotId
   SchedulerExecutionRoleArn:
     Value: !GetAtt SchedulerExecutionRole.Arn
   SchedulerGroupName:

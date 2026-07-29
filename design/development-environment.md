@@ -109,7 +109,22 @@ IMDSv2 обязателен, hop limit равен `1`. Kubernetes workloads до
 
 `release/releases/<release>/` содержит exact source graph, source manifest, Product release manifest, Kustomize render, release-local ingress manifest и Helm archives. `release/current` является абсолютной атомарно заменяемой ссылкой только на полностью принятый child release. Root-volume `/opt/workflow-infrastructure/current` является восстановимой ссылкой на retained `release/current`, а не владельцем Product release.
 
-Volume имеет `DeletionPolicy: Retain` и `UpdateReplacePolicy: Retain`. Ordinary stop/start сохраняет его. Instance replacement повторно подключает тот же volume. Семь ежедневных incremental snapshots обеспечивают восстановление на новый volume, включая exact current Product release, необходимый для пересоздания disposable k3s.
+Volume имеет `DeletionPolicy: Retain` и `UpdateReplacePolicy: Retain`. Ordinary
+stop/start сохраняет его. Instance replacement повторно подключает тот же volume.
+Семь ежедневных incremental snapshots обеспечивают восстановление на новый volume,
+включая exact current Product release, необходимый для пересоздания disposable k3s.
+
+`AWS::EC2::Volume.SnapshotId` нельзя обновить у существующего physical volume.
+Поэтому stack имеет base retained resource и два alternating restore resources
+`a`/`b`. Обычный replacement сохраняет текущий retained-volume slot, а каждый
+snapshot restore выбирает следующий slot, создаёт новый physical volume и оставляет
+предыдущий volume по `Retain`. До остановки compute orchestrator доказывает, что
+snapshot принадлежит development account, завершён, зашифрован и помещается в
+утверждённый volume. После update он доказывает новый physical ID, exact
+`SnapshotId`, encryption и attachment, а затем исключает оставленный старый volume
+из DLM target tag. Поэтому daily lifecycle продолжает обслуживать только current
+retained volume, а старые retained volumes остаются точками ручного rollback без
+нового ежедневного snapshot fan-out.
 
 `postgres/` физически объединяет БД `apwid`, `apwid_test`, `zitadel` и `glitchtip`, но их логические lifecycle различаются. Product reset может пересоздать только `apwid`, `apwid_test`, workflow registry, WorkflowRun storage и явно выбранные Product data-plane objects. Он сохраняет ZITADEL users, password hashes, identity-provider links, Product role grants, GlitchTip database, uploaded files и source-map state.
 

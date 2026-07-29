@@ -26,6 +26,8 @@ COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET = frozenset(
         "DevelopmentInstance",
         "RetainedVolume",
         "RetainedVolumeAttachment",
+        "RetainedVolumeRestoreA",
+        "RetainedVolumeRestoreB",
     }
 )
 DATA_PLANE_STACK_NAME = "workflow-control-center-development"
@@ -944,11 +946,20 @@ WantedBy=multi-user.target
         replacement_parameter_by_name_map = (
             self._replacement_parameter_by_name_map_get()
         )
-        replacement_parameter_by_name_map["RetainedVolumeSnapshotId"] = snapshot_id
+        (
+            source_volume_id,
+            restore_parameter_by_name_map,
+        ) = self._retained_volume_restore_plan_get(snapshot_id=snapshot_id)
+        replacement_parameter_by_name_map.update(restore_parameter_by_name_map)
         self.stop()
         self._replacement_stack_apply(
             parameter_by_name_map=replacement_parameter_by_name_map
         )
+        self._retained_volume_snapshot_restore_validate(
+            snapshot_id=snapshot_id,
+            source_volume_id=source_volume_id,
+        )
+        self._retained_volume_backup_disable(volume_id=source_volume_id)
         self.start()
         self._replacement_guard_disable()
         self._infrastructure_source_publish()
@@ -1137,10 +1148,21 @@ WantedBy=multi-user.target
                     "instance_id": instance_id,
                     "instance_state": self._instance_state_get(instance_id),
                     "instance_type": output_by_name_map["InstanceType"],
-                    "latest_retained_snapshot_id": self._latest_snapshot_id_get(
-                        output_by_name_map["RetainedVolumeId"]
+                    "latest_retained_snapshot_id": (
+                        self._latest_snapshot_id_get(
+                            output_by_name_map["RetainedVolumeId"]
+                        )
+                        or output_by_name_map.get(
+                            "RetainedVolumeSourceSnapshotId", ""
+                        )
                     ),
                     "retained_volume_id": output_by_name_map["RetainedVolumeId"],
+                    "retained_volume_slot": output_by_name_map.get(
+                        "RetainedVolumeSlot", "base"
+                    ),
+                    "retained_volume_source_snapshot_id": output_by_name_map.get(
+                        "RetainedVolumeSourceSnapshotId", ""
+                    ),
                     "stop_lease": self._stop_lease_payload_get(),
                 }
             )
@@ -1530,19 +1552,7 @@ WantedBy=multi-user.target
             Volume state and attachment payload list.
         """
 
-        payload = self._aws_json_get(
-            ["ec2", "describe-volumes", "--volume-ids", volume_id]
-        )
-        volume_list = payload.get("Volumes", [])
-        if (
-            not isinstance(volume_list, list)
-            or len(volume_list) != 1
-            or not isinstance(volume_list[0], dict)
-        ):
-            raise DevelopmentEnvironmentError(
-                "Retained EBS volume response is malformed"
-            )
-        volume = volume_list[0]
+        volume = self._retained_volume_payload_get(volume_id=volume_id)
         state = volume.get("State")
         attachment_list = volume.get("Attachments", [])
         if (
@@ -1644,6 +1654,177 @@ WantedBy=multi-user.target
         )
         self._aws_run(["ec2", "wait", "volume-in-use", "--volume-ids", volume_id])
         self._retained_volume_attachment_validate()
+
+    def _retained_volume_restore_plan_get(
+        self, *, snapshot_id: str
+    ) -> tuple[str, dict[str, str]]:
+        """Select the next declarative restored-volume slot.
+
+        Args:
+            snapshot_id: Exact completed retained-volume snapshot.
+
+        Returns:
+            Source volume identity and exact CloudFormation parameter overrides.
+        """
+
+        output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
+        source_volume_id = output_by_name_map.get("RetainedVolumeId")
+        current_slot = output_by_name_map.get("RetainedVolumeSlot", "base")
+        if not isinstance(source_volume_id, str) or not source_volume_id.startswith(
+            "vol-"
+        ):
+            raise DevelopmentEnvironmentError(
+                "Compute stack retained-volume output is malformed"
+            )
+        next_slot_by_current_slot_map = {
+            "a": "b",
+            "b": "a",
+            "base": "a",
+        }
+        try:
+            next_slot = next_slot_by_current_slot_map[current_slot]
+        except KeyError as error:
+            raise DevelopmentEnvironmentError(
+                "Compute stack retained-volume slot is malformed"
+            ) from error
+        self._retained_volume_snapshot_source_validate(
+            snapshot_id=snapshot_id,
+            source_volume_id=source_volume_id,
+        )
+        return source_volume_id, {
+            "RetainedVolumeSlot": next_slot,
+            "RetainedVolumeSnapshotId": snapshot_id,
+        }
+
+    def _retained_volume_snapshot_source_validate(
+        self, *, snapshot_id: str, source_volume_id: str
+    ) -> None:
+        """Prove one snapshot is a usable encrypted source before stopping compute.
+
+        Args:
+            snapshot_id: Exact snapshot selected by the operator.
+            source_volume_id: Current retained volume used for size validation.
+        """
+
+        source_payload = self._retained_volume_payload_get(volume_id=source_volume_id)
+        payload = self._aws_json_get(
+            ["ec2", "describe-snapshots", "--snapshot-ids", snapshot_id]
+        )
+        snapshot_list = payload.get("Snapshots", [])
+        if (
+            not isinstance(snapshot_list, list)
+            or len(snapshot_list) != 1
+            or not isinstance(snapshot_list[0], dict)
+        ):
+            raise DevelopmentEnvironmentError(
+                "Retained EBS snapshot response is malformed"
+            )
+        snapshot_payload = snapshot_list[0]
+        if (
+            snapshot_payload.get("SnapshotId") != snapshot_id
+            or snapshot_payload.get("State") != "completed"
+            or snapshot_payload.get("Encrypted") is not True
+            or snapshot_payload.get("OwnerId") != AWS_ACCOUNT_ID
+            or not isinstance(snapshot_payload.get("VolumeSize"), int)
+            or not isinstance(source_payload.get("Size"), int)
+            or snapshot_payload["VolumeSize"] > source_payload["Size"]
+        ):
+            raise DevelopmentEnvironmentError(
+                "Retained EBS snapshot is not an exact usable encrypted source"
+            )
+
+    def _retained_volume_snapshot_restore_validate(
+        self, *, snapshot_id: str, source_volume_id: str
+    ) -> None:
+        """Prove restore created a distinct current volume from the exact snapshot.
+
+        Args:
+            snapshot_id: Exact source snapshot.
+            source_volume_id: Retained volume active before restore.
+        """
+
+        output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
+        restored_volume_id = output_by_name_map.get("RetainedVolumeId")
+        if (
+            not isinstance(restored_volume_id, str)
+            or restored_volume_id == source_volume_id
+        ):
+            raise DevelopmentEnvironmentError(
+                "Snapshot restore did not create a distinct retained volume"
+            )
+        payload = self._retained_volume_payload_get(volume_id=restored_volume_id)
+        tag_by_name_map = {
+            tag["Key"]: tag["Value"]
+            for tag in payload.get("Tags", [])
+            if isinstance(tag, dict)
+            and isinstance(tag.get("Key"), str)
+            and isinstance(tag.get("Value"), str)
+        }
+        if (
+            payload.get("SnapshotId") != snapshot_id
+            or payload.get("Encrypted") is not True
+            or tag_by_name_map.get("workflow-control-center-retained-backup")
+            != "enabled"
+        ):
+            raise DevelopmentEnvironmentError(
+                "Restored retained volume does not match the exact snapshot contract"
+            )
+
+    def _retained_volume_backup_disable(self, *, volume_id: str) -> None:
+        """Stop daily snapshots for one retained but no-longer-current volume.
+
+        Args:
+            volume_id: Previous retained volume left by the Retain policy.
+        """
+
+        state, attachment_list = self._retained_volume_state_get(volume_id=volume_id)
+        if state != "available" or attachment_list:
+            raise DevelopmentEnvironmentError(
+                "Previous retained volume cannot leave the backup set while attached"
+            )
+        self._aws_run(
+            [
+                "ec2",
+                "delete-tags",
+                "--resources",
+                volume_id,
+                "--tags",
+                "Key=workflow-control-center-retained-backup",
+            ]
+        )
+        payload = self._retained_volume_payload_get(volume_id=volume_id)
+        if any(
+            isinstance(tag, dict)
+            and tag.get("Key") == "workflow-control-center-retained-backup"
+            for tag in payload.get("Tags", [])
+        ):
+            raise DevelopmentEnvironmentError(
+                "Previous retained volume still belongs to the daily backup set"
+            )
+
+    def _retained_volume_payload_get(self, *, volume_id: str) -> dict[str, object]:
+        """Return one exact retained EBS volume payload.
+
+        Args:
+            volume_id: Exact EBS volume identifier.
+
+        Returns:
+            Validated volume payload.
+        """
+
+        payload = self._aws_json_get(
+            ["ec2", "describe-volumes", "--volume-ids", volume_id]
+        )
+        volume_list = payload.get("Volumes", [])
+        if (
+            not isinstance(volume_list, list)
+            or len(volume_list) != 1
+            or not isinstance(volume_list[0], dict)
+        ):
+            raise DevelopmentEnvironmentError(
+                "Retained EBS volume response is malformed"
+            )
+        return volume_list[0]
 
     def _latest_snapshot_id_get(self, volume_id: str) -> str:
         payload = self._aws_json_get(

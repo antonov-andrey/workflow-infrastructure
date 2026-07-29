@@ -100,7 +100,22 @@ AWS, infrastructure, cluster и Product findings показываются раз
 python tool/development_environment_manage.py restore --snapshot-id <snapshot-id>
 ```
 
-`restore` создаёт новый encrypted retained volume из exact snapshot, не изменяя source snapshot и старый retained volume, подключает его к replacement instance и запускает полный recovery acceptance. Snapshot обязан содержать retained `release/current` и соответствующий exact release; отсутствие или изменение tracked source, manifests, render, Helm archives, ingress artifact либо registry digest закрывает recovery.
+`restore` создаёт новый encrypted retained volume из exact snapshot, не изменяя
+source snapshot и старый retained volume, подключает его к replacement instance и
+запускает полный recovery acceptance. Snapshot до остановки instance должен быть
+`completed`, принадлежать development account, быть encrypted и помещаться в
+текущий approved volume size. Snapshot обязан содержать retained
+`release/current` и соответствующий exact release; отсутствие или изменение
+tracked source, manifests, render, Helm archives, ingress artifact либо registry
+digest закрывает recovery.
+
+CloudFormation не обновляет `AWS::EC2::Volume.SnapshotId` in place. Stack
+декларативно переключает base/`a`/`b` retained-volume resources, поэтому каждый
+restore создаёт новый physical volume даже при повторном восстановлении. После
+точной проверки нового volume старый `Retain` volume теряет только DLM backup tag:
+его данные сохраняются, но семь новых daily snapshots больше не создаются для
+неактивного volume. `status` показывает current retained-volume slot и source
+snapshot.
 
 `replace` и `restore` задают следующий alternating slot и включённый двухчасовой replacement guard, gracefully останавливают старый instance, доказывают detachment retained EBS и только затем исполняют replacement change set. CloudFormation создаёт новую launch-template version и запускает instance лишь после обновления guard; после запуска проверяется exact version из EC2 metadata. При rollback старый volume повторно подключается к stack-declared остановленному instance до возврата ошибки. Обычный `apply` этот lifecycle не выполняет.
 
