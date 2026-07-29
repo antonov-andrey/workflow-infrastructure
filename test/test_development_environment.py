@@ -2655,6 +2655,11 @@ def test_lifecycle_acceptance_uses_short_real_lease_then_restores_production(
     )
     monkeypatch.setattr(
         environment,
+        "_source_repository_validate",
+        lambda *args: event_list.append("source"),
+    )
+    monkeypatch.setattr(
+        environment,
         "_stack_drift_validate",
         lambda stack_name: event_list.append(("drift", stack_name)),
     )
@@ -2736,6 +2741,9 @@ def test_lifecycle_acceptance_failure_restores_controller_and_production_lease(
     lease_call_count = 0
 
     monkeypatch.setattr(environment, "_local_operator_context_validate", lambda: None)
+    monkeypatch.setattr(
+        environment, "_source_repository_validate", lambda *args: None
+    )
     monkeypatch.setattr(environment, "_stack_drift_validate", lambda stack_name: None)
     monkeypatch.setattr(
         environment, "_instance_id_get", lambda: "i-0123456789abcdef0"

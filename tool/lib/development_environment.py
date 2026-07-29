@@ -975,6 +975,9 @@ WantedBy=multi-user.target
         """
 
         self._local_operator_context_validate()
+        self._source_repository_validate(
+            self._project_root_path, "workflow-infrastructure"
+        )
         self._stack_drift_validate(COMPUTE_STACK_NAME)
         instance_id = self._instance_id_get()
         if self._instance_state_get(instance_id) != "running":
