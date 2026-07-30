@@ -4940,7 +4940,8 @@ shutil.rmtree(root_path)
                 causing_summary = summary_by_logical_id_map.get(causing_logical_id)
                 if (
                     detail.get("Evaluation") != "Dynamic"
-                    or detail.get("ChangeSource") != "ResourceAttribute"
+                    or detail.get("ChangeSource")
+                    not in {"ResourceAttribute", "ResourceReference"}
                     or causing_summary is None
                     or causing_summary.get("action") != "Modify"
                 ):

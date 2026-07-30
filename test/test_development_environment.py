@@ -2217,10 +2217,14 @@ def test_stable_data_change_proves_transitive_conditional_dependency_chain(
 
     environment = _environment_get(tmp_path)
 
-    def dynamic_detail(causing_entity: str) -> dict[str, object]:
+    def dynamic_detail(
+        causing_entity: str,
+        *,
+        change_source: str = "ResourceAttribute",
+    ) -> dict[str, object]:
         return {
             "CausingEntity": causing_entity,
-            "ChangeSource": "ResourceAttribute",
+            "ChangeSource": change_source,
             "Evaluation": "Dynamic",
             "Target": {"RequiresRecreation": "Always"},
         }
@@ -2245,7 +2249,10 @@ def test_stable_data_change_proves_transitive_conditional_dependency_chain(
         {
             "action": "Modify",
             "detail_list": [
-                dynamic_detail("VpnValidationIpResource"),
+                dynamic_detail(
+                    "VpnValidationIpResource",
+                    change_source="ResourceReference",
+                ),
             ],
             "logical_resource_id": "VpnValidationGetMethod",
             "replacement": "Conditional",
