@@ -862,23 +862,6 @@ Resources:
               - !Ref DevelopmentSecurityGroup
             SubnetId: !Ref DevelopmentSubnet
         TagSpecifications:
-          - ResourceType: instance
-            Tags:
-              - Key: Name
-                Value: !If
-                  - IsPrimaryEnvironment
-                  - workflow-control-center-development
-                  - !Sub workflow-control-center-development-${EnvironmentName}
-              - Key: Project
-                Value: !Ref NotificationTagValue
-              - Key: Environment
-                Value: development
-              - Key: EnvironmentName
-                Value: !Ref EnvironmentName
-              - Key: ManagedBy
-                Value: CloudFormation
-              - Key: ReplacementSlot
-                Value: !Ref InstanceSlot
           - ResourceType: volume
             Tags:
               - Key: Name
@@ -1172,6 +1155,22 @@ Resources:
       LaunchTemplate:
         LaunchTemplateId: !Ref DevelopmentHostLaunchTemplate
         Version: !Ref InstanceLaunchTemplateVersion
+      Tags:
+        - Key: Name
+          Value: !If
+            - IsPrimaryEnvironment
+            - workflow-control-center-development
+            - !Sub workflow-control-center-development-${EnvironmentName}
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
+        - Key: ManagedBy
+          Value: CloudFormation
+        - Key: ReplacementSlot
+          Value: !Ref InstanceSlot
 
   RetainedVolumeAttachment:
     Type: AWS::EC2::VolumeAttachment

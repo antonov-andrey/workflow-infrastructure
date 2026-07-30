@@ -395,14 +395,26 @@ class DevelopmentEnvironment:
             )
         )
         legacy_runtime_transition_is_required = False
+        replacement_recovery_is_pending = False
         if compute_stack_exists:
-            self._stack_drift_validate(self._identity.compute_stack_name)
+            self._stack_drift_validate(
+                self._identity.compute_stack_name,
+                should_allow_instance_launch_template_tag_drift=True,
+            )
+            current_compute_parameter_by_name_map = (
+                self._stack_parameter_by_name_map_get(self._identity.compute_stack_name)
+            )
             legacy_runtime_transition_is_required = (
                 self._legacy_product_tool_runtime_transition_is_required(
-                    self._stack_parameter_by_name_map_get(
-                        self._identity.compute_stack_name
-                    )
+                    current_compute_parameter_by_name_map
                 )
+            )
+            replacement_recovery_is_pending = (
+                not legacy_runtime_transition_is_required
+                and current_compute_parameter_by_name_map.get(
+                    "ReplacementGuardScheduleState"
+                )
+                == "ENABLED"
             )
         host_artifact_resolution = self._host_artifact_resolution_get(
             compute_stack_exists=compute_stack_exists
@@ -448,6 +460,10 @@ class DevelopmentEnvironment:
             raise DevelopmentEnvironmentError(
                 "Data-plane platform role output is malformed"
             )
+        if replacement_recovery_is_pending:
+            self._replacement_recovery_finish(
+                should_allow_instance_launch_template_tag_drift=True
+            )
         if legacy_runtime_transition_is_required:
             self._legacy_product_tool_runtime_transition_prepare()
         compute_parameter_by_name_map: dict[str, str] = {
@@ -473,11 +489,7 @@ class DevelopmentEnvironment:
             self._replacement_stack_apply(
                 parameter_by_name_map=compute_parameter_by_name_map
             )
-            self.start(should_publish_infrastructure_source=True)
-            self._replacement_guard_disable()
-            self._retained_product_release_link_restore()
-            self._product_recovery_apply_run()
-            self._product_recovery_acceptance_run()
+            self._replacement_recovery_finish()
         else:
             self._stack_apply(
                 stack_name=self._identity.compute_stack_name,
@@ -498,11 +510,7 @@ class DevelopmentEnvironment:
                         self._replacement_parameter_by_name_map_get()
                     )
                 )
-                self.start(should_publish_infrastructure_source=True)
-                self._replacement_guard_disable()
-                self._retained_product_release_link_restore()
-                self._product_recovery_apply_run()
-                self._product_recovery_acceptance_run()
+                self._replacement_recovery_finish()
             else:
                 self.start(should_publish_infrastructure_source=True)
                 self._replacement_guard_disable()
@@ -510,6 +518,29 @@ class DevelopmentEnvironment:
         self._stack_drift_validate(self._identity.compute_stack_name)
         self._retained_snapshot_policy_validate()
         print("OK: development data-plane and compute stacks are applied")
+
+    def _replacement_recovery_finish(
+        self,
+        *,
+        should_allow_instance_launch_template_tag_drift: bool = False,
+    ) -> None:
+        """Finish one created replacement host from retained Product state.
+
+        Args:
+            should_allow_instance_launch_template_tag_drift: Whether an interrupted
+                first-generation cutover may reconcile its exact known tag drift.
+        """
+
+        self.start(
+            should_publish_infrastructure_source=True,
+            should_allow_instance_launch_template_tag_drift=(
+                should_allow_instance_launch_template_tag_drift
+            ),
+        )
+        self._replacement_guard_disable()
+        self._retained_product_release_link_restore()
+        self._product_recovery_apply_run()
+        self._product_recovery_acceptance_run()
 
     def _legacy_product_tool_runtime_transition_prepare(self) -> None:
         """Retain the current Product-tool runtime before the first root replacement.
@@ -1998,16 +2029,26 @@ WantedBy=multi-user.target
             result = self._runner.run(command_list, check=False, should_capture=False)
             return result.returncode
 
-    def start(self, *, should_publish_infrastructure_source: bool = False) -> None:
+    def start(
+        self,
+        *,
+        should_publish_infrastructure_source: bool = False,
+        should_allow_instance_launch_template_tag_drift: bool = False,
+    ) -> None:
         """Create the external stop lease before starting and verify host readiness.
 
         Args:
             should_publish_infrastructure_source: Whether a newly replaced host needs
                 the already validated exact controller source installed before proof.
+            should_allow_instance_launch_template_tag_drift: Whether an interrupted
+                first-generation cutover may reconcile its one exact known tag drift.
         """
 
         self._host_start_foundation(
-            should_validate_source=should_publish_infrastructure_source
+            should_validate_source=should_publish_infrastructure_source,
+            should_allow_instance_launch_template_tag_drift=(
+                should_allow_instance_launch_template_tag_drift
+            ),
         )
         if should_publish_infrastructure_source:
             self._infrastructure_source_publish()
@@ -2015,16 +2056,29 @@ WantedBy=multi-user.target
         instance_id = self._instance_id_get()
         print(f"OK: development instance {instance_id} is ready")
 
-    def _host_start_foundation(self, *, should_validate_source: bool) -> None:
+    def _host_start_foundation(
+        self,
+        *,
+        should_validate_source: bool,
+        should_allow_instance_launch_template_tag_drift: bool = False,
+    ) -> None:
         """Start the host through SSM without changing its installed controller.
 
         Args:
             should_validate_source: Whether a following exact-source publication
                 requires the local infrastructure checkout to be validated.
+            should_allow_instance_launch_template_tag_drift: Whether the exact
+                transition-only instance tag drift may pass this preflight.
         """
 
         self._local_operator_context_validate()
-        self._stack_drift_validate(self._identity.compute_stack_name)
+        if should_allow_instance_launch_template_tag_drift:
+            self._stack_drift_validate(
+                self._identity.compute_stack_name,
+                should_allow_instance_launch_template_tag_drift=True,
+            )
+        else:
+            self._stack_drift_validate(self._identity.compute_stack_name)
         if should_validate_source:
             self._source_repository_validate(
                 self._project_root_path, "workflow-infrastructure"
@@ -5036,7 +5090,20 @@ shutil.rmtree(root_path)
             }
         return submodule_by_path_map
 
-    def _stack_drift_validate(self, stack_name: str) -> None:
+    def _stack_drift_validate(
+        self,
+        stack_name: str,
+        *,
+        should_allow_instance_launch_template_tag_drift: bool = False,
+    ) -> None:
+        """Prove one stack is in sync or has only the exact reconcilable tag drift.
+
+        Args:
+            stack_name: Exact CloudFormation stack name.
+            should_allow_instance_launch_template_tag_drift: Whether the pre-apply
+                boundary may accept the first hardened instance's known tag drift.
+        """
+
         stack_payload = self._stack_payload_get(stack_name, is_required=True)
         if stack_payload.get("StackStatus") not in {
             "CREATE_COMPLETE",
@@ -5045,7 +5112,7 @@ shutil.rmtree(root_path)
             raise DevelopmentEnvironmentError(
                 f"Stack {stack_name} is not in a complete operational state"
             )
-        self._stack_parameter_by_name_map_get(stack_name)
+        parameter_by_name_map = self._stack_parameter_by_name_map_get(stack_name)
         if not self._stack_output_by_name_map_get(stack_name):
             raise DevelopmentEnvironmentError(
                 f"Stack {stack_name} has no validated outputs"
@@ -5071,6 +5138,21 @@ shutil.rmtree(root_path)
             detection_status = status_payload.get("DetectionStatus")
             if detection_status == "DETECTION_COMPLETE":
                 if status_payload.get("StackDriftStatus") != "IN_SYNC":
+                    if (
+                        should_allow_instance_launch_template_tag_drift
+                        and self._instance_launch_template_tag_drift_is_exact(
+                            stack_name=stack_name,
+                            parameter_by_name_map=parameter_by_name_map,
+                            drifted_resource_count=status_payload.get(
+                                "DriftedStackResourceCount"
+                            ),
+                        )
+                    ):
+                        print(
+                            f"OK: stack {stack_name} has only the reconcilable "
+                            "instance launch-template tag drift"
+                        )
+                        return
                     raise DevelopmentEnvironmentError(
                         f"Stack {stack_name} is not IN_SYNC"
                     )
@@ -5084,6 +5166,141 @@ shutil.rmtree(root_path)
         raise DevelopmentEnvironmentError(
             f"Stack {stack_name} drift detection timed out"
         )
+
+    def _instance_launch_template_tag_drift_is_exact(
+        self,
+        *,
+        stack_name: str,
+        parameter_by_name_map: Mapping[str, str],
+        drifted_resource_count: object,
+    ) -> bool:
+        """Return whether drift is only the retired launch-template instance tags."""
+
+        if drifted_resource_count != 1:
+            return False
+        payload = self._aws_json_get(
+            [
+                "cloudformation",
+                "describe-stack-resource-drifts",
+                "--stack-name",
+                stack_name,
+                "--stack-resource-drift-status-filters",
+                "MODIFIED",
+                "DELETED",
+            ]
+        )
+        drift_list = payload.get("StackResourceDrifts")
+        if not isinstance(drift_list, list) or len(drift_list) != 1:
+            return False
+        drift = drift_list[0]
+        if (
+            not isinstance(drift, dict)
+            or drift.get("LogicalResourceId") != "DevelopmentInstance"
+            or drift.get("ResourceType") != "AWS::EC2::Instance"
+            or drift.get("StackResourceDriftStatus") != "MODIFIED"
+        ):
+            return False
+        try:
+            expected_property_by_name_map = json.loads(str(drift["ExpectedProperties"]))
+            actual_property_by_name_map = json.loads(str(drift["ActualProperties"]))
+        except (KeyError, TypeError, json.JSONDecodeError):
+            return False
+        if not isinstance(expected_property_by_name_map, dict) or not isinstance(
+            actual_property_by_name_map, dict
+        ):
+            return False
+
+        def tag_by_name_map_get(
+            property_by_name_map: Mapping[str, object],
+        ) -> dict[str, str] | None:
+            tag_list = property_by_name_map.get("Tags")
+            if not isinstance(tag_list, list):
+                return None
+            tag_by_name_map: dict[str, str] = {}
+            for tag in tag_list:
+                if not isinstance(tag, dict):
+                    return None
+                name = tag.get("Key")
+                value = tag.get("Value")
+                if (
+                    not isinstance(name, str)
+                    or not isinstance(value, str)
+                    or name in tag_by_name_map
+                ):
+                    return None
+                tag_by_name_map[name] = value
+            return tag_by_name_map
+
+        expected_tag_by_name_map = tag_by_name_map_get(expected_property_by_name_map)
+        actual_tag_by_name_map = tag_by_name_map_get(actual_property_by_name_map)
+        notification_tag_value = parameter_by_name_map.get("NotificationTagValue")
+        replacement_slot = parameter_by_name_map.get("InstanceSlot")
+        if expected_tag_by_name_map != {
+            "Environment": "development",
+            "EnvironmentName": self._identity.environment_name,
+            "ManagedBy": "CloudFormation",
+            "Project": notification_tag_value,
+        } or actual_tag_by_name_map != {
+            **expected_tag_by_name_map,
+            "Name": self._identity.instance_name,
+            "ReplacementSlot": replacement_slot,
+        }:
+            return False
+
+        def volume_identity_list_get(
+            property_by_name_map: Mapping[str, object],
+        ) -> list[tuple[str, str]] | None:
+            volume_list = property_by_name_map.get("Volumes")
+            if not isinstance(volume_list, list):
+                return None
+            identity_list: list[tuple[str, str]] = []
+            for volume in volume_list:
+                if not isinstance(volume, dict):
+                    return None
+                device = volume.get("Device")
+                volume_id = volume.get("VolumeId")
+                if not isinstance(device, str) or not isinstance(volume_id, str):
+                    return None
+                identity_list.append((device, volume_id))
+            return sorted(identity_list)
+
+        if volume_identity_list_get(
+            expected_property_by_name_map
+        ) != volume_identity_list_get(actual_property_by_name_map):
+            return False
+        property_difference_list = drift.get("PropertyDifferences")
+        if (
+            not isinstance(property_difference_list, list)
+            or len(property_difference_list) != 2
+        ):
+            return False
+        actual_difference_tag_by_name_map: dict[str, str] = {}
+        for difference in property_difference_list:
+            if (
+                not isinstance(difference, dict)
+                or difference.get("DifferenceType") != "ADD"
+                or not str(difference.get("PropertyPath", "")).startswith("/Tags/")
+            ):
+                return False
+            try:
+                actual_tag = json.loads(str(difference["ActualValue"]))
+            except (KeyError, TypeError, json.JSONDecodeError):
+                return False
+            if not isinstance(actual_tag, dict):
+                return False
+            name = actual_tag.get("Key")
+            value = actual_tag.get("Value")
+            if (
+                not isinstance(name, str)
+                or not isinstance(value, str)
+                or name in actual_difference_tag_by_name_map
+            ):
+                return False
+            actual_difference_tag_by_name_map[name] = value
+        return actual_difference_tag_by_name_map == {
+            "Name": self._identity.instance_name,
+            "ReplacementSlot": replacement_slot,
+        }
 
     def _stack_output_by_name_map_get(self, stack_name: str) -> dict[str, str]:
         stack_payload = self._stack_payload_get(stack_name, is_required=True)

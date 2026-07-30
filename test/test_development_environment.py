@@ -305,24 +305,6 @@ def test_every_taggable_cloudformation_resource_has_environment_identity(
         resource_property_map = resource.get("Properties", {})
         assert isinstance(resource_property_map, dict)
         tag_list = resource_property_map.get("Tags")
-        if tag_list is None and resource_type == "AWS::EC2::Instance":
-            launch_template_reference = resource_property_map["LaunchTemplate"]
-            assert isinstance(launch_template_reference, dict)
-            launch_template_id = launch_template_reference["LaunchTemplateId"]
-            assert isinstance(launch_template_id, dict)
-            launch_template_name = launch_template_id["Ref"]
-            launch_template = resource_by_name_map[launch_template_name]
-            launch_template_property_map = launch_template["Properties"]
-            tag_specification_list = launch_template_property_map["LaunchTemplateData"][
-                "TagSpecifications"
-            ]
-            instance_tag_specification_list = [
-                tag_specification
-                for tag_specification in tag_specification_list
-                if tag_specification["ResourceType"] == "instance"
-            ]
-            assert len(instance_tag_specification_list) == 1
-            tag_list = instance_tag_specification_list[0]["Tags"]
 
         assert isinstance(
             tag_list, list
@@ -354,10 +336,22 @@ def test_compute_created_resources_preserve_environment_identity_tags() -> None:
     launch_template_data = resource_by_name_map["DevelopmentHostLaunchTemplate"][
         "Properties"
     ]["LaunchTemplateData"]
+    assert [
+        tag_specification["ResourceType"]
+        for tag_specification in launch_template_data["TagSpecifications"]
+    ] == ["volume"]
     for tag_specification in launch_template_data["TagSpecifications"]:
         tag_key_list = [tag["Key"] for tag in tag_specification["Tags"]]
         assert len(tag_key_list) == len(set(tag_key_list))
         assert required_tag_key_set <= set(tag_key_list)
+    instance_tag_list = resource_by_name_map["DevelopmentInstance"]["Properties"][
+        "Tags"
+    ]
+    instance_tag_key_list = [tag["Key"] for tag in instance_tag_list]
+    assert len(instance_tag_key_list) == len(set(instance_tag_key_list))
+    assert required_tag_key_set | {"Name", "ReplacementSlot"} == set(
+        instance_tag_key_list
+    )
 
     snapshot_schedule = resource_by_name_map["RetainedSnapshotLifecyclePolicy"][
         "Properties"
@@ -1794,6 +1788,125 @@ def test_drift_preflight_requires_complete_stack_parameters_and_outputs(
 
     assert operation_list == ["parameters", "outputs", "detect", "inspect"]
     assert capsys.readouterr().out == "OK: stack stack-a drift is IN_SYNC\n"
+
+
+def test_drift_preflight_allows_only_exact_retired_launch_template_tags(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The interrupted cutover may reconcile two exact tags and no other drift."""
+
+    environment = _environment_get(tmp_path)
+    expected_property_by_name_map = {
+        "Tags": [
+            {"Key": "Project", "Value": "workflow-control-center"},
+            {"Key": "ManagedBy", "Value": "CloudFormation"},
+            {"Key": "EnvironmentName", "Value": "primary"},
+            {"Key": "Environment", "Value": "development"},
+        ],
+        "Volumes": [
+            {"VolumeId": "vol-retained", "Device": "/dev/sdf"},
+            {"VolumeId": "vol-root", "Device": "/dev/sda1"},
+        ],
+    }
+    actual_property_by_name_map = {
+        "Tags": [
+            {"Key": "Project", "Value": "workflow-control-center"},
+            {"Key": "Environment", "Value": "development"},
+            {"Key": "EnvironmentName", "Value": "primary"},
+            {"Key": "ReplacementSlot", "Value": "a"},
+            {"Key": "ManagedBy", "Value": "CloudFormation"},
+            {"Key": "Name", "Value": "workflow-control-center-development"},
+        ],
+        "Volumes": list(reversed(expected_property_by_name_map["Volumes"])),
+    }
+    property_difference_list = [
+        {
+            "PropertyPath": "/Tags/5",
+            "ExpectedValue": "null",
+            "ActualValue": json.dumps(
+                {
+                    "Key": "Name",
+                    "Value": "workflow-control-center-development",
+                }
+            ),
+            "DifferenceType": "ADD",
+        },
+        {
+            "PropertyPath": "/Tags/3",
+            "ExpectedValue": "null",
+            "ActualValue": json.dumps({"Key": "ReplacementSlot", "Value": "a"}),
+            "DifferenceType": "ADD",
+        },
+    ]
+    resource_drift_payload = {
+        "StackResourceDrifts": [
+            {
+                "LogicalResourceId": "DevelopmentInstance",
+                "ResourceType": "AWS::EC2::Instance",
+                "ExpectedProperties": json.dumps(expected_property_by_name_map),
+                "ActualProperties": json.dumps(actual_property_by_name_map),
+                "PropertyDifferences": property_difference_list,
+                "StackResourceDriftStatus": "MODIFIED",
+            }
+        ]
+    }
+    monkeypatch.setattr(
+        environment,
+        "_stack_payload_get",
+        lambda stack_name, is_required: {"StackStatus": "UPDATE_COMPLETE"},
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stack_parameter_by_name_map_get",
+        lambda stack_name: {
+            "InstanceSlot": "a",
+            "NotificationTagValue": "workflow-control-center",
+        },
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stack_output_by_name_map_get",
+        lambda stack_name: {"InstanceId": "i-test"},
+    )
+
+    def aws_json_get(argument_list: list[str]) -> dict[str, object]:
+        """Return one exact drift lifecycle."""
+
+        operation = argument_list[1]
+        if operation == "detect-stack-drift":
+            return {"StackDriftDetectionId": "drift-1"}
+        if operation == "describe-stack-drift-detection-status":
+            return {
+                "DetectionStatus": "DETECTION_COMPLETE",
+                "DriftedStackResourceCount": 1,
+                "StackDriftStatus": "DRIFTED",
+            }
+        assert operation == "describe-stack-resource-drifts"
+        return resource_drift_payload
+
+    monkeypatch.setattr(environment, "_aws_json_get", aws_json_get)
+
+    environment._stack_drift_validate(
+        "workflow-control-center-development-compute",
+        should_allow_instance_launch_template_tag_drift=True,
+    )
+
+    assert "has only the reconcilable instance launch-template tag drift" in (
+        capsys.readouterr().out
+    )
+    property_difference_list[0]["ActualValue"] = json.dumps(
+        {"Key": "Name", "Value": "unexpected"}
+    )
+    assert not environment._instance_launch_template_tag_drift_is_exact(
+        stack_name="workflow-control-center-development-compute",
+        parameter_by_name_map={
+            "InstanceSlot": "a",
+            "NotificationTagValue": "workflow-control-center",
+        },
+        drifted_resource_count=1,
+    )
 
 
 def test_source_archive_is_deterministic_and_excludes_untracked_files(
@@ -4019,7 +4132,9 @@ def test_apply_uses_one_controlled_replacement_for_legacy_launch_template(
     monkeypatch.setattr(
         environment,
         "_stack_drift_validate",
-        lambda stack_name: event_list.append(("drift", stack_name)),
+        lambda stack_name, **keyword_argument_by_name_map: event_list.append(
+            ("drift", stack_name, keyword_argument_by_name_map)
+        ),
     )
     monkeypatch.setattr(
         environment,
@@ -4094,8 +4209,12 @@ def test_apply_uses_one_controlled_replacement_for_legacy_launch_template(
     monkeypatch.setattr(
         environment,
         "start",
-        lambda *, should_publish_infrastructure_source: event_list.append(
-            ("start", should_publish_infrastructure_source)
+        lambda *, should_publish_infrastructure_source, should_allow_instance_launch_template_tag_drift=False: event_list.append(
+            (
+                "start",
+                should_publish_infrastructure_source,
+                should_allow_instance_launch_template_tag_drift,
+            )
         ),
     )
     monkeypatch.setattr(
@@ -4155,9 +4274,64 @@ def test_apply_uses_one_controlled_replacement_for_legacy_launch_template(
     )
     assert (
         event_list.index(controlled_replacement)
-        < event_list.index(("start", True))
+        < event_list.index(("start", True, False))
         < event_list.index("disable-guard")
     )
+
+
+def test_replacement_recovery_finish_resumes_exact_interrupted_cutover(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Resume installs control before disabling the guard and recovering Product."""
+
+    environment = _environment_get(tmp_path)
+    event_list: list[object] = []
+    monkeypatch.setattr(
+        environment,
+        "start",
+        lambda **keyword_argument_by_name_map: event_list.append(
+            ("start", keyword_argument_by_name_map)
+        ),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_replacement_guard_disable",
+        lambda: event_list.append("disable-guard"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_retained_product_release_link_restore",
+        lambda: event_list.append("restore-link"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_product_recovery_apply_run",
+        lambda: event_list.append("recover"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_product_recovery_acceptance_run",
+        lambda: event_list.append("recovery-acceptance"),
+    )
+
+    environment._replacement_recovery_finish(
+        should_allow_instance_launch_template_tag_drift=True
+    )
+
+    assert event_list == [
+        (
+            "start",
+            {
+                "should_allow_instance_launch_template_tag_drift": True,
+                "should_publish_infrastructure_source": True,
+            },
+        ),
+        "disable-guard",
+        "restore-link",
+        "recover",
+        "recovery-acceptance",
+    ]
 
 
 @pytest.mark.parametrize(
