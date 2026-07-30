@@ -30,7 +30,9 @@ python tool/development_environment_manage.py <command>
 python tool/development_environment_manage.py apply
 ```
 
-`apply` проверяет оба шаблона, создаёт и инспектирует change sets data-plane и compute stacks, применяет разрешённые изменения и проверяет outputs, retained-resource identities, Session Manager readiness и host bootstrap. Existing stable data-plane stack обновляется in place; compute stack управляется отдельно. Ordinary compute change set не имеет права заменить instance, retained volume или attachment. Если изменение launch template требует instance replacement, `apply` удаляет change set и требует отдельную команду `replace` или `restore`.
+`apply` проверяет оба шаблона, создаёт и инспектирует change sets data-plane и compute stacks, применяет разрешённые изменения и проверяет outputs, retained-resource identities, Session Manager readiness и host bootstrap. Existing stable data-plane stack обновляется in place; compute stack управляется отдельно. Ordinary compute change set не имеет права неявно заменить instance, retained volume или attachment. Если exact launch input изменился, `apply` сам выполняет controlled replacement: сохраняет legacy Product-tool runtime при первом переходе, включает external guard, доказывает остановку и detach, меняет instance slot, подключает тот же retained state и завершает recovery acceptance. Отдельные `replace` и `restore` остаются явными operator recovery commands, а не обязательным продолжением обычного apply.
+
+Data-plane template может превышать inline limit CloudFormation. В этом случае `apply` автоматически публикует exact content-addressed template в retained Observability bucket, проверяет S3 checksum/metadata и использует private `TemplateURL`; вручную загружать template либо делать bucket публичным не требуется. Artifact lifecycle равен 30 дням.
 
 ## Запуск И Остановка
 

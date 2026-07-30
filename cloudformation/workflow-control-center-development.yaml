@@ -26,6 +26,7 @@ Parameters:
 
 Conditions:
   IsPrimaryEnvironment: !Equals [!Ref EnvironmentName, primary]
+  IsNonPrimaryEnvironment: !Not [!Condition IsPrimaryEnvironment]
 
 Resources:
   AccountPublicAccessBlock:
@@ -563,6 +564,15 @@ Resources:
           - Id: RemoveExpiredSourceMapDeleteMarkers
             ExpiredObjectDeleteMarker: true
             Prefix: source-map/
+            Status: Enabled
+          - Id: ExpireCloudFormationTemplatesAfterThirtyDays
+            ExpirationInDays: 30
+            NoncurrentVersionExpirationInDays: 30
+            Prefix: cloudformation-template/
+            Status: Enabled
+          - Id: RemoveExpiredCloudFormationTemplateDeleteMarkers
+            ExpiredObjectDeleteMarker: true
+            Prefix: cloudformation-template/
             Status: Enabled
       OwnershipControls:
         Rules:
@@ -1143,11 +1153,13 @@ Resources:
 
   DataLakeSettings:
     Type: AWS::LakeFormation::DataLakeSettings
+    Condition: IsPrimaryEnvironment
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
       Admins:
         - DataLakePrincipalIdentifier: !Ref DeploymentPrincipalArn
+        - DataLakePrincipalIdentifier: !GetAtt PlatformRole.Arn
       AllowExternalDataFiltering: false
       AllowFullTableExternalDataAccess: false
       CreateDatabaseDefaultPermissions: []
@@ -1162,7 +1174,6 @@ Resources:
     Type: AWS::LakeFormation::Resource
     DependsOn:
       - DataBucketPolicy
-      - DataLakeSettings
       - LakeFormationDataAccessPolicy
     Properties:
       HybridAccessEnabled: false
@@ -1171,8 +1182,9 @@ Resources:
       UseServiceLinkedRole: false
       WithFederation: false
 
-  PlatformRoleCatalogPermission:
+  NonPrimaryPlatformRoleCatalogPermission:
     Type: AWS::LakeFormation::PrincipalPermissions
+    Condition: IsNonPrimaryEnvironment
     # AWS EarlyValidation requires the Lake Formation Catalog union member to
     # be an object. cfn-lint 1.53.3 still carries the older string schema.
     Metadata:
@@ -1180,7 +1192,6 @@ Resources:
         config:
           ignore_checks:
             - E3012
-    DependsOn: DataLakeSettings
     Properties:
       Permissions:
         - CREATE_DATABASE
@@ -1190,8 +1201,9 @@ Resources:
       Resource:
         Catalog: {}
 
-  PlatformRoleDataLocationPermission:
+  NonPrimaryPlatformRoleDataLocationPermission:
     Type: AWS::LakeFormation::PrincipalPermissions
+    Condition: IsNonPrimaryEnvironment
     DependsOn: DataLakeLocation
     Properties:
       Permissions:
@@ -1206,7 +1218,6 @@ Resources:
 
   GlueDatabase:
     Type: AWS::Glue::Database
-    DependsOn: DataLakeSettings
     Properties:
       CatalogId: !Ref AWS::AccountId
       DatabaseInput:
@@ -1221,6 +1232,23 @@ Resources:
 
   PlatformRoleDatabasePermission:
     Type: AWS::LakeFormation::PrincipalPermissions
+    Condition: IsPrimaryEnvironment
+    DependsOn: GlueDatabase
+    Properties:
+      Permissions:
+        - ALL
+      PermissionsWithGrantOption:
+        - ALL
+      Principal:
+        DataLakePrincipalIdentifier: !GetAtt PlatformRole.Arn
+      Resource:
+        Database:
+          CatalogId: !Ref AWS::AccountId
+          Name: workflow_data_000
+
+  NonPrimaryPlatformRoleDatabasePermission:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    Condition: IsNonPrimaryEnvironment
     Properties:
       Permissions:
         - ALL
@@ -1301,6 +1329,26 @@ Resources:
 
   PlatformRoleTablePermission:
     Type: AWS::LakeFormation::PrincipalPermissions
+    Condition: IsPrimaryEnvironment
+    DependsOn:
+      - UserATable
+      - UserBTable
+    Properties:
+      Permissions:
+        - ALL
+      PermissionsWithGrantOption:
+        - ALL
+      Principal:
+        DataLakePrincipalIdentifier: !GetAtt PlatformRole.Arn
+      Resource:
+        Table:
+          CatalogId: !Ref AWS::AccountId
+          DatabaseName: workflow_data_000
+          TableWildcard: {}
+
+  NonPrimaryPlatformRoleTablePermission:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    Condition: IsNonPrimaryEnvironment
     DependsOn:
       - UserATable
       - UserBTable
@@ -1319,6 +1367,22 @@ Resources:
 
   QueryRoleDatabasePermission:
     Type: AWS::LakeFormation::PrincipalPermissions
+    Condition: IsPrimaryEnvironment
+    DependsOn: GlueDatabase
+    Properties:
+      Permissions:
+        - DESCRIBE
+      PermissionsWithGrantOption: []
+      Principal:
+        DataLakePrincipalIdentifier: !GetAtt QueryRole.Arn
+      Resource:
+        Database:
+          CatalogId: !Ref AWS::AccountId
+          Name: workflow_data_000
+
+  NonPrimaryQueryRoleDatabasePermission:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    Condition: IsNonPrimaryEnvironment
     Properties:
       Permissions:
         - DESCRIBE
@@ -1332,6 +1396,25 @@ Resources:
 
   QueryRoleTablePermission:
     Type: AWS::LakeFormation::PrincipalPermissions
+    Condition: IsPrimaryEnvironment
+    DependsOn:
+      - UserATable
+      - UserBTable
+    Properties:
+      Permissions:
+        - SELECT
+      PermissionsWithGrantOption: []
+      Principal:
+        DataLakePrincipalIdentifier: !GetAtt QueryRole.Arn
+      Resource:
+        Table:
+          CatalogId: !Ref AWS::AccountId
+          DatabaseName: workflow_data_000
+          TableWildcard: {}
+
+  NonPrimaryQueryRoleTablePermission:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    Condition: IsNonPrimaryEnvironment
     DependsOn:
       - UserATable
       - UserBTable

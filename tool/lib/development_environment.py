@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Collection, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -30,6 +31,8 @@ from tool.lib.host_artifact import (
 AWS_ACCOUNT_ID = "463564115167"
 AWS_PROFILE = "workflow-control-center-devel"
 AWS_REGION = "us-east-1"
+CLOUDFORMATION_INLINE_TEMPLATE_MAX_BYTE_COUNT = 51_200
+CLOUDFORMATION_S3_TEMPLATE_MAX_BYTE_COUNT = 1_048_576
 COMPUTE_STACK_NAME = "workflow-control-center-development-compute"
 COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET = frozenset(
     {
@@ -4674,8 +4677,7 @@ shutil.rmtree(root_path)
             change_set_name,
             "--change-set-type",
             change_set_type,
-            "--template-body",
-            f"file://{template_path}",
+            *self._cloudformation_template_argument_list_get(template_path),
             "--capabilities",
             "CAPABILITY_NAMED_IAM",
             "--tags",
@@ -4885,6 +4887,80 @@ shutil.rmtree(root_path)
             str(summary.get("logical_resource_id")): summary
             for summary in change_summary_list
         }
+        conditional_safety_by_logical_id_map: dict[str, bool] = {}
+
+        def conditional_change_is_safe(
+            logical_resource_id: str,
+            proving_logical_id_set: frozenset[str] = frozenset(),
+        ) -> bool:
+            """Prove one conditional replacement through its complete dependency chain."""
+
+            if logical_resource_id in conditional_safety_by_logical_id_map:
+                return conditional_safety_by_logical_id_map[logical_resource_id]
+            if logical_resource_id in proving_logical_id_set:
+                conditional_safety_by_logical_id_map[logical_resource_id] = False
+                return False
+            summary = summary_by_logical_id_map.get(logical_resource_id)
+            if (
+                summary is None
+                or summary.get("action") != "Modify"
+                or summary.get("replacement") != "Conditional"
+            ):
+                return False
+            detail_list = summary.get("detail_list")
+            if not isinstance(detail_list, list) or not detail_list:
+                conditional_safety_by_logical_id_map[logical_resource_id] = False
+                return False
+            replacement_detail_list = []
+            for detail in detail_list:
+                if not isinstance(detail, dict):
+                    replacement_detail_list.append(detail)
+                    continue
+                target = detail.get("Target")
+                if isinstance(target, dict) and target.get(
+                    "RequiresRecreation"
+                ) in {
+                    "Always",
+                    "Conditionally",
+                }:
+                    replacement_detail_list.append(detail)
+            if not replacement_detail_list:
+                conditional_safety_by_logical_id_map[logical_resource_id] = False
+                return False
+
+            next_proving_logical_id_set = proving_logical_id_set | {
+                logical_resource_id
+            }
+            for detail in replacement_detail_list:
+                if not isinstance(detail, dict):
+                    conditional_safety_by_logical_id_map[logical_resource_id] = False
+                    return False
+                causing_entity = detail.get("CausingEntity")
+                causing_logical_id = str(causing_entity).split(".", maxsplit=1)[0]
+                causing_summary = summary_by_logical_id_map.get(causing_logical_id)
+                if (
+                    detail.get("Evaluation") != "Dynamic"
+                    or detail.get("ChangeSource") != "ResourceAttribute"
+                    or causing_summary is None
+                    or causing_summary.get("action") != "Modify"
+                ):
+                    conditional_safety_by_logical_id_map[logical_resource_id] = False
+                    return False
+                causing_replacement = causing_summary.get("replacement")
+                if causing_replacement == "False":
+                    continue
+                if causing_replacement == "Conditional" and (
+                    conditional_change_is_safe(
+                        causing_logical_id,
+                        next_proving_logical_id_set,
+                    )
+                ):
+                    continue
+                conditional_safety_by_logical_id_map[logical_resource_id] = False
+                return False
+            conditional_safety_by_logical_id_map[logical_resource_id] = True
+            return True
+
         violation_logical_id_list: list[str] = []
         for summary in change_summary_list:
             logical_resource_id = str(summary.get("logical_resource_id"))
@@ -4895,40 +4971,8 @@ shutil.rmtree(root_path)
                 continue
             if replacement != "Conditional":
                 continue
-            detail_list = summary.get("detail_list")
-            if not isinstance(detail_list, list) or not detail_list:
+            if not conditional_change_is_safe(logical_resource_id):
                 violation_logical_id_list.append(logical_resource_id)
-                continue
-            replacement_detail_list = []
-            for detail in detail_list:
-                if not isinstance(detail, dict):
-                    replacement_detail_list.append(detail)
-                    continue
-                target = detail.get("Target")
-                if isinstance(target, dict) and target.get("RequiresRecreation") in {
-                    "Always",
-                    "Conditionally",
-                }:
-                    replacement_detail_list.append(detail)
-            if not replacement_detail_list:
-                violation_logical_id_list.append(logical_resource_id)
-                continue
-            for detail in replacement_detail_list:
-                if not isinstance(detail, dict):
-                    violation_logical_id_list.append(logical_resource_id)
-                    break
-                causing_entity = detail.get("CausingEntity")
-                causing_logical_id = str(causing_entity).split(".", maxsplit=1)[0]
-                causing_summary = summary_by_logical_id_map.get(causing_logical_id)
-                if (
-                    detail.get("Evaluation") != "Dynamic"
-                    or detail.get("ChangeSource") != "ResourceAttribute"
-                    or causing_summary is None
-                    or causing_summary.get("action") == "Remove"
-                    or causing_summary.get("replacement") != "False"
-                ):
-                    violation_logical_id_list.append(logical_resource_id)
-                    break
         return sorted(set(violation_logical_id_list))
 
     def _submodule_by_path_map_get(
@@ -5345,6 +5389,106 @@ shutil.rmtree(root_path)
             f"instance state {state}"
         )
 
+    def _cloudformation_template_argument_list_get(
+        self,
+        template_path: Path,
+    ) -> list[str]:
+        """Return an inline or content-addressed S3 CloudFormation template reference.
+
+        Args:
+            template_path: Exact local template selected for the operation.
+
+        Returns:
+            AWS CLI argument pair for ``TemplateBody`` or ``TemplateURL``.
+
+        Raises:
+            DevelopmentEnvironmentError: If the template or retained artifact
+                object cannot be proven exact.
+        """
+
+        template_bytes = template_path.read_bytes()
+        template_byte_count = len(template_bytes)
+        if template_byte_count <= CLOUDFORMATION_INLINE_TEMPLATE_MAX_BYTE_COUNT:
+            return ["--template-body", f"file://{template_path}"]
+        if template_byte_count > CLOUDFORMATION_S3_TEMPLATE_MAX_BYTE_COUNT:
+            raise DevelopmentEnvironmentError(
+                f"CloudFormation template {template_path} exceeds the 1 MiB S3 limit"
+            )
+
+        output_by_name_map = self._stack_output_by_name_map_get(
+            self._identity.data_plane_stack_name
+        )
+        bucket_name = output_by_name_map.get("ObservabilityBucketName")
+        if not bucket_name:
+            raise DevelopmentEnvironmentError(
+                "Oversized CloudFormation template requires the retained "
+                "Observability artifact bucket"
+            )
+        digest_bytes = hashlib.sha256(template_bytes).digest()
+        digest = digest_bytes.hex()
+        checksum_sha256 = base64.b64encode(digest_bytes).decode("ascii")
+        object_key = (
+            "cloudformation-template/"
+            f"{self._identity.environment_name}/{digest}.yaml"
+        )
+        head_argument_list = [
+            "s3api",
+            "head-object",
+            "--bucket",
+            bucket_name,
+            "--key",
+            object_key,
+            "--checksum-mode",
+            "ENABLED",
+            "--output",
+            "json",
+        ]
+        head_result = self._aws_run(head_argument_list, check=False)
+        if head_result.returncode != 0:
+            error_text = (head_result.stderr or head_result.stdout).strip()
+            if not any(
+                marker in error_text
+                for marker in ("(404)", "NoSuchKey", "Not Found")
+            ):
+                raise DevelopmentEnvironmentError(
+                    "Unable to inspect CloudFormation template artifact: "
+                    + (error_text or f"exit {head_result.returncode}")
+                )
+            self._aws_run(
+                [
+                    "s3api",
+                    "put-object",
+                    "--bucket",
+                    bucket_name,
+                    "--key",
+                    object_key,
+                    "--body",
+                    str(template_path),
+                    "--checksum-sha256",
+                    checksum_sha256,
+                    "--content-type",
+                    "application/yaml",
+                    "--metadata",
+                    f"sha256={digest}",
+                ]
+            )
+
+        head_payload = self._aws_json_get(head_argument_list)
+        metadata = head_payload.get("Metadata")
+        if (
+            head_payload.get("ContentLength") != template_byte_count
+            or head_payload.get("ChecksumSHA256") != checksum_sha256
+            or not isinstance(metadata, dict)
+            or metadata.get("sha256") != digest
+        ):
+            raise DevelopmentEnvironmentError(
+                "CloudFormation template artifact identity does not match local bytes"
+            )
+        template_url = (
+            f"https://{bucket_name}.s3.{AWS_REGION}.amazonaws.com/{object_key}"
+        )
+        return ["--template-url", template_url]
+
     def _template_validate(self, template_path: Path) -> None:
         self._runner.run(
             [
@@ -5356,8 +5500,7 @@ shutil.rmtree(root_path)
             [
                 "cloudformation",
                 "validate-template",
-                "--template-body",
-                f"file://{template_path}",
+                *self._cloudformation_template_argument_list_get(template_path),
             ]
         )
 

@@ -180,6 +180,94 @@ def test_cloudformation_templates_have_no_duplicate_yaml_keys(
     )
 
 
+def test_cloudformation_template_transport_uses_verified_s3_for_oversized_body(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A template beyond the inline API limit uses one exact private S3 object."""
+
+    environment = _environment_get(tmp_path)
+    template_path = tmp_path / "template.yaml"
+    template_bytes = b"x" * (
+        development_environment.CLOUDFORMATION_INLINE_TEMPLATE_MAX_BYTE_COUNT + 1
+    )
+    template_path.write_bytes(template_bytes)
+    digest_bytes = hashlib.sha256(template_bytes).digest()
+    digest = digest_bytes.hex()
+    checksum_sha256 = base64.b64encode(digest_bytes).decode("ascii")
+    command_list: list[tuple[list[str], bool]] = []
+
+    monkeypatch.setattr(
+        environment,
+        "_stack_output_by_name_map_get",
+        lambda stack_name: {
+            "ObservabilityBucketName": "workflow-control-center-observability"
+        },
+    )
+
+    def aws_run(
+        argument_list: list[str],
+        *,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        command_list.append((argument_list, check))
+        if argument_list[:2] == ["s3api", "head-object"]:
+            return subprocess.CompletedProcess(argument_list, 1, "", "404 Not Found")
+        return subprocess.CompletedProcess(argument_list, 0, "{}", "")
+
+    monkeypatch.setattr(environment, "_aws_run", aws_run)
+    monkeypatch.setattr(
+        environment,
+        "_aws_json_get",
+        lambda argument_list: {
+            "ChecksumSHA256": checksum_sha256,
+            "ContentLength": len(template_bytes),
+            "Metadata": {"sha256": digest},
+        },
+    )
+
+    argument_list = environment._cloudformation_template_argument_list_get(
+        template_path
+    )
+
+    object_key = f"cloudformation-template/primary/{digest}.yaml"
+    assert argument_list == [
+        "--template-url",
+        "https://workflow-control-center-observability.s3.us-east-1.amazonaws.com/"
+        + object_key,
+    ]
+    put_argument_list = command_list[1][0]
+    assert put_argument_list[:2] == ["s3api", "put-object"]
+    assert put_argument_list[put_argument_list.index("--key") + 1] == object_key
+    assert put_argument_list[put_argument_list.index("--checksum-sha256") + 1] == (
+        checksum_sha256
+    )
+    assert put_argument_list[put_argument_list.index("--metadata") + 1] == (
+        f"sha256={digest}"
+    )
+
+
+def test_cloudformation_template_transport_keeps_small_body_inline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A small template does not create an unnecessary S3 artifact."""
+
+    environment = _environment_get(tmp_path)
+    template_path = tmp_path / "template.yaml"
+    template_path.write_text("Resources: {}\n", encoding="utf-8")
+    monkeypatch.setattr(
+        environment,
+        "_stack_output_by_name_map_get",
+        lambda stack_name: pytest.fail("inline template must not inspect S3"),
+    )
+
+    assert environment._cloudformation_template_argument_list_get(template_path) == [
+        "--template-body",
+        f"file://{template_path}",
+    ]
+
+
 @pytest.mark.parametrize(
     "template_name",
     [
@@ -628,10 +716,10 @@ def test_non_primary_environment_physical_names_fit_provider_limits() -> None:
         assert len(rendered_name) <= maximum_length
 
 
-def test_data_plane_keeps_global_lake_settings_stable_and_scopes_platform_control() -> (
+def test_data_plane_keeps_primary_lake_formation_identity_and_isolates_non_primary() -> (
     None
 ):
-    """An environment update must not replace another environment's LF authority."""
+    """Primary permissions stay byte-stable while other environments use distinct owners."""
 
     template = _template_get(
         Path(__file__).resolve().parents[1],
@@ -639,10 +727,16 @@ def test_data_plane_keeps_global_lake_settings_stable_and_scopes_platform_contro
     )
     resource_by_name_map = template["Resources"]
     data_lake_settings = resource_by_name_map["DataLakeSettings"]
+    assert data_lake_settings["Condition"] == "IsPrimaryEnvironment"
     assert data_lake_settings["DeletionPolicy"] == "Retain"
     assert data_lake_settings["UpdateReplacePolicy"] == "Retain"
     assert data_lake_settings["Properties"]["Admins"] == [
         {"DataLakePrincipalIdentifier": {"Ref": "DeploymentPrincipalArn"}},
+        {
+            "DataLakePrincipalIdentifier": {
+                "Fn::GetAtt": ["PlatformRole", "Arn"],
+            }
+        },
     ]
     assert data_lake_settings["Properties"]["MutationType"] == "REPLACE"
 
@@ -651,38 +745,62 @@ def test_data_plane_keeps_global_lake_settings_stable_and_scopes_platform_contro
             "Fn::GetAtt": ["PlatformRole", "Arn"],
         }
     }
-    assert resource_by_name_map["PlatformRoleCatalogPermission"] == {
-        "Type": "AWS::LakeFormation::PrincipalPermissions",
-        "Metadata": {
-            "cfn-lint": {
-                "config": {
-                    "ignore_checks": ["E3012"],
-                }
-            }
-        },
-        "DependsOn": "DataLakeSettings",
-        "Properties": {
-            "Permissions": ["CREATE_DATABASE"],
-            "PermissionsWithGrantOption": [],
-            "Principal": platform_principal,
-            "Resource": {"Catalog": {}},
-        },
+    non_primary_catalog_permission = resource_by_name_map[
+        "NonPrimaryPlatformRoleCatalogPermission"
+    ]
+    assert non_primary_catalog_permission["Condition"] == (
+        "IsNonPrimaryEnvironment"
+    )
+    assert non_primary_catalog_permission["Properties"] == {
+        "Permissions": ["CREATE_DATABASE"],
+        "PermissionsWithGrantOption": [],
+        "Principal": platform_principal,
+        "Resource": {"Catalog": {}},
     }
-    assert resource_by_name_map["PlatformRoleDataLocationPermission"] == {
-        "Type": "AWS::LakeFormation::PrincipalPermissions",
-        "DependsOn": "DataLakeLocation",
-        "Properties": {
-            "Permissions": ["DATA_LOCATION_ACCESS"],
-            "PermissionsWithGrantOption": [],
-            "Principal": platform_principal,
-            "Resource": {
-                "DataLocation": {
-                    "CatalogId": {"Ref": "AWS::AccountId"},
-                    "ResourceArn": {"Fn::GetAtt": ["DataBucket", "Arn"]},
-                }
-            },
-        },
+    non_primary_data_location_permission = resource_by_name_map[
+        "NonPrimaryPlatformRoleDataLocationPermission"
+    ]
+    assert non_primary_data_location_permission["Condition"] == (
+        "IsNonPrimaryEnvironment"
+    )
+    assert non_primary_data_location_permission["Properties"]["Permissions"] == [
+        "DATA_LOCATION_ACCESS"
+    ]
+
+    primary_database_permission = resource_by_name_map[
+        "PlatformRoleDatabasePermission"
+    ]
+    assert primary_database_permission["Condition"] == "IsPrimaryEnvironment"
+    assert primary_database_permission["DependsOn"] == "GlueDatabase"
+    assert primary_database_permission["Properties"]["Principal"] == platform_principal
+    assert primary_database_permission["Properties"]["Resource"] == {
+        "Database": {
+            "CatalogId": {"Ref": "AWS::AccountId"},
+            "Name": "workflow_data_000",
+        }
     }
+    non_primary_database_permission = resource_by_name_map[
+        "NonPrimaryPlatformRoleDatabasePermission"
+    ]
+    assert non_primary_database_permission["Condition"] == "IsNonPrimaryEnvironment"
+    assert non_primary_database_permission["Properties"]["Resource"] == {
+        "Database": {
+            "CatalogId": {"Ref": "AWS::AccountId"},
+            "Name": {"Ref": "GlueDatabase"},
+        }
+    }
+
+    for primary_name, non_primary_name in (
+        ("PlatformRoleTablePermission", "NonPrimaryPlatformRoleTablePermission"),
+        ("QueryRoleDatabasePermission", "NonPrimaryQueryRoleDatabasePermission"),
+        ("QueryRoleTablePermission", "NonPrimaryQueryRoleTablePermission"),
+    ):
+        assert resource_by_name_map[primary_name]["Condition"] == (
+            "IsPrimaryEnvironment"
+        )
+        assert resource_by_name_map[non_primary_name]["Condition"] == (
+            "IsNonPrimaryEnvironment"
+        )
 
 
 @pytest.mark.parametrize(
@@ -1204,6 +1322,10 @@ def test_data_plane_retains_state_and_delegates_history_cleanup_to_product() -> 
     assert "data-download/" in result_lifecycle_text
     assert "athena-result/" in result_lifecycle_text
     assert "source-map/" in observability_lifecycle_text
+    assert "cloudformation-template/" in observability_lifecycle_text
+    assert "ExpireCloudFormationTemplatesAfterThirtyDays" in (
+        observability_lifecycle_text
+    )
 
 
 def test_data_plane_enforces_account_public_block_and_tag_derived_tenant_paths() -> (
@@ -2085,6 +2207,58 @@ def test_stable_data_change_allows_only_identity_preserving_conditional_dependen
     assert environment._stable_data_change_violation_list_get(change_summary_list) == [
         "DataBucket",
         "DataLakeLocation",
+    ]
+
+
+def test_stable_data_change_proves_transitive_conditional_dependency_chain(
+    tmp_path: Path,
+) -> None:
+    """A conditional child is safe when every transitive physical owner is stable."""
+
+    environment = _environment_get(tmp_path)
+
+    def dynamic_detail(causing_entity: str) -> dict[str, object]:
+        return {
+            "CausingEntity": causing_entity,
+            "ChangeSource": "ResourceAttribute",
+            "Evaluation": "Dynamic",
+            "Target": {"RequiresRecreation": "Always"},
+        }
+
+    change_summary_list = [
+        {
+            "action": "Modify",
+            "detail_list": [],
+            "logical_resource_id": "VpnValidationRestApi",
+            "replacement": "False",
+            "resource_type": "AWS::ApiGateway::RestApi",
+        },
+        {
+            "action": "Modify",
+            "detail_list": [
+                dynamic_detail("VpnValidationRestApi.RootResourceId"),
+            ],
+            "logical_resource_id": "VpnValidationIpResource",
+            "replacement": "Conditional",
+            "resource_type": "AWS::ApiGateway::Resource",
+        },
+        {
+            "action": "Modify",
+            "detail_list": [
+                dynamic_detail("VpnValidationIpResource"),
+            ],
+            "logical_resource_id": "VpnValidationGetMethod",
+            "replacement": "Conditional",
+            "resource_type": "AWS::ApiGateway::Method",
+        },
+    ]
+
+    assert environment._stable_data_change_violation_list_get(change_summary_list) == []
+
+    change_summary_list[0]["action"] = "Add"
+    assert environment._stable_data_change_violation_list_get(change_summary_list) == [
+        "VpnValidationGetMethod",
+        "VpnValidationIpResource",
     ]
 
 
