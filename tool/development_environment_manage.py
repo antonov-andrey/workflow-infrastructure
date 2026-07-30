@@ -7,6 +7,8 @@ import argparse
 from pathlib import Path
 import sys
 
+sys.dont_write_bytecode = True
+
 for parent_path in Path(__file__).resolve().parents:
     if not (parent_path / "AGENTS.md").is_file():
         continue
@@ -46,6 +48,10 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
             "diagnose",
             "host-controller",
             "host-install",
+            "host-product-bytecode-guard-install",
+            "host-product-recovery-begin",
+            "host-product-recovery-complete",
+            "host-product-recovery-status",
             "host-product-release-activate",
             "host-product-release-restore",
             "host-product-runtime-retain",
@@ -141,6 +147,14 @@ def main(argv_list: list[str]) -> int:
             environment.host_controller()
         elif args.command == "host-install":
             environment.host_install()
+        elif args.command == "host-product-bytecode-guard-install":
+            environment.host_product_bytecode_guard_install()
+        elif args.command == "host-product-recovery-begin":
+            environment.host_product_recovery_begin()
+        elif args.command == "host-product-recovery-complete":
+            environment.host_product_recovery_complete()
+        elif args.command == "host-product-recovery-status":
+            environment.host_product_recovery_status()
         elif args.command == "host-product-release-activate":
             environment.host_product_release_activate(args.release)
         elif args.command == "host-product-release-restore":

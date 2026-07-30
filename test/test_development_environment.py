@@ -485,7 +485,7 @@ def test_current_product_tool_calls_preserve_nonprimary_environment(
         local_command_list_list.append(argument_list)
         stdout = (
             '{"reason_key_list":[],"status":"idle","t_observed":"2026-07-30T00:00:00Z"}\n'
-            if argument_list[2:3] == ["activity"]
+            if argument_list[5:6] == ["activity"]
             else ""
         )
         return subprocess.CompletedProcess(argument_list, 0, stdout, "")
@@ -527,14 +527,20 @@ def test_current_product_tool_calls_preserve_nonprimary_environment(
     ]
     assert product_local_command_list == [
         [
+            "env",
+            development_environment.PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
             "python3.14",
+            "-B",
             product_tool_path,
             "activity",
             "--environment-name",
             "feature1",
         ],
         [
+            "env",
+            development_environment.PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
             "python3.14",
+            "-B",
             product_tool_path,
             "shutdown",
             "--environment-name",
@@ -549,6 +555,12 @@ def test_current_product_tool_calls_preserve_nonprimary_environment(
             f"{product_tool_path} {command} --environment-name feature1"
             in ssm_command_text
         )
+    assert "host-product-bytecode-guard-install" in ssm_command_text
+    assert (
+        ssm_command_text.index(f"{product_tool_path} recover")
+        < ssm_command_text.index("host-product-bytecode-guard-install")
+        < ssm_command_text.index(f"{product_tool_path} host-install")
+    )
     assert "df -h / /srv/workflow-control-center-feature1" in ssm_command_text
 
 
@@ -562,6 +574,12 @@ def test_current_primary_product_tool_calls_keep_legacy_cli_compatibility(
     command_list = environment._current_product_tool_command_list_get("activity")
 
     assert command_list[-1] == "activity"
+    assert command_list[:4] == [
+        "env",
+        development_environment.PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
+        "python3.14",
+        "-B",
+    ]
     assert "--environment-name" not in command_list
 
 
@@ -3015,6 +3033,11 @@ def test_replace_uses_controlled_detach_and_creation_guard(
     )
     monkeypatch.setattr(
         environment,
+        "_product_recovery_begin",
+        lambda: operation_list.append("begin-recovery"),
+    )
+    monkeypatch.setattr(
+        environment,
         "_retained_product_release_link_restore",
         lambda: operation_list.append("link"),
     )
@@ -3027,6 +3050,11 @@ def test_replace_uses_controlled_detach_and_creation_guard(
         environment,
         "_product_recovery_acceptance_run",
         lambda: operation_list.append("accept"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_product_recovery_complete",
+        lambda: operation_list.append("complete-recovery"),
     )
 
     environment.replace()
@@ -3043,10 +3071,12 @@ def test_replace_uses_controlled_detach_and_creation_guard(
             False,
         ),
         ("start", True),
+        "begin-recovery",
         "disable-guard",
         "link",
         "recover",
         "accept",
+        "complete-recovery",
     ]
 
 
@@ -3139,6 +3169,11 @@ def test_restore_combines_snapshot_and_creation_guard_in_controlled_replacement(
     )
     monkeypatch.setattr(
         environment,
+        "_product_recovery_begin",
+        lambda: operation_list.append("begin-recovery"),
+    )
+    monkeypatch.setattr(
+        environment,
         "_retained_product_release_link_restore",
         lambda: operation_list.append("link"),
     )
@@ -3151,6 +3186,11 @@ def test_restore_combines_snapshot_and_creation_guard_in_controlled_replacement(
         environment,
         "_product_recovery_acceptance_run",
         lambda: operation_list.append("accept"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_product_recovery_complete",
+        lambda: operation_list.append("complete-recovery"),
     )
 
     environment.restore("snap-0123456789abcdef0")
@@ -3176,10 +3216,12 @@ def test_restore_combines_snapshot_and_creation_guard_in_controlled_replacement(
         ),
         ("disable-backup", "vol-source"),
         ("start", True),
+        "begin-recovery",
         "disable-guard",
         "link",
         "recover",
         "accept",
+        "complete-recovery",
     ]
 
 
@@ -3456,7 +3498,8 @@ def test_host_status_probe_normalizes_only_safe_fields(
     )
     assert len(command_list_list) == 1
     assert command_list_list[0][0].startswith(
-        "python3.14 /opt/workflow-infrastructure/control/current/"
+        "env PYTHONDONTWRITEBYTECODE=1 python3.14 -B "
+        "/opt/workflow-infrastructure/control/current/"
     )
     assert (
         "host-status --environment-name primary --retained-volume-id vol-0123456789abcdef0"
@@ -3825,6 +3868,8 @@ def _retained_product_release_prepare(
                 "source_manifest_version": source_manifest_version,
             }
         )
+        if source_manifest_version == development_environment.SOURCE_MANIFEST_VERSION:
+            source_manifest["python_bytecode_write_disabled"] = True
     source_manifest_bytes = (
         json.dumps(source_manifest, indent=2, sort_keys=True) + "\n"
     ).encode()
@@ -3970,7 +4015,14 @@ def test_legacy_product_tool_runtime_is_resolved_before_atomic_retention(
     ) -> subprocess.CompletedProcess[str]:
         del check, input_text, should_capture
         command_list_list.append(argument_list)
-        if argument_list == ["python3.14", str(product_tool_path), "--help"]:
+        if argument_list == [
+            "env",
+            development_environment.PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
+            "python3.14",
+            "-B",
+            str(product_tool_path),
+            "--help",
+        ]:
             (legacy_runtime_path / "bin").mkdir(parents=True)
             (legacy_runtime_path / "pyvenv.cfg").write_text(
                 (
@@ -4006,7 +4058,17 @@ def test_legacy_product_tool_runtime_is_resolved_before_atomic_retention(
             host_python_path
         )
     assert (
-        command_list_list.count(["python3.14", str(product_tool_path), "--help"]) == 1
+        command_list_list.count(
+            [
+                "env",
+                development_environment.PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
+                "python3.14",
+                "-B",
+                str(product_tool_path),
+                "--help",
+            ]
+        )
+        == 1
     )
     assert [
         str(retained_runtime_path / "bin/python"),
@@ -4077,7 +4139,10 @@ def test_legacy_runtime_transition_publishes_control_before_host_retention(
         "ssh",
         [
             "sudo",
+            "env",
+            development_environment.PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
             "python3.14",
+            "-B",
             (
                 "/opt/workflow-infrastructure/control/current/sources/"
                 "workflow-infrastructure/tool/development_environment_manage.py"
@@ -4225,6 +4290,11 @@ def test_apply_uses_one_controlled_replacement_for_legacy_launch_template(
     )
     monkeypatch.setattr(
         environment,
+        "_product_recovery_begin",
+        lambda: event_list.append("begin-recovery"),
+    )
+    monkeypatch.setattr(
+        environment,
         "_retained_product_release_link_restore",
         lambda: event_list.append("restore-link"),
     )
@@ -4237,6 +4307,11 @@ def test_apply_uses_one_controlled_replacement_for_legacy_launch_template(
         environment,
         "_product_recovery_acceptance_run",
         lambda: event_list.append("recovery-acceptance"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_product_recovery_complete",
+        lambda: event_list.append("complete-recovery"),
     )
     monkeypatch.setattr(
         environment,
@@ -4302,6 +4377,11 @@ def test_replacement_recovery_finish_resumes_exact_interrupted_cutover(
     )
     monkeypatch.setattr(
         environment,
+        "_product_recovery_begin",
+        lambda: event_list.append("begin-recovery"),
+    )
+    monkeypatch.setattr(
+        environment,
         "_retained_product_release_link_restore",
         lambda: event_list.append("restore-link"),
     )
@@ -4314,6 +4394,11 @@ def test_replacement_recovery_finish_resumes_exact_interrupted_cutover(
         environment,
         "_product_recovery_acceptance_run",
         lambda: event_list.append("recovery-acceptance"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_product_recovery_complete",
+        lambda: event_list.append("complete-recovery"),
     )
 
     environment._replacement_recovery_finish(
@@ -4328,11 +4413,65 @@ def test_replacement_recovery_finish_resumes_exact_interrupted_cutover(
                 "should_publish_infrastructure_source": True,
             },
         ),
+        "begin-recovery",
         "disable-guard",
         "restore-link",
         "recover",
         "recovery-acceptance",
+        "complete-recovery",
     ]
+
+
+@pytest.mark.parametrize("is_pending", [False, True])
+def test_steady_state_start_resumes_only_proven_pending_product_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    is_pending: bool,
+) -> None:
+    """An interrupted post-guard recovery remains resumable on the next apply."""
+
+    environment = _environment_get(tmp_path)
+    event_list: list[object] = []
+    monkeypatch.setattr(
+        environment,
+        "start",
+        lambda **keyword_argument_by_name_map: event_list.append(
+            ("start", keyword_argument_by_name_map)
+        ),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_product_recovery_is_pending",
+        lambda: event_list.append("status") or is_pending,
+    )
+    monkeypatch.setattr(
+        environment,
+        "_product_recovery_begin",
+        lambda: event_list.append("begin-recovery"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_replacement_guard_disable",
+        lambda: event_list.append("disable-guard"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_product_recovery_finish",
+        lambda: event_list.append("finish-recovery"),
+    )
+
+    environment._steady_state_start_finish()
+
+    expected_event_list: list[object] = [
+        ("start", {"should_publish_infrastructure_source": True}),
+        "status",
+    ]
+    if is_pending:
+        expected_event_list.append("begin-recovery")
+    expected_event_list.append("disable-guard")
+    if is_pending:
+        expected_event_list.append("finish-recovery")
+    assert event_list == expected_event_list
 
 
 def test_failed_replacement_bootstrap_is_replaced_only_before_retained_mount(
@@ -4400,7 +4539,7 @@ def test_failed_replacement_bootstrap_is_replaced_only_before_retained_mount(
 
 @pytest.mark.parametrize(
     "source_manifest_version",
-    [2, development_environment.SOURCE_MANIFEST_VERSION],
+    [2, 3, development_environment.SOURCE_MANIFEST_VERSION],
 )
 def test_host_product_release_activation_accepts_supported_typed_source_graph(
     monkeypatch: pytest.MonkeyPatch,
@@ -4512,6 +4651,16 @@ def test_host_product_release_restore_rejects_changed_tracked_source(
     (
         release_root_path / "sources" / "workflow-control-center" / "tracked.txt"
     ).write_text("changed\n", encoding="utf-8")
+    bytecode_path = (
+        release_root_path
+        / "sources"
+        / "workflow-infrastructure"
+        / "tool"
+        / "__pycache__"
+        / "tool.cpython-314.pyc"
+    )
+    bytecode_path.parent.mkdir(parents=True)
+    bytecode_path.write_bytes(b"must not be removed before the whole release is proven")
     monkeypatch.setattr(
         development_environment,
         "HOST_RETAINED_RELEASE_ROOT_PATH",
@@ -4543,14 +4692,23 @@ def test_host_product_release_restore_rejects_changed_tracked_source(
     ):
         environment.host_product_release_restore()
 
+    assert bytecode_path.is_file()
     assert not current_source_path.exists()
 
 
-def test_host_product_release_restore_rejects_unmanifested_source_file(
+@pytest.mark.parametrize(
+    "relative_path_text",
+    [
+        "unmanifested.py",
+        "tool/__pycache__/tool.cpython-314.pyc",
+    ],
+)
+def test_host_product_release_restore_rejects_current_unmanifested_source_file(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    relative_path_text: str,
 ) -> None:
-    """Recovery must reject added source bytes before executing retained Product code."""
+    """Current releases reject every added source byte, including cache-shaped bytes."""
 
     retained_release_root_path = tmp_path / "retained/release"
     release_root_path = retained_release_root_path / "releases/20260730120000000000"
@@ -4563,9 +4721,17 @@ def test_host_product_release_restore_rejects_unmanifested_source_file(
     )
     current_release_path.parent.mkdir(parents=True, exist_ok=True)
     current_release_path.symlink_to(release_root_path)
-    (
-        release_root_path / "sources" / "workflow-control-center" / "unmanifested.py"
-    ).write_text("raise RuntimeError('must never execute')\n", encoding="utf-8")
+    unmanifested_path = (
+        release_root_path
+        / "sources"
+        / "workflow-control-center"
+        / relative_path_text
+    )
+    unmanifested_path.parent.mkdir(parents=True, exist_ok=True)
+    unmanifested_path.write_text(
+        "raise RuntimeError('must never execute')\n",
+        encoding="utf-8",
+    )
     monkeypatch.setattr(
         development_environment,
         "HOST_RETAINED_RELEASE_ROOT_PATH",
@@ -4597,7 +4763,319 @@ def test_host_product_release_restore_rejects_unmanifested_source_file(
     ):
         environment.host_product_release_restore()
 
+    assert unmanifested_path.is_file()
     assert not current_source_path.exists()
+
+
+def test_host_product_release_restore_removes_only_unmanifested_python_bytecode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Historical interpreter cache is sanitized before the exact graph proof."""
+
+    retained_release_root_path = tmp_path / "retained/release"
+    release_root_path = retained_release_root_path / "releases/20260730120000000000"
+    current_release_path = retained_release_root_path / "current"
+    current_source_path = tmp_path / "root/current"
+    _retained_product_release_prepare(
+        release_root_path,
+        release_name=release_root_path.name,
+        source_manifest_version=3,
+    )
+    current_release_path.parent.mkdir(parents=True, exist_ok=True)
+    current_release_path.symlink_to(release_root_path)
+    cache_directory_path = (
+        release_root_path
+        / "sources"
+        / "workflow-control-center"
+        / "tool"
+        / "lib"
+        / "__pycache__"
+    )
+    cache_directory_path.mkdir(parents=True)
+    bytecode_path = cache_directory_path / "runtime.cpython-314.pyc"
+    bytecode_path.write_bytes(b"historical interpreter cache")
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_RELEASE_ROOT_PATH",
+        retained_release_root_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_CURRENT_RELEASE_PATH",
+        current_release_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RELEASE_ROOT_PATH",
+        retained_release_root_path / "releases",
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_CURRENT_SOURCE_PATH",
+        current_source_path,
+    )
+    environment = _environment_get(
+        tmp_path / "control/current/sources/workflow-infrastructure"
+    )
+    environment._is_host = True
+
+    environment.host_product_release_restore()
+
+    assert not bytecode_path.exists()
+    assert not cache_directory_path.exists()
+    assert current_source_path.resolve(strict=True) == release_root_path
+
+
+def test_host_product_release_restore_rejects_unsafe_python_cache_without_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Recovery never broad-deletes an unmanifested cache-shaped source tree."""
+
+    retained_release_root_path = tmp_path / "retained/release"
+    release_root_path = retained_release_root_path / "releases/20260730120000000000"
+    current_release_path = retained_release_root_path / "current"
+    current_source_path = tmp_path / "root/current"
+    _retained_product_release_prepare(
+        release_root_path,
+        release_name=release_root_path.name,
+        source_manifest_version=3,
+    )
+    current_release_path.parent.mkdir(parents=True, exist_ok=True)
+    current_release_path.symlink_to(release_root_path)
+    cache_directory_path = (
+        release_root_path
+        / "sources"
+        / "workflow-control-center"
+        / "tool"
+        / "__pycache__"
+    )
+    cache_directory_path.mkdir(parents=True)
+    bytecode_path = cache_directory_path / "tool.cpython-314.pyc"
+    bytecode_path.write_bytes(b"historical interpreter cache")
+    unsafe_path = cache_directory_path / "payload.py"
+    unsafe_path.write_text("raise RuntimeError('must remain visible')\n", encoding="utf-8")
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_RELEASE_ROOT_PATH",
+        retained_release_root_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_CURRENT_RELEASE_PATH",
+        current_release_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RELEASE_ROOT_PATH",
+        retained_release_root_path / "releases",
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_CURRENT_SOURCE_PATH",
+        current_source_path,
+    )
+    environment = _environment_get(
+        tmp_path / "control/current/sources/workflow-infrastructure"
+    )
+    environment._is_host = True
+
+    with pytest.raises(
+        DevelopmentEnvironmentError,
+        match="unsupported unmanifested Python cache entry",
+    ):
+        environment.host_product_release_restore()
+
+    assert bytecode_path.read_bytes() == b"historical interpreter cache"
+    assert unsafe_path.is_file()
+    assert not current_source_path.exists()
+
+
+def test_host_product_recovery_marker_is_durable_and_identity_bound(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The savepoint survives guard release and clears only after restored acceptance."""
+
+    retained_release_root_path = tmp_path / "retained/release"
+    release_root_path = retained_release_root_path / "releases/20260730120000000000"
+    current_release_path = retained_release_root_path / "current"
+    current_source_path = tmp_path / "root/current"
+    _retained_product_release_prepare(
+        release_root_path,
+        release_name=release_root_path.name,
+        source_manifest_version=development_environment.SOURCE_MANIFEST_VERSION,
+    )
+    current_release_path.parent.mkdir(parents=True, exist_ok=True)
+    current_release_path.symlink_to(release_root_path)
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_RELEASE_ROOT_PATH",
+        retained_release_root_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_CURRENT_RELEASE_PATH",
+        current_release_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RELEASE_ROOT_PATH",
+        retained_release_root_path / "releases",
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_CURRENT_SOURCE_PATH",
+        current_source_path,
+    )
+    environment = _environment_get(
+        tmp_path / "control/current/sources/workflow-infrastructure"
+    )
+    environment._is_host = True
+
+    environment.host_product_recovery_status()
+    assert json.loads(capsys.readouterr().out) == {"status": "pending"}
+
+    environment.host_product_recovery_begin()
+    assert "savepoint" in capsys.readouterr().out
+    marker_path = retained_release_root_path / "recovery-pending.json"
+    assert json.loads(marker_path.read_text(encoding="utf-8")) == {
+        "environment_name": "primary",
+        "release": release_root_path.name,
+        "state": "pending",
+    }
+
+    current_source_path.parent.mkdir(parents=True, exist_ok=True)
+    current_source_path.symlink_to(current_release_path)
+    product_tool_path = (
+        release_root_path
+        / "sources"
+        / "workflow-control-center"
+        / "tool"
+        / "development_kubernetes_manage.py"
+    )
+    product_tool_path.parent.mkdir(parents=True, exist_ok=True)
+    product_tool_path.write_text("# retained Product tool\n", encoding="utf-8")
+
+    def run(
+        command_list: list[str],
+        **kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        del kwargs
+        if command_list[:1] == ["python3.14"]:
+            pytest.fail("Pending Product recovery must remain host activity")
+        return subprocess.CompletedProcess(command_list, 0, "", "")
+
+    monkeypatch.setattr(environment._runner, "run", run)
+    assert environment._host_product_activity_get() == "busy"
+    environment.host_product_recovery_status()
+    assert json.loads(capsys.readouterr().out) == {"status": "pending"}
+
+    environment.host_product_recovery_complete()
+    assert "complete" in capsys.readouterr().out
+    assert not marker_path.exists()
+    environment.host_product_recovery_status()
+    assert json.loads(capsys.readouterr().out) == {"status": "ready"}
+
+
+def test_host_controller_cannot_write_control_release_bytecode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Host installation keeps both setup and persistent control execution read-only."""
+
+    environment = _environment_get(
+        tmp_path / "control/current/sources/workflow-infrastructure"
+    )
+    written_text_by_path_map: dict[str, str] = {}
+    command_list_list: list[list[str]] = []
+
+    def write_text(
+        path: Path,
+        text: str,
+        *,
+        encoding: str,
+    ) -> int:
+        assert encoding == "utf-8"
+        written_text_by_path_map[str(path)] = text
+        return len(text)
+
+    monkeypatch.setattr(environment, "host_prepare", lambda: None)
+    monkeypatch.setattr(Path, "write_text", write_text)
+    monkeypatch.setattr(
+        development_environment.os,
+        "chmod",
+        lambda path, mode: None,
+    )
+    monkeypatch.setattr(
+        environment._runner,
+        "run",
+        lambda command_list, **kwargs: (
+            command_list_list.append(command_list)
+            or subprocess.CompletedProcess(command_list, 0, "", "")
+        ),
+    )
+
+    environment.host_install()
+
+    assert command_list_list[0][0:4] == [
+        "env",
+        development_environment.PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
+        "python3.14",
+        "-B",
+    ]
+    service_text = written_text_by_path_map[
+        "/etc/systemd/system/workflow-control-center-host-controller.service"
+    ]
+    assert "Environment=PYTHONDONTWRITEBYTECODE=1" in service_text
+    assert (
+        "ExecStart="
+        "/opt/workflow-infrastructure/control/current/sources/"
+        "workflow-infrastructure/.venv/bin/python -B "
+        "/opt/workflow-infrastructure/control/current/sources/"
+        "workflow-infrastructure/tool/development_environment_manage.py "
+        "host-controller --environment-name primary"
+    ) in service_text
+
+
+def test_legacy_recovery_installs_exact_product_systemd_bytecode_guard(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Old retained Product host-install receives the same guard as new Product code."""
+
+    drop_in_path = tmp_path / "systemd/10-python-bytecode.conf"
+    environment = _environment_get(
+        tmp_path / "control/current/sources/workflow-infrastructure"
+    )
+    environment._is_host = True
+    command_list_list: list[list[str]] = []
+    monkeypatch.setattr(
+        development_environment,
+        "PRODUCT_CREDENTIAL_REFRESH_BYTECODE_DROP_IN_PATH",
+        drop_in_path,
+    )
+    monkeypatch.setattr(
+        environment._runner,
+        "run",
+        lambda command_list, **kwargs: (
+            command_list_list.append(command_list)
+            or subprocess.CompletedProcess(command_list, 0, "", "")
+        ),
+    )
+
+    environment.host_product_bytecode_guard_install()
+
+    assert drop_in_path.read_text(encoding="utf-8") == (
+        "[Service]\nEnvironment=PYTHONDONTWRITEBYTECODE=1\n"
+    )
+    assert drop_in_path.stat().st_mode & 0o777 == 0o644
+    assert command_list_list == [
+        ["sync", "-f", str(drop_in_path.parent)],
+        ["systemctl", "daemon-reload"],
+    ]
 
 
 def test_deploy_activates_release_before_installing_product_and_host_services(
@@ -4609,6 +5087,7 @@ def test_deploy_activates_release_before_installing_product_and_host_services(
     environment = _environment_get(tmp_path / "workflow-infrastructure")
     remote_command_list_list: list[list[str]] = []
     remote_release_root_path_list: list[Path] = []
+    source_manifest_payload_list: list[dict[str, object]] = []
 
     monkeypatch.setattr(environment, "_local_operator_context_validate", lambda: None)
     monkeypatch.setattr(
@@ -4626,6 +5105,11 @@ def test_deploy_activates_release_before_installing_product_and_host_services(
         environment,
         "_instance_launch_template_version_validate",
         lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        environment,
+        "_product_recovery_status_get",
+        lambda: "ready",
     )
     monkeypatch.setattr(
         environment,
@@ -4697,11 +5181,17 @@ def test_deploy_activates_release_before_installing_product_and_host_services(
         "_ssh_control_session",
         lambda: nullcontext(tmp_path / "control"),
     )
-    monkeypatch.setattr(
-        environment,
-        "_remote_text_write",
-        lambda **kwargs: None,
-    )
+    def remote_text_write(**kwargs: object) -> None:
+        remote_path = kwargs["remote_path"]
+        assert isinstance(remote_path, Path)
+        if remote_path.name == "source-manifest.json":
+            text = kwargs["text"]
+            assert isinstance(text, str)
+            payload = json.loads(text)
+            assert isinstance(payload, dict)
+            source_manifest_payload_list.append(payload)
+
+    monkeypatch.setattr(environment, "_remote_text_write", remote_text_write)
     monkeypatch.setattr(
         environment,
         "_runtime_platform_get",
@@ -4760,10 +5250,19 @@ def test_deploy_activates_release_before_installing_product_and_host_services(
         < product_host_install_index
         < controller_host_install_index
     )
+    for command_list in remote_command_list_list:
+        if "python3.14" in command_list:
+            python_index = command_list.index("python3.14")
+            assert command_list[python_index + 1] == "-B"
     assert (
         remote_release_root_path_list
         == [development_environment.HOST_RELEASE_ROOT_PATH] * 6
     )
+    assert len(source_manifest_payload_list) == 1
+    assert source_manifest_payload_list[0]["source_manifest_version"] == (
+        development_environment.SOURCE_MANIFEST_VERSION
+    )
+    assert source_manifest_payload_list[0]["python_bytecode_write_disabled"] is True
 
 
 def test_ssm_shell_run_waits_for_real_operation_and_registration_delay(

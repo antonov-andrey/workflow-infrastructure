@@ -89,6 +89,12 @@ PRODUCT_SOURCE_REPOSITORY_NAME_LIST = [
     "workflow-container-runtime",
     "workflow-control-center",
 ]
+PRODUCT_CREDENTIAL_REFRESH_BYTECODE_DROP_IN_PATH = Path(
+    "/etc/systemd/system/"
+    "workflow-control-center-credential-refresh.service.d/"
+    "10-python-bytecode.conf"
+)
+PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT = "PYTHONDONTWRITEBYTECODE=1"
 REPOSITORY_URL_BY_NAME_MAP = {
     "browser-runtime": "git@github.com:antonov-andrey/browser-runtime.git",
     "vpn-runtime": "git@github.com:antonov-andrey/vpn-runtime.git",
@@ -102,8 +108,8 @@ SSM_COMMAND_TIMEOUT_SECONDS = 3600
 SSM_ONLINE_TIMEOUT_SECONDS = 1800
 HOST_READY_TIMEOUT_SECONDS = 1800
 HOST_STATUS_COMMAND_TIMEOUT_SECONDS = 120
-SOURCE_MANIFEST_VERSION = 3
-SUPPORTED_SOURCE_MANIFEST_VERSION_SET = frozenset({2, SOURCE_MANIFEST_VERSION})
+SOURCE_MANIFEST_VERSION = 4
+SUPPORTED_SOURCE_MANIFEST_VERSION_SET = frozenset({2, 3, SOURCE_MANIFEST_VERSION})
 STACK_POLL_INTERVAL_SECONDS = 5
 STACK_TIMEOUT_SECONDS = 3600
 ENVIRONMENT_NAME_PATTERN = re.compile(r"[a-z][a-z0-9]{0,15}")
@@ -233,6 +239,12 @@ class DevelopmentEnvironmentIdentity:
         if self.is_primary:
             return HOST_RETAINED_CURRENT_RELEASE_PATH
         return self.host_retained_release_root_path / "current"
+
+    @property
+    def host_product_recovery_marker_path(self) -> Path:
+        """Return the retained interrupted-Product-recovery marker."""
+
+        return self.host_retained_release_root_path / "recovery-pending.json"
 
     @property
     def host_current_source_path(self) -> Path:
@@ -522,12 +534,22 @@ class DevelopmentEnvironment:
                     "available for replacement"
                 )
             else:
-                self.start(should_publish_infrastructure_source=True)
-                self._replacement_guard_disable()
+                self._steady_state_start_finish()
         self._stack_drift_validate(self._identity.data_plane_stack_name)
         self._stack_drift_validate(self._identity.compute_stack_name)
         self._retained_snapshot_policy_validate()
         print("OK: development data-plane and compute stacks are applied")
+
+    def _steady_state_start_finish(self) -> None:
+        """Start current compute and resume only a proven pending Product recovery."""
+
+        self.start(should_publish_infrastructure_source=True)
+        product_recovery_is_pending = self._product_recovery_is_pending()
+        if product_recovery_is_pending:
+            self._product_recovery_begin()
+        self._replacement_guard_disable()
+        if product_recovery_is_pending:
+            self._product_recovery_finish()
 
     def _replacement_recovery_finish(
         self,
@@ -547,10 +569,17 @@ class DevelopmentEnvironment:
                 should_allow_instance_launch_template_tag_drift
             ),
         )
+        self._product_recovery_begin()
         self._replacement_guard_disable()
+        self._product_recovery_finish()
+
+    def _product_recovery_finish(self) -> None:
+        """Restore and accept Product state, then clear its durable savepoint."""
+
         self._retained_product_release_link_restore()
         self._product_recovery_apply_run()
         self._product_recovery_acceptance_run()
+        self._product_recovery_complete()
 
     def _failed_replacement_host_bootstrap_is_proven(self) -> bool:
         """Return whether an unmounted disposable replacement host failed bootstrap."""
@@ -673,7 +702,10 @@ class DevelopmentEnvironment:
             self._ssh_run(
                 [
                     "sudo",
+                    "env",
+                    PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
                     "python3.14",
+                    "-B",
                     str(
                         self._identity.host_control_current_source_path
                         / "sources"
@@ -773,6 +805,10 @@ class DevelopmentEnvironment:
         self._stack_drift_validate(self._identity.compute_stack_name)
         self._instance_online_wait()
         self._instance_launch_template_version_validate(require_latest=True)
+        if self._product_recovery_status_get() == "pending":
+            raise DevelopmentEnvironmentError(
+                "Pending retained Product recovery must complete before a new deploy"
+            )
         release_name = self._clock.now().strftime("%Y%m%d%H%M%S%f")
         source_manifest_by_repository_name_map: dict[str, dict[str, object]] = {}
         with self._ssh_control_session() as ssh_control_path:
@@ -808,6 +844,7 @@ class DevelopmentEnvironment:
                 {
                     "environment_name": self._identity.environment_name,
                     "host_artifact_manifest": self._host_artifact_manifest_payload_get(),
+                    "python_bytecode_write_disabled": True,
                     "release": release_name,
                     "repository_by_name_map": source_manifest_by_repository_name_map,
                     "source_manifest_version": SOURCE_MANIFEST_VERSION,
@@ -827,7 +864,10 @@ class DevelopmentEnvironment:
             self._ssh_run(
                 [
                     "sudo",
+                    "env",
+                    PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
                     "python3.14",
+                    "-B",
                     str(
                         release_root_path
                         / "sources"
@@ -844,7 +884,10 @@ class DevelopmentEnvironment:
             platform = self._runtime_platform_get(ssh_control_path)
             product_command_list = [
                 "sudo",
+                "env",
+                PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
                 "python3.14",
+                "-B",
                 str(
                     release_root_path
                     / "sources"
@@ -870,7 +913,10 @@ class DevelopmentEnvironment:
             self._ssh_run(
                 [
                     "sudo",
+                    "env",
+                    PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
                     "python3.14",
+                    "-B",
                     str(
                         release_root_path
                         / "sources"
@@ -910,7 +956,10 @@ class DevelopmentEnvironment:
             self._ssh_run(
                 [
                     "sudo",
+                    "env",
+                    PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
                     "python3.14",
+                    "-B",
                     str(
                         self._identity.host_current_source_path
                         / "sources"
@@ -927,7 +976,10 @@ class DevelopmentEnvironment:
             self._ssh_run(
                 [
                     "sudo",
+                    "env",
+                    PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
                     "python3.14",
+                    "-B",
                     str(
                         self._identity.host_control_current_source_path
                         / "sources"
@@ -943,6 +995,17 @@ class DevelopmentEnvironment:
             )
         print(f"OK: exact Product release {release_name} is deployed for {platform}")
 
+    def _current_product_tool_path_get(self) -> Path:
+        """Return the current exact Product management-tool path."""
+
+        return (
+            self._identity.host_current_source_path
+            / "sources"
+            / "workflow-control-center"
+            / "tool"
+            / "development_kubernetes_manage.py"
+        )
+
     def _current_product_tool_command_list_get(self, command: str) -> list[str]:
         """Return one environment-bound command for the current Product tool.
 
@@ -953,16 +1016,12 @@ class DevelopmentEnvironment:
             Exact Python command with the selected environment identity.
         """
 
-        product_tool_path = (
-            self._identity.host_current_source_path
-            / "sources"
-            / "workflow-control-center"
-            / "tool"
-            / "development_kubernetes_manage.py"
-        )
         command_list = [
+            "env",
+            PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
             "python3.14",
-            str(product_tool_path),
+            "-B",
+            str(self._current_product_tool_path_get()),
             command,
         ]
         if self._identity.environment_name != "primary":
@@ -973,6 +1032,31 @@ class DevelopmentEnvironment:
                 ]
             )
         return command_list
+
+    def _current_infrastructure_tool_command_list_get(
+        self,
+        command: str,
+        *argument_list: str,
+    ) -> list[str]:
+        """Return one environment-bound exact infrastructure-control command."""
+
+        return [
+            "env",
+            PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
+            "python3.14",
+            "-B",
+            str(
+                self._identity.host_control_current_source_path
+                / "sources"
+                / "workflow-infrastructure"
+                / "tool"
+                / "development_environment_manage.py"
+            ),
+            command,
+            "--environment-name",
+            self._identity.environment_name,
+            *argument_list,
+        ]
 
     def diagnose(self) -> None:
         """Print bounded infrastructure and Product diagnostics without secret values."""
@@ -1232,7 +1316,10 @@ class DevelopmentEnvironment:
         if not (legacy_runtime_path / "bin" / "python").is_file():
             self._runner.run(
                 [
+                    "env",
+                    PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
                     "python3.14",
+                    "-B",
                     str(product_tool_path),
                     "--help",
                 ],
@@ -1306,7 +1393,372 @@ class DevelopmentEnvironment:
         finally:
             temporary_link_path.unlink(missing_ok=True)
 
-    def _retained_product_release_validate(self, release_root_path: Path) -> str:
+    @staticmethod
+    def _atomic_text_file_replace(
+        *,
+        mode: int,
+        path: Path,
+        text: str,
+    ) -> None:
+        """Durably replace one small host-owned text file on its target filesystem."""
+
+        path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        temporary_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                dir=path.parent,
+                encoding="utf-8",
+                prefix=f".{path.name}.tmp-",
+                delete=False,
+            ) as file:
+                temporary_path = Path(file.name)
+                os.fchmod(file.fileno(), mode)
+                file.write(text)
+                file.flush()
+                os.fsync(file.fileno())
+            if temporary_path is None:
+                raise OSError("temporary file was not created")
+            os.replace(temporary_path, path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+
+    def _retained_product_current_release_path_get(self) -> Path:
+        """Return the exact retained current release or fail closed."""
+
+        current_release_path = self._identity.host_retained_current_release_path
+        if not current_release_path.is_symlink():
+            raise DevelopmentEnvironmentError(
+                "Retained Product current-release link is unavailable"
+            )
+        try:
+            release_root_path = current_release_path.resolve(strict=True)
+            current_release_target = os.readlink(current_release_path)
+            release_collection_path = (
+                self._identity.host_release_root_path.resolve(strict=True)
+            )
+        except OSError as error:
+            raise DevelopmentEnvironmentError(
+                "Retained Product current-release link is broken"
+            ) from error
+        if current_release_target != str(release_root_path):
+            raise DevelopmentEnvironmentError(
+                "Retained Product current-release link is not an exact absolute target"
+            )
+        if (
+            release_root_path.parent != release_collection_path
+            or not release_root_path.name.isdigit()
+            or len(release_root_path.name) not in {17, 20}
+        ):
+            raise DevelopmentEnvironmentError(
+                "Retained Product current-release link has an invalid exact identity"
+            )
+        return release_root_path
+
+    def _product_recovery_marker_payload_validate(
+        self,
+        *,
+        expected_release_name: str,
+    ) -> bool:
+        """Validate an optional retained recovery marker.
+
+        Args:
+            expected_release_name: Exact retained release expected by the marker.
+
+        Returns:
+            Whether the marker exists and is valid.
+        """
+
+        marker_path = self._identity.host_product_recovery_marker_path
+        if not marker_path.parent.is_dir() or marker_path.parent.is_symlink():
+            raise DevelopmentEnvironmentError(
+                "Retained Product recovery marker parent is invalid"
+            )
+        if marker_path.is_symlink():
+            raise DevelopmentEnvironmentError(
+                "Retained Product recovery marker must not be a symlink"
+            )
+        if not marker_path.exists():
+            return False
+        if not marker_path.is_file():
+            raise DevelopmentEnvironmentError(
+                "Retained Product recovery marker is not a regular file"
+            )
+        try:
+            marker_payload = json.loads(marker_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise DevelopmentEnvironmentError(
+                "Retained Product recovery marker is unavailable or malformed"
+            ) from error
+        expected_payload = {
+            "environment_name": self._identity.environment_name,
+            "release": expected_release_name,
+            "state": "pending",
+        }
+        if marker_payload != expected_payload:
+            raise DevelopmentEnvironmentError(
+                "Retained Product recovery marker has an inconsistent identity"
+            )
+        return True
+
+    def _host_product_recovery_status_local_get(self) -> str:
+        """Return the local retained Product recovery state."""
+
+        retained_current_path = self._identity.host_retained_current_release_path
+        marker_path = self._identity.host_product_recovery_marker_path
+        product_current_path = self._identity.host_current_source_path
+        if not retained_current_path.is_symlink():
+            if (
+                retained_current_path.exists()
+                or marker_path.exists()
+                or marker_path.is_symlink()
+                or product_current_path.exists()
+                or product_current_path.is_symlink()
+            ):
+                raise DevelopmentEnvironmentError(
+                    "Product recovery state exists without a retained current release"
+                )
+            status = "absent"
+        else:
+            release_root_path = self._retained_product_current_release_path_get()
+            marker_exists = self._product_recovery_marker_payload_validate(
+                expected_release_name=release_root_path.name
+            )
+            try:
+                current_link_is_exact = (
+                    product_current_path.is_symlink()
+                    and os.readlink(product_current_path) == str(retained_current_path)
+                )
+            except OSError as error:
+                raise DevelopmentEnvironmentError(
+                    "Product recovery current-source link is unavailable"
+                ) from error
+            status = "pending" if marker_exists or not current_link_is_exact else "ready"
+        return status
+
+    def host_product_recovery_status(self) -> None:
+        """Print whether retained Product recovery must be resumed."""
+
+        if not self._is_host:
+            raise DevelopmentEnvironmentError(
+                "host-product-recovery-status is supported only on the development host"
+            )
+        status = self._host_product_recovery_status_local_get()
+        print(json.dumps({"status": status}, sort_keys=True))
+
+    def host_product_recovery_begin(self) -> None:
+        """Persist the exact Product recovery savepoint before releasing the guard."""
+
+        if not self._is_host:
+            raise DevelopmentEnvironmentError(
+                "host-product-recovery-begin is supported only on the development host"
+            )
+        release_root_path = self._retained_product_current_release_path_get()
+        if self._product_recovery_marker_payload_validate(
+            expected_release_name=release_root_path.name
+        ):
+            print(
+                f"OK: Product recovery savepoint for {release_root_path.name} already exists"
+            )
+            return
+        marker_path = self._identity.host_product_recovery_marker_path
+        marker_text = (
+            json.dumps(
+                {
+                    "environment_name": self._identity.environment_name,
+                    "release": release_root_path.name,
+                    "state": "pending",
+                },
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        try:
+            self._atomic_text_file_replace(
+                mode=0o600,
+                path=marker_path,
+                text=marker_text,
+            )
+        except OSError as error:
+            raise DevelopmentEnvironmentError(
+                "Product recovery savepoint could not be persisted"
+            ) from error
+        self._runner.run(["sync", "-f", str(marker_path.parent)])
+        print(f"OK: Product recovery savepoint for {release_root_path.name} is pending")
+
+    def host_product_recovery_complete(self) -> None:
+        """Clear the durable Product recovery savepoint after full acceptance."""
+
+        if not self._is_host:
+            raise DevelopmentEnvironmentError(
+                "host-product-recovery-complete is supported only on the development host"
+            )
+        release_root_path = self._retained_product_current_release_path_get()
+        if not self._product_recovery_marker_payload_validate(
+            expected_release_name=release_root_path.name
+        ):
+            raise DevelopmentEnvironmentError(
+                "Product recovery cannot complete without its pending savepoint"
+            )
+        product_current_path = self._identity.host_current_source_path
+        try:
+            product_current_link_is_exact = (
+                product_current_path.is_symlink()
+                and os.readlink(product_current_path)
+                == str(self._identity.host_retained_current_release_path)
+            )
+        except OSError as error:
+            raise DevelopmentEnvironmentError(
+                "Product recovery current-source link is unavailable"
+            ) from error
+        if not product_current_link_is_exact:
+            raise DevelopmentEnvironmentError(
+                "Product recovery current-source link is not restored"
+            )
+        try:
+            self._identity.host_product_recovery_marker_path.unlink()
+        except OSError as error:
+            raise DevelopmentEnvironmentError(
+                "Product recovery savepoint could not be completed"
+            ) from error
+        self._runner.run(
+            [
+                "sync",
+                "-f",
+                str(self._identity.host_product_recovery_marker_path.parent),
+            ]
+        )
+        print(f"OK: Product recovery savepoint for {release_root_path.name} is complete")
+
+    def host_product_bytecode_guard_install(self) -> None:
+        """Install the Product-owned systemd bytecode guard for legacy recovery."""
+
+        if not self._is_host:
+            raise DevelopmentEnvironmentError(
+                "host-product-bytecode-guard-install is supported only on the "
+                "development host"
+            )
+        drop_in_text = (
+            "[Service]\n"
+            f"Environment={PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT}\n"
+        )
+        try:
+            self._atomic_text_file_replace(
+                mode=0o644,
+                path=PRODUCT_CREDENTIAL_REFRESH_BYTECODE_DROP_IN_PATH,
+                text=drop_in_text,
+            )
+        except OSError as error:
+            raise DevelopmentEnvironmentError(
+                "Product credential-refresh bytecode guard could not be installed"
+            ) from error
+        self._runner.run(
+            [
+                "sync",
+                "-f",
+                str(PRODUCT_CREDENTIAL_REFRESH_BYTECODE_DROP_IN_PATH.parent),
+            ]
+        )
+        self._runner.run(["systemctl", "daemon-reload"])
+        print("OK: Product credential-refresh bytecode guard is installed")
+
+    def _unmanifested_python_bytecode_plan_get(
+        self,
+        *,
+        expected_relative_path_set: set[str],
+        repository_name: str,
+        repository_root_path: Path,
+    ) -> tuple[list[Path], list[Path]]:
+        """Prepare a non-mutating historical Python-cache cleanup plan.
+
+        Args:
+            expected_relative_path_set: Exact manifest-owned file graph.
+            repository_name: Repository identity used in fail-closed diagnostics.
+            repository_root_path: Exact retained repository source root.
+
+        Returns:
+            Bytecode files and cache directories that are safe to remove.
+        """
+
+        bytecode_path_list: list[Path] = []
+        cache_directory_path_list: list[Path] = []
+        try:
+            source_path_list = list(repository_root_path.rglob("*"))
+        except OSError as error:
+            raise DevelopmentEnvironmentError(
+                f"Retained Product source cannot inspect Python cache: {repository_name}"
+            ) from error
+        for source_path in source_path_list:
+            relative_path = source_path.relative_to(repository_root_path)
+            relative_path_text = relative_path.as_posix()
+            if "__pycache__" not in relative_path.parts:
+                continue
+            if relative_path_text in expected_relative_path_set:
+                continue
+            if source_path.is_symlink():
+                raise DevelopmentEnvironmentError(
+                    "Retained Product source contains an unsafe unmanifested Python "
+                    f"cache entry: {repository_name}/{relative_path_text}"
+                )
+            if source_path.is_dir():
+                if source_path.name != "__pycache__":
+                    raise DevelopmentEnvironmentError(
+                        "Retained Product source contains an unsupported unmanifested "
+                        f"Python cache directory: {repository_name}/{relative_path_text}"
+                    )
+                cache_directory_path_list.append(source_path)
+                continue
+            if (
+                source_path.is_file()
+                and source_path.parent.name == "__pycache__"
+                and source_path.suffix == ".pyc"
+            ):
+                bytecode_path_list.append(source_path)
+                continue
+            raise DevelopmentEnvironmentError(
+                "Retained Product source contains an unsupported unmanifested Python "
+                f"cache entry: {repository_name}/{relative_path_text}"
+            )
+        return bytecode_path_list, cache_directory_path_list
+
+    def _unmanifested_python_bytecode_plan_apply(
+        self,
+        *,
+        bytecode_path_list: list[Path],
+        cache_directory_path_list: list[Path],
+        repository_name: str,
+        repository_root_path: Path,
+    ) -> None:
+        """Apply one already-proven legacy Python-cache cleanup plan."""
+
+        try:
+            for bytecode_path in bytecode_path_list:
+                bytecode_path.unlink()
+            for cache_directory_path in sorted(
+                cache_directory_path_list,
+                key=lambda path: len(path.parts),
+                reverse=True,
+            ):
+                if not any(cache_directory_path.iterdir()):
+                    cache_directory_path.rmdir()
+        except OSError as error:
+            raise DevelopmentEnvironmentError(
+                f"Retained Product source Python cache cleanup failed: {repository_name}"
+            ) from error
+        self._runner.run(["sync", "-f", str(repository_root_path)])
+        print(
+            "OK: removed "
+            f"{len(bytecode_path_list)} unmanifested Python bytecode files from "
+            f"{repository_name}"
+        )
+
+    def _retained_product_release_validate(
+        self,
+        release_root_path: Path,
+        *,
+        should_remove_unmanifested_python_bytecode: bool = False,
+    ) -> str:
         """Validate every persisted identity and tracked source byte of one Product release."""
 
         try:
@@ -1359,6 +1811,18 @@ class DevelopmentEnvironment:
             raise DevelopmentEnvironmentError(
                 "Retained Product source manifest version is unsupported"
             )
+        python_bytecode_write_disabled = source_manifest.get(
+            "python_bytecode_write_disabled"
+        )
+        if source_manifest_version == SOURCE_MANIFEST_VERSION:
+            if python_bytecode_write_disabled is not True:
+                raise DevelopmentEnvironmentError(
+                    "Retained Product source manifest does not prohibit Python bytecode writes"
+                )
+        elif python_bytecode_write_disabled is not None:
+            raise DevelopmentEnvironmentError(
+                "Legacy Product source manifest has unsupported Python bytecode policy"
+            )
         source_environment_name = source_manifest.get("environment_name")
         if source_manifest_version == SOURCE_MANIFEST_VERSION:
             if source_environment_name != self._identity.environment_name:
@@ -1403,6 +1867,9 @@ class DevelopmentEnvironment:
             raise DevelopmentEnvironmentError(
                 "Retained Product source graph is incomplete"
             )
+        python_bytecode_cleanup_plan_list: list[
+            tuple[str, Path, list[Path], list[Path]]
+        ] = []
         source_identity_by_name_map: dict[str, dict[str, str]] = {}
         source_root_path = resolved_release_root_path / "sources"
         for repository_name, repository_payload in repository_by_name_map.items():
@@ -1582,13 +2049,78 @@ class DevelopmentEnvironment:
                     source_path.relative_to(repository_root_path).as_posix()
                 ] = hashlib.sha256(source_payload).hexdigest()
             if actual_file_sha256_by_path_map != expected_file_sha256_by_path_map:
-                raise DevelopmentEnvironmentError(
-                    f"Retained Product source file graph differs: {repository_name}"
+                can_remove_legacy_python_bytecode = (
+                    should_remove_unmanifested_python_bytecode
+                    and source_manifest_version != SOURCE_MANIFEST_VERSION
+                )
+                expected_file_changed_or_missing = any(
+                    actual_file_sha256_by_path_map.get(relative_path_text)
+                    != expected_sha256
+                    for (
+                        relative_path_text,
+                        expected_sha256,
+                    ) in expected_file_sha256_by_path_map.items()
+                )
+                if (
+                    not can_remove_legacy_python_bytecode
+                    or expected_file_changed_or_missing
+                ):
+                    raise DevelopmentEnvironmentError(
+                        f"Retained Product source file graph differs: {repository_name}"
+                    )
+                (
+                    bytecode_path_list,
+                    cache_directory_path_list,
+                ) = self._unmanifested_python_bytecode_plan_get(
+                    expected_relative_path_set=set(
+                        expected_file_sha256_by_path_map
+                    ),
+                    repository_name=repository_name,
+                    repository_root_path=repository_root_path,
+                )
+                bytecode_relative_path_set = {
+                    path.relative_to(repository_root_path).as_posix()
+                    for path in bytecode_path_list
+                }
+                extra_relative_path_set = set(
+                    actual_file_sha256_by_path_map
+                ).difference(expected_file_sha256_by_path_map)
+                if (
+                    not bytecode_relative_path_set
+                    or extra_relative_path_set != bytecode_relative_path_set
+                ):
+                    raise DevelopmentEnvironmentError(
+                        f"Retained Product source file graph differs: {repository_name}"
+                    )
+                python_bytecode_cleanup_plan_list.append(
+                    (
+                        repository_name,
+                        repository_root_path,
+                        bytecode_path_list,
+                        cache_directory_path_list,
+                    )
                 )
             source_identity_by_name_map[repository_name] = source_identity
         if product_manifest.get("source_by_name_map") != source_identity_by_name_map:
             raise DevelopmentEnvironmentError(
                 "Retained Product and source manifests describe different source identities"
+            )
+        if python_bytecode_cleanup_plan_list:
+            for (
+                repository_name,
+                repository_root_path,
+                bytecode_path_list,
+                cache_directory_path_list,
+            ) in python_bytecode_cleanup_plan_list:
+                self._unmanifested_python_bytecode_plan_apply(
+                    bytecode_path_list=bytecode_path_list,
+                    cache_directory_path_list=cache_directory_path_list,
+                    repository_name=repository_name,
+                    repository_root_path=repository_root_path,
+                )
+            return self._retained_product_release_validate(
+                resolved_release_root_path,
+                should_remove_unmanifested_python_bytecode=False,
             )
         return release_name
 
@@ -1624,25 +2156,11 @@ class DevelopmentEnvironment:
             raise DevelopmentEnvironmentError(
                 "host-product-release-restore is supported only on the development host"
             )
-        if not self._identity.host_retained_current_release_path.is_symlink():
-            raise DevelopmentEnvironmentError(
-                "Retained Product current-release link is unavailable"
-            )
-        try:
-            release_root_path = (
-                self._identity.host_retained_current_release_path.resolve(strict=True)
-            )
-        except OSError as error:
-            raise DevelopmentEnvironmentError(
-                "Retained Product current-release link is broken"
-            ) from error
-        if os.readlink(self._identity.host_retained_current_release_path) != str(
-            release_root_path
-        ):
-            raise DevelopmentEnvironmentError(
-                "Retained Product current-release link is not an exact absolute target"
-            )
-        release_name = self._retained_product_release_validate(release_root_path)
+        release_root_path = self._retained_product_current_release_path_get()
+        release_name = self._retained_product_release_validate(
+            release_root_path,
+            should_remove_unmanifested_python_bytecode=True,
+        )
         self._retained_product_release_host_compatibility_validate(
             release_root_path=release_root_path
         )
@@ -1774,7 +2292,10 @@ class DevelopmentEnvironment:
         )
         self._runner.run(
             [
+                "env",
+                PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
                 "python3.14",
+                "-B",
                 str(infrastructure_source_path / "tool" / "venv_create.py"),
                 "--runtime-only",
             ]
@@ -1789,7 +2310,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart={infrastructure_source_path}/.venv/bin/python {infrastructure_source_path}/tool/development_environment_manage.py host-controller --environment-name {self._identity.environment_name}
+Environment={PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT}
+ExecStart={infrastructure_source_path}/.venv/bin/python -B {infrastructure_source_path}/tool/development_environment_manage.py host-controller --environment-name {self._identity.environment_name}
 Restart=always
 RestartSec=30
 User=root
@@ -1811,9 +2333,7 @@ WantedBy=multi-user.target
     def host_shutdown(self) -> None:
         """Gracefully stop Product workloads and power off the development instance."""
 
-        product_tool_path = Path(
-            self._current_product_tool_command_list_get("shutdown")[1]
-        )
+        product_tool_path = self._current_product_tool_path_get()
         if product_tool_path.is_file():
             result = self._runner.run(
                 self._current_product_tool_command_list_get("shutdown"),
@@ -1955,10 +2475,9 @@ WantedBy=multi-user.target
         )
         self._retained_volume_backup_disable(volume_id=source_volume_id)
         self.start(should_publish_infrastructure_source=True)
+        self._product_recovery_begin()
         self._replacement_guard_disable()
-        self._retained_product_release_link_restore()
-        self._product_recovery_apply_run()
-        self._product_recovery_acceptance_run()
+        self._product_recovery_finish()
         print(f"OK: retained state restored and accepted from {snapshot_id}")
 
     def replace(self) -> None:
@@ -1978,10 +2497,9 @@ WantedBy=multi-user.target
             parameter_by_name_map=replacement_parameter_by_name_map
         )
         self.start(should_publish_infrastructure_source=True)
+        self._product_recovery_begin()
         self._replacement_guard_disable()
-        self._retained_product_release_link_restore()
-        self._product_recovery_apply_run()
-        self._product_recovery_acceptance_run()
+        self._product_recovery_finish()
         print(
             f"OK: replacement instance in slot {replacement_slot} accepted the retained volume"
         )
@@ -2298,7 +2816,8 @@ WantedBy=multi-user.target
                 (
                     f"if [ -f {self._identity.host_control_current_source_path}/sources/workflow-infrastructure/"
                     "tool/development_environment_manage.py ]; then "
-                    f"sudo python3.14 {self._identity.host_control_current_source_path}/sources/workflow-infrastructure/"
+                    f"sudo env {PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT} python3.14 -B "
+                    f"{self._identity.host_control_current_source_path}/sources/workflow-infrastructure/"
                     "tool/development_environment_manage.py host-shutdown "
                     f"--environment-name {self._identity.environment_name}; "
                     "else sudo systemctl stop k3s || true; sudo systemctl poweroff; fi"
@@ -2409,9 +2928,12 @@ WantedBy=multi-user.target
         return node_name
 
     def _host_product_activity_get(self) -> str:
-        product_tool_path = Path(
-            self._current_product_tool_command_list_get("activity")[1]
-        )
+        try:
+            if self._host_product_recovery_status_local_get() == "pending":
+                return "busy"
+        except DevelopmentEnvironmentError:
+            return "busy"
+        product_tool_path = self._current_product_tool_path_get()
         if not product_tool_path.is_file():
             return "busy"
         result = self._runner.run(
@@ -2748,7 +3270,10 @@ WantedBy=multi-user.target
                 self._ssh_run(
                     [
                         "sudo",
+                        "env",
+                        PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
                         "python3.14",
+                        "-B",
                         str(
                             self._identity.host_control_current_source_path
                             / "sources"
@@ -2974,7 +3499,10 @@ WantedBy=multi-user.target
             [
                 shlex.join(
                     [
+                        "env",
+                        PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
                         "python3.14",
+                        "-B",
                         str(
                             self._identity.host_control_current_source_path
                             / "sources"
@@ -3881,15 +4409,95 @@ WantedBy=multi-user.target
             ]
         )
 
+    def _product_recovery_status_get(self) -> str:
+        """Return the exact retained Product recovery state from the active host."""
+
+        result_payload = self._ssm_shell_result_get(
+            [
+                "sudo "
+                + shlex.join(
+                    self._current_infrastructure_tool_command_list_get(
+                        "host-product-recovery-status"
+                    )
+                )
+            ],
+            timeout_seconds=HOST_STATUS_COMMAND_TIMEOUT_SECONDS,
+        )
+        output_text = result_payload.get("StandardOutputContent")
+        if not isinstance(output_text, str):
+            raise DevelopmentEnvironmentError(
+                "Product recovery status output is malformed"
+            )
+        try:
+            payload = json.loads(output_text)
+            status = payload["status"]
+        except (KeyError, TypeError, json.JSONDecodeError) as error:
+            raise DevelopmentEnvironmentError(
+                "Product recovery status payload is malformed"
+            ) from error
+        if status not in {"absent", "pending", "ready"}:
+            raise DevelopmentEnvironmentError(
+                "Product recovery status is unsupported"
+            )
+        return status
+
+    def _product_recovery_is_pending(self) -> bool:
+        """Return whether interrupted retained Product recovery must resume."""
+
+        return self._product_recovery_status_get() == "pending"
+
+    def _product_recovery_begin(self) -> None:
+        """Persist the retained Product recovery savepoint on the active host."""
+
+        self._ssm_shell_run(
+            [
+                "sudo "
+                + shlex.join(
+                    self._current_infrastructure_tool_command_list_get(
+                        "host-product-recovery-begin"
+                    )
+                )
+            ]
+        )
+
+    def _product_recovery_complete(self) -> None:
+        """Clear the retained Product recovery savepoint after acceptance."""
+
+        self._ssm_shell_run(
+            [
+                "sudo "
+                + shlex.join(
+                    self._current_infrastructure_tool_command_list_get(
+                        "host-product-recovery-complete"
+                    )
+                )
+            ]
+        )
+
     def _retained_product_release_link_restore(self) -> None:
         """Restore `/opt` access only after trusted infrastructure validates retained source."""
 
         self._ssm_shell_run(
             [
-                (
-                    f"sudo python3.14 {self._identity.host_control_current_source_path}/sources/workflow-infrastructure/"
-                    "tool/development_environment_manage.py host-product-release-restore "
-                    f"--environment-name {self._identity.environment_name}"
+                "sudo "
+                + shlex.join(
+                    self._current_infrastructure_tool_command_list_get(
+                        "host-product-release-restore"
+                    )
+                )
+            ]
+        )
+
+    def _product_bytecode_guard_install(self) -> None:
+        """Install the canonical Product service guard before legacy host-install."""
+
+        self._ssm_shell_run(
+            [
+                "sudo "
+                + shlex.join(
+                    self._current_infrastructure_tool_command_list_get(
+                        "host-product-bytecode-guard-install"
+                    )
                 )
             ]
         )
@@ -3903,6 +4511,7 @@ WantedBy=multi-user.target
                 + shlex.join(self._current_product_tool_command_list_get("recover"))
             ]
         )
+        self._product_bytecode_guard_install()
         self._ssm_shell_run(
             [
                 "sudo "
