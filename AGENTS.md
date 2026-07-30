@@ -39,7 +39,9 @@
 ## Project Contract
 
 - `DESIGN.md` is the stable architecture entrypoint for Workflow Control Center infrastructure.
-- `design/development-environment.md` owns the development-account, compute, storage, access, deployment, recovery, and cost architecture.
+- `design/development-environment.md` owns only the development-account, EC2, k3s, retained-state, access, deployment, recovery, and cost specialization.
+- `design/environment-model.md` owns the common environment model, Product-release source resolution, shared infrastructure invariants, and the boundary between environment-neutral infrastructure and environment adapters.
+- `design/production-environment.md` owns the required future production specialization on Amazon EKS; it does not authorize or provision production resources.
 - `docs/development-environment-operations.md` owns the maintained operator workflow for the implemented development environment.
 - `cloudformation/**` owns declarative AWS resources. Lasting AWS resources must not be created only through the console or ad hoc commands.
 - `tool/**` owns the local Python orchestration client for provisioning, lifecycle, source delivery, deployment, diagnostics, and recovery.
@@ -57,6 +59,8 @@ project/
   DESIGN.md
   design/
     development-environment.md
+    environment-model.md
+    production-environment.md
   docs/
     development-environment-operations.md
   test/
@@ -73,6 +77,8 @@ project/
 - `DESIGN.md`: root architecture router.
 - `design/`: stable infrastructure design owners.
 - `design/development-environment.md`: canonical development-environment architecture.
+- `design/environment-model.md`: canonical common environment and Product-release architecture.
+- `design/production-environment.md`: canonical future production-environment architecture.
 - `docs/`: maintained operator documentation.
 - `docs/development-environment-operations.md`: canonical development-environment operations guide.
 - `test/`: verification code for infrastructure orchestration and templates.
@@ -85,7 +91,8 @@ project/
 
 - Development uses account `463564115167`, region `us-east-1`, and local profile `workflow-control-center-devel`.
 - The user has granted standing authority for any necessary change inside account `463564115167`; do not pause for separate approval there, and report every material mutation at handoff.
-- This standing authority does not extend to production account `227373271916`, a future Workflow Control Center production account, the Organizations management account, or any other account.
+- Account `227373271916` is the AWS Organizations management account, not a Workflow Control Center production account.
+- The future Workflow Control Center production account has not been assigned. Development-account standing authority does not extend to that future account, account `227373271916`, or any other account.
 - Before every AWS mutation, verify the exact caller identity, region, target stack, live parameters, outputs, and drift.
 - The one explicitly approved deletion of the obsolete Workflow Control Center development Budget in management account `227373271916` belongs only to the development-environment rollout and does not create standing management-account authority.
 
