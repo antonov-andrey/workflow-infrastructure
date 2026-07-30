@@ -30,9 +30,9 @@ python tool/development_environment_manage.py <command>
 python tool/development_environment_manage.py apply
 ```
 
-`apply` проверяет оба шаблона, создаёт и инспектирует change sets data-plane и compute stacks, применяет разрешённые изменения и проверяет outputs, retained-resource identities, Session Manager readiness и host bootstrap. Existing stable data-plane stack обновляется in place; compute stack управляется отдельно. Ordinary compute change set не имеет права неявно заменить instance, retained volume или attachment. Если exact launch input изменился, `apply` сам выполняет controlled replacement: сохраняет legacy Product-tool runtime при первом переходе, включает external guard, доказывает остановку и detach, меняет instance slot, подключает тот же retained state и завершает recovery acceptance. Отдельные `replace` и `restore` остаются явными operator recovery commands, а не обязательным продолжением обычного apply.
+`apply` проверяет оба шаблона, создаёт и инспектирует change sets data-plane и compute stacks, применяет разрешённые изменения и проверяет outputs, retained-resource identities, Session Manager readiness и host bootstrap. Existing stable data-plane stack обновляется in place; compute stack управляется отдельно. Ordinary compute change set не имеет права неявно заменить instance, retained volume или attachment. Если exact launch input изменился, `apply` включает external guard, доказывает остановку и detach, меняет instance slot, подключает тот же retained state и завершает recovery acceptance только для exact current-format release с тем же host-artifact manifest. Отдельные `replace` и `restore` остаются явными operator recovery commands, а не обязательным продолжением обычного apply.
 
-Если процесс прерван после успешного создания replacement instance, повторный `apply` распознаёт оставшийся `ReplacementGuardScheduleState=ENABLED`, сначала устанавливает exact control source на уже созданный host и завершает retained Product recovery, затем отключает guard и продолжает с последнего безопасного состояния. Произвольный drift при этом не принимается: одноразово допускаются только две точные legacy launch-template tags, которые следующий template reconcile переносит под прямое владение `DevelopmentInstance`.
+Если процесс прерван после успешного создания replacement instance, повторный `apply` распознаёт оставшийся `ReplacementGuardScheduleState=ENABLED`, сначала устанавливает exact control source на уже созданный host и завершает retained Product recovery, затем отключает guard и продолжает с последнего безопасного состояния. Произвольный drift и transition-only launch-template tags не принимаются.
 
 Если cloud-init созданного host завершился terminal error до mount retained root и до запуска k3s, `apply` не пытается объявить такой host восстановленным: сохраняет guard, применяет исправленную более новую launch-template version и заменяет disposable host тем же controlled replacement workflow. Mounted retained root, active k3s, неоднозначный cloud-init status или отсутствие новой version требуют остановки и диагностики вместо автоматической замены.
 
@@ -105,15 +105,11 @@ python tool/development_environment_manage.py deploy
 
 Команда не выполняет `git clone` на host и не сохраняет GitHub credentials. Dirty или unpublished source блокирует deployment. AWS credential-process JSON не входит в source/release manifest, retained secret export или operator output; его обновляет Product-owned systemd timer из exact current WCC release.
 
-При первом `apply` со старого compute-контракта orchestrator до compute change set
-штатно запускает существующий instance, публикует exact infrastructure control
-source и атомарно переносит runtime текущего accepted Product-tool с disposable
-root volume в retained `product-tool/<requirements-sha256>`, перепривязывая
-Python symlinks и `pyvenv.cfg` к exact host Python. Новый host сохраняет
-старый `/var/lib/workflow-control-center/product-tool` только как compatibility
-symlink на этот retained root. Отсутствие current release, exact requirements или
-работоспособного runtime останавливает `apply` до replacement; recovery ничего не
-скачивает.
+Pre-hardening compute/source/runtime contracts не поддерживаются. До первого
+current-format deploy выполняется утверждённый destructive Product cutover:
+Product state и retained Product release/runtime history удаляются, а ZITADEL и
+GlitchTip проверенно сохраняются. `apply` не переносит старый Product-tool, не
+создаёт compatibility symlink и не преобразует retained artifacts.
 
 После deploy автоматические и ручные UI проверки выполняются через уже открытый SSM tunnel против exact current assets.
 
@@ -176,6 +172,6 @@ rollback volume. Перед следующим restore более старый r
 
 ## Разрушающий Product Cutover
 
-Initial cutover с laptop kind сохраняет identity и observability state логическими exports, но пересоздаёт Product databases, workflow state, registry и development Data/Secret/Result/Athena state. Local cluster и его данные остаются на laptop до полной remote acceptance.
+До первого current-format deploy Product-owned reset сохраняет существующие retained ZITADEL и GlitchTip databases/files на месте, но пересоздаёт Product databases, workflow state, registry и development Data/Secret/Result/Athena state. Логический dump/import из прежней среды и параллельный local-cluster contour отсутствуют.
 
-Удаление старого local-kind state, current retained volume, единственного текущего rollback volume, snapshots, identity state или GlitchTip state не является частью обычного deploy и выполняется только отдельной точной операцией. Единственное исключение — bounded cleanup более старого rollback volume в начале следующего explicit `restore`.
+Удаление current retained volume, единственного текущего rollback volume, snapshots, identity state или GlitchTip state не является частью обычного deploy и выполняется только отдельной точной операцией. Единственное исключение — bounded cleanup более старого rollback volume в начале следующего explicit `restore`.

@@ -13,7 +13,6 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import shlex
-import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -25,7 +24,6 @@ from tool.lib.host_artifact import (
     HostArtifactResolutionError,
     HostArtifactResolver,
     host_artifact_manifest_decode,
-    host_artifact_recovery_compatibility_identity_get,
 )
 
 AWS_ACCOUNT_ID = "463564115167"
@@ -54,9 +52,6 @@ DATA_PLANE_STACK_NAME = "workflow-control-center-development"
 HOST_CONTROL_CURRENT_SOURCE_PATH = Path("/opt/workflow-infrastructure/control/current")
 HOST_CONTROL_RELEASE_ROOT_PATH = Path("/opt/workflow-infrastructure/control/releases")
 HOST_CURRENT_SOURCE_PATH = Path("/opt/workflow-infrastructure/current")
-HOST_LEGACY_PRODUCT_TOOL_RUNTIME_ROOT_PATH = Path(
-    "/var/lib/workflow-control-center/product-tool"
-)
 HOST_PYTHON_PATH = Path("/usr/local/bin/python3.14")
 HOST_ARTIFACT_MANIFEST_PATH = Path(
     "/etc/workflow-control-center/host-artifact-manifest.json.gz.b64"
@@ -89,11 +84,6 @@ PRODUCT_SOURCE_REPOSITORY_NAME_LIST = [
     "workflow-container-runtime",
     "workflow-control-center",
 ]
-PRODUCT_CREDENTIAL_REFRESH_BYTECODE_DROP_IN_PATH = Path(
-    "/etc/systemd/system/"
-    "workflow-control-center-credential-refresh.service.d/"
-    "10-python-bytecode.conf"
-)
 PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT = "PYTHONDONTWRITEBYTECODE=1"
 REPOSITORY_URL_BY_NAME_MAP = {
     "browser-runtime": "git@github.com:antonov-andrey/browser-runtime.git",
@@ -109,7 +99,53 @@ SSM_ONLINE_TIMEOUT_SECONDS = 1800
 HOST_READY_TIMEOUT_SECONDS = 1800
 HOST_STATUS_COMMAND_TIMEOUT_SECONDS = 120
 SOURCE_MANIFEST_VERSION = 4
-SUPPORTED_SOURCE_MANIFEST_VERSION_SET = frozenset({2, 3, SOURCE_MANIFEST_VERSION})
+PRODUCT_RELEASE_MANIFEST_VERSION = 2
+SOURCE_MANIFEST_FIELD_NAME_SET = frozenset(
+    {
+        "environment_name",
+        "host_artifact_manifest",
+        "python_bytecode_write_disabled",
+        "release",
+        "repository_by_name_map",
+        "source_manifest_version",
+        "t_deploy",
+    }
+)
+SOURCE_REPOSITORY_FIELD_NAME_SET = frozenset(
+    {
+        "archive_sha256",
+        "commit_sha",
+        "file_sha256_by_path_map",
+        "repository_url",
+        "source_kind",
+        "submodule_by_path_map",
+    }
+)
+MOVING_SOURCE_REPOSITORY_FIELD_NAME_SET = frozenset(
+    {
+        *SOURCE_REPOSITORY_FIELD_NAME_SET,
+        "package_version",
+        "requested_selector",
+        "resolved_ref",
+    }
+)
+PRODUCT_RELEASE_MANIFEST_FIELD_NAME_SET = frozenset(
+    {
+        "environment_name",
+        "helm_chart_by_name_map",
+        "host_artifact_manifest",
+        "image_by_name_map",
+        "ingress_manifest",
+        "release",
+        "release_manifest_version",
+        "render_sha256",
+        "source_by_name_map",
+        "source_manifest_sha256",
+        "t_deploy",
+        "target_platform",
+        "ui_http_security_policy",
+    }
+)
 STACK_POLL_INTERVAL_SECONDS = 5
 STACK_TIMEOUT_SECONDS = 3600
 ENVIRONMENT_NAME_PATTERN = re.compile(r"[a-z][a-z0-9]{0,15}")
@@ -136,7 +172,7 @@ class DevelopmentEnvironmentIdentity:
 
     @property
     def is_primary(self) -> bool:
-        """Return whether legacy physical identities must remain exact."""
+        """Return whether this is the stable primary development environment."""
 
         return self.environment_name == "primary"
 
@@ -406,25 +442,18 @@ class DevelopmentEnvironment:
                 self._identity.compute_stack_name, is_required=False
             )
         )
-        legacy_runtime_transition_is_required = False
         replacement_recovery_is_pending = False
         failed_bootstrap_replacement_is_pending = False
         if compute_stack_exists:
-            self._stack_drift_validate(
-                self._identity.compute_stack_name,
-                should_allow_instance_launch_template_tag_drift=True,
-            )
+            self._stack_drift_validate(self._identity.compute_stack_name)
             current_compute_parameter_by_name_map = (
                 self._stack_parameter_by_name_map_get(self._identity.compute_stack_name)
             )
-            legacy_runtime_transition_is_required = (
-                self._legacy_product_tool_runtime_transition_is_required(
-                    current_compute_parameter_by_name_map
-                )
+            self._current_compute_stack_contract_validate(
+                current_compute_parameter_by_name_map
             )
             replacement_recovery_is_pending = (
-                not legacy_runtime_transition_is_required
-                and current_compute_parameter_by_name_map.get(
+                current_compute_parameter_by_name_map.get(
                     "ReplacementGuardScheduleState"
                 )
                 == "ENABLED"
@@ -478,22 +507,13 @@ class DevelopmentEnvironment:
                 self._failed_replacement_host_bootstrap_is_proven()
             )
             if not failed_bootstrap_replacement_is_pending:
-                self._replacement_recovery_finish(
-                    should_allow_instance_launch_template_tag_drift=True
-                )
-        if legacy_runtime_transition_is_required:
-            self._legacy_product_tool_runtime_transition_prepare()
+                self._replacement_recovery_finish()
         compute_parameter_by_name_map: dict[str, str] = {
             "EnvironmentName": self._identity.environment_name,
             "PlatformRoleName": platform_role_name,
             **host_artifact_resolution.cloudformation_parameter_by_name_map_get(),
         }
-        if legacy_runtime_transition_is_required:
-            compute_parameter_by_name_map.update(
-                self._replacement_parameter_by_name_map_get()
-            )
-            compute_parameter_by_name_map["InstanceLaunchTemplateVersion"] = "1"
-        elif compute_stack_exists:
+        if compute_stack_exists:
             compute_parameter_by_name_map["InstanceLaunchTemplateVersion"] = (
                 self._instance_launch_template_version_get()
             )
@@ -501,44 +521,54 @@ class DevelopmentEnvironment:
             compute_parameter_by_name_map.update(
                 self._replacement_guard_parameter_by_name_map_get()
             )
-        if legacy_runtime_transition_is_required:
+        self._stack_apply(
+            stack_name=self._identity.compute_stack_name,
+            template_path=self._project_root_path
+            / "cloudformation/workflow-control-center-development-compute.yaml",
+            parameter_by_name_map=compute_parameter_by_name_map,
+            must_preserve_resource=False,
+            protected_identity_logical_id_set=(COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET),
+        )
+        self._retained_volume_attachment_validate()
+        self._instance_launch_template_version_validate(require_latest=False)
+        if self._instance_launch_template_update_is_pending():
             self.stop(should_validate_drift=False)
             self._replacement_stack_apply(
-                parameter_by_name_map=compute_parameter_by_name_map
+                parameter_by_name_map=(self._replacement_parameter_by_name_map_get())
             )
             self._replacement_recovery_finish()
-        else:
-            self._stack_apply(
-                stack_name=self._identity.compute_stack_name,
-                template_path=self._project_root_path
-                / "cloudformation/workflow-control-center-development-compute.yaml",
-                parameter_by_name_map=compute_parameter_by_name_map,
-                must_preserve_resource=False,
-                protected_identity_logical_id_set=(
-                    COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET
-                ),
+        elif failed_bootstrap_replacement_is_pending:
+            raise DevelopmentEnvironmentError(
+                "Failed bootstrap host has no newer launch-template version "
+                "available for replacement"
             )
-            self._retained_volume_attachment_validate()
-            self._instance_launch_template_version_validate(require_latest=False)
-            if self._instance_launch_template_update_is_pending():
-                self.stop(should_validate_drift=False)
-                self._replacement_stack_apply(
-                    parameter_by_name_map=(
-                        self._replacement_parameter_by_name_map_get()
-                    )
-                )
-                self._replacement_recovery_finish()
-            elif failed_bootstrap_replacement_is_pending:
-                raise DevelopmentEnvironmentError(
-                    "Failed bootstrap host has no newer launch-template version "
-                    "available for replacement"
-                )
-            else:
-                self._steady_state_start_finish()
+        else:
+            self._steady_state_start_finish()
         self._stack_drift_validate(self._identity.data_plane_stack_name)
         self._stack_drift_validate(self._identity.compute_stack_name)
         self._retained_snapshot_policy_validate()
         print("OK: development data-plane and compute stacks are applied")
+
+    def _current_compute_stack_contract_validate(
+        self,
+        parameter_by_name_map: Mapping[str, str],
+    ) -> None:
+        """Require an existing compute stack to implement the one current contract."""
+
+        manifest_sha256 = parameter_by_name_map.get("HostArtifactManifestSha256")
+        encoded_manifest = parameter_by_name_map.get("HostArtifactManifestGzipBase64")
+        if (
+            parameter_by_name_map.get("EnvironmentName")
+            != self._identity.environment_name
+            or not isinstance(manifest_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", manifest_sha256) is None
+            or not isinstance(encoded_manifest, str)
+            or not encoded_manifest
+        ):
+            raise DevelopmentEnvironmentError(
+                "Compute stack does not implement the current host-artifact "
+                "contract; delete and recreate the pre-production compute stack"
+            )
 
     def _steady_state_start_finish(self) -> None:
         """Start current compute and resume only a proven pending Product recovery."""
@@ -553,22 +583,14 @@ class DevelopmentEnvironment:
 
     def _replacement_recovery_finish(
         self,
-        *,
-        should_allow_instance_launch_template_tag_drift: bool = False,
     ) -> None:
-        """Finish one created replacement host from retained Product state.
+        """Finish one created replacement host from retained Product state."""
 
-        Args:
-            should_allow_instance_launch_template_tag_drift: Whether an interrupted
-                first-generation cutover may reconcile its exact known tag drift.
-        """
-
-        self.start(
-            should_publish_infrastructure_source=True,
-            should_allow_instance_launch_template_tag_drift=(
-                should_allow_instance_launch_template_tag_drift
-            ),
-        )
+        self.start(should_publish_infrastructure_source=True)
+        if self._product_recovery_status_get() == "absent":
+            self._replacement_guard_disable()
+            print("OK: replacement host has no retained Product release to recover")
+            return
         self._product_recovery_begin()
         self._replacement_guard_disable()
         self._product_recovery_finish()
@@ -682,51 +704,6 @@ class DevelopmentEnvironment:
             "is unmounted"
         )
         return True
-
-    def _legacy_product_tool_runtime_transition_prepare(self) -> None:
-        """Retain the current Product-tool runtime before the first root replacement.
-
-        The pre-hardening host kept this runtime on its disposable root volume.
-        The old installed controller remains the readiness owner because the
-        pre-hardening host has no immutable host-artifact manifest required by
-        the new controller installer. Publishing the new infrastructure control
-        source without reinstalling that controller gives graceful shutdown and
-        this one-time copy an exact, auditable owner before the compute stack can
-        replace that root.
-        """
-
-        self._host_start_foundation(should_validate_source=True)
-        self._infrastructure_source_publish(should_install_host_controller=False)
-        self._host_readiness_wait()
-        with self._ssh_control_session() as ssh_control_path:
-            self._ssh_run(
-                [
-                    "sudo",
-                    "env",
-                    PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
-                    "python3.14",
-                    "-B",
-                    str(
-                        self._identity.host_control_current_source_path
-                        / "sources"
-                        / "workflow-infrastructure"
-                        / "tool"
-                        / "development_environment_manage.py"
-                    ),
-                    "host-product-runtime-retain",
-                    "--environment-name",
-                    self._identity.environment_name,
-                ],
-                ssh_control_path=ssh_control_path,
-            )
-
-    @staticmethod
-    def _legacy_product_tool_runtime_transition_is_required(
-        compute_parameter_by_name_map: Mapping[str, str],
-    ) -> bool:
-        """Return whether the live compute stack predates retained runtime ownership."""
-
-        return "HostArtifactManifestSha256" not in compute_parameter_by_name_map
 
     def connect(self) -> int:
         """Open the Product HTTP tunnel through Session Manager.
@@ -1023,14 +1000,9 @@ class DevelopmentEnvironment:
             "-B",
             str(self._current_product_tool_path_get()),
             command,
+            "--environment-name",
+            self._identity.environment_name,
         ]
-        if self._identity.environment_name != "primary":
-            command_list.extend(
-                [
-                    "--environment-name",
-                    self._identity.environment_name,
-                ]
-            )
         return command_list
 
     def _current_infrastructure_tool_command_list_get(
@@ -1213,154 +1185,6 @@ class DevelopmentEnvironment:
                     "Product-tool runtime Python link is not host-portable"
                 )
 
-    @staticmethod
-    def _product_tool_runtime_python_metadata_rewrite(
-        *,
-        runtime_path: Path,
-        retained_runtime_path: Path,
-    ) -> None:
-        """Rewrite venv base-Python metadata away from the disposable old root."""
-
-        pyvenv_path = runtime_path / "pyvenv.cfg"
-        try:
-            line_list = pyvenv_path.read_text(encoding="utf-8").splitlines()
-        except OSError as error:
-            raise DevelopmentEnvironmentError(
-                "Legacy Product-tool runtime Python metadata is unavailable"
-            ) from error
-        replacement_by_name_map = {
-            "command": f"{HOST_PYTHON_PATH} -m venv {retained_runtime_path}",
-            "executable": str(HOST_PYTHON_PATH),
-            "home": str(HOST_PYTHON_PATH.parent),
-        }
-        observed_name_set: set[str] = set()
-        rewritten_line_list: list[str] = []
-        for line in line_list:
-            name, separator, _value = line.partition("=")
-            normalized_name = name.strip()
-            if separator and normalized_name in replacement_by_name_map:
-                rewritten_line_list.append(
-                    f"{normalized_name} = {replacement_by_name_map[normalized_name]}"
-                )
-                observed_name_set.add(normalized_name)
-            else:
-                rewritten_line_list.append(line)
-        for name in ("home", "executable", "command"):
-            if name not in observed_name_set:
-                rewritten_line_list.append(f"{name} = {replacement_by_name_map[name]}")
-        pyvenv_path.write_text(
-            "\n".join(rewritten_line_list) + "\n",
-            encoding="utf-8",
-        )
-
-    def host_product_runtime_retain(self) -> None:
-        """Atomically retain the current accepted Product-tool runtime.
-
-        This command is the one-time compatibility boundary for a host created
-        before Product-tool environments moved from the disposable root volume
-        to retained storage. It may resolve the old exact pinned requirements
-        while the old host is still intact, but recovery never performs that
-        resolution.
-        """
-
-        if not self._is_host:
-            raise DevelopmentEnvironmentError(
-                "host-product-runtime-retain is supported only on the development host"
-            )
-        workflow_control_center_source_path = (
-            self._identity.host_current_source_path
-            / "sources"
-            / "workflow-control-center"
-        )
-        requirement_path = (
-            workflow_control_center_source_path
-            / "tool"
-            / "requirements-development-kubernetes.txt"
-        )
-        product_tool_path = (
-            workflow_control_center_source_path
-            / "tool"
-            / "development_kubernetes_manage.py"
-        )
-        if not requirement_path.is_file() or not product_tool_path.is_file():
-            raise DevelopmentEnvironmentError(
-                "Current accepted Product release cannot prepare its tool runtime"
-            )
-        requirement_digest = hashlib.sha256(requirement_path.read_bytes()).hexdigest()
-        retained_runtime_root_path = (
-            self._identity.host_retained_root_path / "product-tool"
-        )
-        if retained_runtime_root_path.is_symlink():
-            raise DevelopmentEnvironmentError(
-                "Retained Product-tool runtime root must not be a symlink"
-            )
-        retained_runtime_root_path.mkdir(mode=0o755, parents=True, exist_ok=True)
-        retained_runtime_path = retained_runtime_root_path / requirement_digest
-        if retained_runtime_path.exists():
-            self._product_tool_runtime_validate(retained_runtime_path)
-            self._runner.run(
-                [
-                    str(retained_runtime_path / "bin" / "python"),
-                    "-c",
-                    "import pydantic; import yaml",
-                ]
-            )
-            print(
-                f"OK: retained Product-tool runtime {requirement_digest} already exists"
-            )
-            return
-
-        legacy_runtime_path = (
-            HOST_LEGACY_PRODUCT_TOOL_RUNTIME_ROOT_PATH / requirement_digest
-        )
-        if not (legacy_runtime_path / "bin" / "python").is_file():
-            self._runner.run(
-                [
-                    "env",
-                    PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
-                    "python3.14",
-                    "-B",
-                    str(product_tool_path),
-                    "--help",
-                ],
-                should_capture=False,
-            )
-        if not legacy_runtime_path.is_dir() or legacy_runtime_path.is_symlink():
-            raise DevelopmentEnvironmentError(
-                "Legacy Product-tool runtime could not be prepared"
-            )
-
-        with tempfile.TemporaryDirectory(
-            dir=retained_runtime_root_path,
-            prefix=".retain-",
-        ) as temporary_root_text:
-            temporary_runtime_path = Path(temporary_root_text) / "runtime"
-            shutil.copytree(
-                legacy_runtime_path,
-                temporary_runtime_path,
-                symlinks=True,
-            )
-            self._product_tool_runtime_python_metadata_rewrite(
-                runtime_path=temporary_runtime_path,
-                retained_runtime_path=retained_runtime_path,
-            )
-            for python_name in ("python", "python3", "python3.14"):
-                python_path = temporary_runtime_path / "bin" / python_name
-                python_path.unlink(missing_ok=True)
-                python_path.symlink_to(HOST_PYTHON_PATH)
-            self._product_tool_runtime_validate(temporary_runtime_path)
-            self._runner.run(
-                [
-                    str(temporary_runtime_path / "bin" / "python"),
-                    "-c",
-                    "import pydantic; import yaml",
-                ]
-            )
-            os.replace(temporary_runtime_path, retained_runtime_path)
-        self._runner.run(["sync", "-f", str(retained_runtime_root_path)])
-        self._product_tool_runtime_validate(retained_runtime_path)
-        print(f"OK: Product-tool runtime {requirement_digest} retained atomically")
-
     def host_status(self, retained_volume_id: str) -> None:
         """Print safe host state from one exact infrastructure release.
 
@@ -1435,8 +1259,8 @@ class DevelopmentEnvironment:
         try:
             release_root_path = current_release_path.resolve(strict=True)
             current_release_target = os.readlink(current_release_path)
-            release_collection_path = (
-                self._identity.host_release_root_path.resolve(strict=True)
+            release_collection_path = self._identity.host_release_root_path.resolve(
+                strict=True
             )
         except OSError as error:
             raise DevelopmentEnvironmentError(
@@ -1534,7 +1358,9 @@ class DevelopmentEnvironment:
                 raise DevelopmentEnvironmentError(
                     "Product recovery current-source link is unavailable"
                 ) from error
-            status = "pending" if marker_exists or not current_link_is_exact else "ready"
+            status = (
+                "pending" if marker_exists or not current_link_is_exact else "ready"
+            )
         return status
 
     def host_product_recovery_status(self) -> None:
@@ -1629,135 +1455,13 @@ class DevelopmentEnvironment:
                 str(self._identity.host_product_recovery_marker_path.parent),
             ]
         )
-        print(f"OK: Product recovery savepoint for {release_root_path.name} is complete")
-
-    def host_product_bytecode_guard_install(self) -> None:
-        """Install the Product-owned systemd bytecode guard for legacy recovery."""
-
-        if not self._is_host:
-            raise DevelopmentEnvironmentError(
-                "host-product-bytecode-guard-install is supported only on the "
-                "development host"
-            )
-        drop_in_text = (
-            "[Service]\n"
-            f"Environment={PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT}\n"
-        )
-        try:
-            self._atomic_text_file_replace(
-                mode=0o644,
-                path=PRODUCT_CREDENTIAL_REFRESH_BYTECODE_DROP_IN_PATH,
-                text=drop_in_text,
-            )
-        except OSError as error:
-            raise DevelopmentEnvironmentError(
-                "Product credential-refresh bytecode guard could not be installed"
-            ) from error
-        self._runner.run(
-            [
-                "sync",
-                "-f",
-                str(PRODUCT_CREDENTIAL_REFRESH_BYTECODE_DROP_IN_PATH.parent),
-            ]
-        )
-        self._runner.run(["systemctl", "daemon-reload"])
-        print("OK: Product credential-refresh bytecode guard is installed")
-
-    def _unmanifested_python_bytecode_plan_get(
-        self,
-        *,
-        expected_relative_path_set: set[str],
-        repository_name: str,
-        repository_root_path: Path,
-    ) -> tuple[list[Path], list[Path]]:
-        """Prepare a non-mutating historical Python-cache cleanup plan.
-
-        Args:
-            expected_relative_path_set: Exact manifest-owned file graph.
-            repository_name: Repository identity used in fail-closed diagnostics.
-            repository_root_path: Exact retained repository source root.
-
-        Returns:
-            Bytecode files and cache directories that are safe to remove.
-        """
-
-        bytecode_path_list: list[Path] = []
-        cache_directory_path_list: list[Path] = []
-        try:
-            source_path_list = list(repository_root_path.rglob("*"))
-        except OSError as error:
-            raise DevelopmentEnvironmentError(
-                f"Retained Product source cannot inspect Python cache: {repository_name}"
-            ) from error
-        for source_path in source_path_list:
-            relative_path = source_path.relative_to(repository_root_path)
-            relative_path_text = relative_path.as_posix()
-            if "__pycache__" not in relative_path.parts:
-                continue
-            if relative_path_text in expected_relative_path_set:
-                continue
-            if source_path.is_symlink():
-                raise DevelopmentEnvironmentError(
-                    "Retained Product source contains an unsafe unmanifested Python "
-                    f"cache entry: {repository_name}/{relative_path_text}"
-                )
-            if source_path.is_dir():
-                if source_path.name != "__pycache__":
-                    raise DevelopmentEnvironmentError(
-                        "Retained Product source contains an unsupported unmanifested "
-                        f"Python cache directory: {repository_name}/{relative_path_text}"
-                    )
-                cache_directory_path_list.append(source_path)
-                continue
-            if (
-                source_path.is_file()
-                and source_path.parent.name == "__pycache__"
-                and source_path.suffix == ".pyc"
-            ):
-                bytecode_path_list.append(source_path)
-                continue
-            raise DevelopmentEnvironmentError(
-                "Retained Product source contains an unsupported unmanifested Python "
-                f"cache entry: {repository_name}/{relative_path_text}"
-            )
-        return bytecode_path_list, cache_directory_path_list
-
-    def _unmanifested_python_bytecode_plan_apply(
-        self,
-        *,
-        bytecode_path_list: list[Path],
-        cache_directory_path_list: list[Path],
-        repository_name: str,
-        repository_root_path: Path,
-    ) -> None:
-        """Apply one already-proven legacy Python-cache cleanup plan."""
-
-        try:
-            for bytecode_path in bytecode_path_list:
-                bytecode_path.unlink()
-            for cache_directory_path in sorted(
-                cache_directory_path_list,
-                key=lambda path: len(path.parts),
-                reverse=True,
-            ):
-                if not any(cache_directory_path.iterdir()):
-                    cache_directory_path.rmdir()
-        except OSError as error:
-            raise DevelopmentEnvironmentError(
-                f"Retained Product source Python cache cleanup failed: {repository_name}"
-            ) from error
-        self._runner.run(["sync", "-f", str(repository_root_path)])
         print(
-            "OK: removed "
-            f"{len(bytecode_path_list)} unmanifested Python bytecode files from "
-            f"{repository_name}"
+            f"OK: Product recovery savepoint for {release_root_path.name} is complete"
         )
 
     def _retained_product_release_validate(
         self,
         release_root_path: Path,
-        *,
-        should_remove_unmanifested_python_bytecode: bool = False,
     ) -> str:
         """Validate every persisted identity and tracked source byte of one Product release."""
 
@@ -1774,7 +1478,7 @@ class DevelopmentEnvironment:
         if (
             resolved_release_root_path.parent != resolved_release_parent_path
             or not release_name.isdigit()
-            or len(release_name) not in {17, 20}
+            or len(release_name) != 20
         ):
             raise DevelopmentEnvironmentError(
                 "Retained Product release path has an invalid exact identity"
@@ -1803,42 +1507,44 @@ class DevelopmentEnvironment:
                 "Retained Product release manifests have inconsistent identities"
             )
         source_manifest_version = source_manifest.get("source_manifest_version")
-        is_legacy_manifest = source_manifest_version is None
-        if (
-            not is_legacy_manifest
-            and source_manifest_version not in SUPPORTED_SOURCE_MANIFEST_VERSION_SET
+        if source_manifest_version != SOURCE_MANIFEST_VERSION:
+            raise DevelopmentEnvironmentError(
+                "Retained Product source manifest is not the current version"
+            )
+        if product_manifest.get("release_manifest_version") != (
+            PRODUCT_RELEASE_MANIFEST_VERSION
         ):
             raise DevelopmentEnvironmentError(
-                "Retained Product source manifest version is unsupported"
+                "Retained Product release manifest is not the current version"
             )
-        python_bytecode_write_disabled = source_manifest.get(
-            "python_bytecode_write_disabled"
-        )
-        if source_manifest_version == SOURCE_MANIFEST_VERSION:
-            if python_bytecode_write_disabled is not True:
-                raise DevelopmentEnvironmentError(
-                    "Retained Product source manifest does not prohibit Python bytecode writes"
-                )
-        elif python_bytecode_write_disabled is not None:
+        if set(source_manifest) != SOURCE_MANIFEST_FIELD_NAME_SET:
             raise DevelopmentEnvironmentError(
-                "Legacy Product source manifest has unsupported Python bytecode policy"
+                "Retained Product source manifest does not have the exact current shape"
             )
-        source_environment_name = source_manifest.get("environment_name")
-        if source_manifest_version == SOURCE_MANIFEST_VERSION:
-            if source_environment_name != self._identity.environment_name:
-                raise DevelopmentEnvironmentError(
-                    "Retained Product source manifest belongs to another environment"
-                )
-        elif source_environment_name not in {None, self._identity.environment_name}:
+        if set(product_manifest) != PRODUCT_RELEASE_MANIFEST_FIELD_NAME_SET:
+            raise DevelopmentEnvironmentError(
+                "Retained Product release manifest does not have the exact current shape"
+            )
+        if source_manifest.get("python_bytecode_write_disabled") is not True:
+            raise DevelopmentEnvironmentError(
+                "Retained Product source manifest does not prohibit Python bytecode writes"
+            )
+        if source_manifest.get("environment_name") != self._identity.environment_name:
             raise DevelopmentEnvironmentError(
                 "Retained Product source manifest belongs to another environment"
             )
-        product_environment_name = product_manifest.get("environment_name")
-        if product_environment_name is None:
-            product_environment_name = "primary"
-        if product_environment_name != self._identity.environment_name:
+        if product_manifest.get("environment_name") != self._identity.environment_name:
             raise DevelopmentEnvironmentError(
                 "Retained Product release manifest belongs to another environment"
+            )
+        source_host_artifact_manifest = source_manifest.get("host_artifact_manifest")
+        if (
+            not isinstance(source_host_artifact_manifest, Mapping)
+            or product_manifest.get("host_artifact_manifest")
+            != source_host_artifact_manifest
+        ):
+            raise DevelopmentEnvironmentError(
+                "Retained Product manifests describe different host artifacts"
             )
         if (
             product_manifest.get("source_manifest_sha256")
@@ -1867,9 +1573,6 @@ class DevelopmentEnvironment:
             raise DevelopmentEnvironmentError(
                 "Retained Product source graph is incomplete"
             )
-        python_bytecode_cleanup_plan_list: list[
-            tuple[str, Path, list[Path], list[Path]]
-        ] = []
         source_identity_by_name_map: dict[str, dict[str, str]] = {}
         source_root_path = resolved_release_root_path / "sources"
         for repository_name, repository_payload in repository_by_name_map.items():
@@ -1916,20 +1619,35 @@ class DevelopmentEnvironment:
             expected_source_kind = (
                 "resolved_moving_source"
                 if repository_name == "workflow-container-contract"
-                and not is_legacy_manifest
                 else "exact_checkout"
             )
-            if is_legacy_manifest:
-                if source_kind not in {None, "exact_checkout"}:
-                    raise DevelopmentEnvironmentError(
-                        f"Retained Product source {repository_name} source kind is invalid"
-                    )
-            elif source_kind != expected_source_kind:
+            if source_kind != expected_source_kind:
                 raise DevelopmentEnvironmentError(
                     f"Retained Product source {repository_name} source kind is invalid"
                 )
-            if not is_legacy_manifest:
-                source_identity["source_kind"] = expected_source_kind
+            expected_field_name_set = (
+                MOVING_SOURCE_REPOSITORY_FIELD_NAME_SET
+                if expected_source_kind == "resolved_moving_source"
+                else SOURCE_REPOSITORY_FIELD_NAME_SET
+            )
+            actual_field_name_set = set(repository_payload)
+            override_field_name_set = {"override_identity", "override_reason"}
+            if (
+                actual_field_name_set != expected_field_name_set
+                and actual_field_name_set
+                != (expected_field_name_set | override_field_name_set)
+            ):
+                raise DevelopmentEnvironmentError(
+                    f"Retained Product source {repository_name} does not have the exact current shape"
+                )
+            if (
+                expected_source_kind == "exact_checkout"
+                and actual_field_name_set != expected_field_name_set
+            ):
+                raise DevelopmentEnvironmentError(
+                    f"Retained Product source {repository_name} does not have the exact current shape"
+                )
+            source_identity["source_kind"] = expected_source_kind
             moving_field_name_set = {
                 "override_identity",
                 "override_reason",
@@ -1937,8 +1655,37 @@ class DevelopmentEnvironment:
                 "requested_selector",
                 "resolved_ref",
             }
+            submodule_by_path_map = repository_payload.get("submodule_by_path_map")
+            if not isinstance(submodule_by_path_map, Mapping):
+                raise DevelopmentEnvironmentError(
+                    f"Retained Product source {repository_name} submodule graph is invalid"
+                )
+            for submodule_path_text, submodule_payload in submodule_by_path_map.items():
+                if (
+                    not isinstance(submodule_path_text, str)
+                    or not isinstance(submodule_payload, Mapping)
+                    or set(submodule_payload) != {"commit_sha", "repository_url"}
+                ):
+                    raise DevelopmentEnvironmentError(
+                        f"Retained Product source {repository_name} submodule entry is invalid"
+                    )
+                submodule_path = PurePosixPath(submodule_path_text)
+                submodule_commit_sha = submodule_payload.get("commit_sha")
+                submodule_repository_url = submodule_payload.get("repository_url")
+                if (
+                    not submodule_path_text
+                    or submodule_path.is_absolute()
+                    or submodule_path.as_posix() != submodule_path_text
+                    or any(part in {"", ".", ".."} for part in submodule_path.parts)
+                    or not isinstance(submodule_commit_sha, str)
+                    or re.fullmatch(r"[0-9a-f]{40}", submodule_commit_sha) is None
+                    or not isinstance(submodule_repository_url, str)
+                    or not submodule_repository_url
+                ):
+                    raise DevelopmentEnvironmentError(
+                        f"Retained Product source {repository_name} submodule identity is invalid"
+                    )
             if expected_source_kind == "resolved_moving_source":
-                submodule_by_path_map = repository_payload.get("submodule_by_path_map")
                 if submodule_by_path_map != {}:
                     raise DevelopmentEnvironmentError(
                         "Retained workflow-container-contract moving source has submodules"
@@ -1979,7 +1726,7 @@ class DevelopmentEnvironment:
                     raise DevelopmentEnvironmentError(
                         "Retained workflow-container-contract override provenance is invalid"
                     )
-            elif not is_legacy_manifest and any(
+            elif any(
                 field_name in repository_payload for field_name in moving_field_name_set
             ):
                 raise DevelopmentEnvironmentError(
@@ -2049,78 +1796,13 @@ class DevelopmentEnvironment:
                     source_path.relative_to(repository_root_path).as_posix()
                 ] = hashlib.sha256(source_payload).hexdigest()
             if actual_file_sha256_by_path_map != expected_file_sha256_by_path_map:
-                can_remove_legacy_python_bytecode = (
-                    should_remove_unmanifested_python_bytecode
-                    and source_manifest_version != SOURCE_MANIFEST_VERSION
-                )
-                expected_file_changed_or_missing = any(
-                    actual_file_sha256_by_path_map.get(relative_path_text)
-                    != expected_sha256
-                    for (
-                        relative_path_text,
-                        expected_sha256,
-                    ) in expected_file_sha256_by_path_map.items()
-                )
-                if (
-                    not can_remove_legacy_python_bytecode
-                    or expected_file_changed_or_missing
-                ):
-                    raise DevelopmentEnvironmentError(
-                        f"Retained Product source file graph differs: {repository_name}"
-                    )
-                (
-                    bytecode_path_list,
-                    cache_directory_path_list,
-                ) = self._unmanifested_python_bytecode_plan_get(
-                    expected_relative_path_set=set(
-                        expected_file_sha256_by_path_map
-                    ),
-                    repository_name=repository_name,
-                    repository_root_path=repository_root_path,
-                )
-                bytecode_relative_path_set = {
-                    path.relative_to(repository_root_path).as_posix()
-                    for path in bytecode_path_list
-                }
-                extra_relative_path_set = set(
-                    actual_file_sha256_by_path_map
-                ).difference(expected_file_sha256_by_path_map)
-                if (
-                    not bytecode_relative_path_set
-                    or extra_relative_path_set != bytecode_relative_path_set
-                ):
-                    raise DevelopmentEnvironmentError(
-                        f"Retained Product source file graph differs: {repository_name}"
-                    )
-                python_bytecode_cleanup_plan_list.append(
-                    (
-                        repository_name,
-                        repository_root_path,
-                        bytecode_path_list,
-                        cache_directory_path_list,
-                    )
+                raise DevelopmentEnvironmentError(
+                    f"Retained Product source file graph differs: {repository_name}"
                 )
             source_identity_by_name_map[repository_name] = source_identity
         if product_manifest.get("source_by_name_map") != source_identity_by_name_map:
             raise DevelopmentEnvironmentError(
                 "Retained Product and source manifests describe different source identities"
-            )
-        if python_bytecode_cleanup_plan_list:
-            for (
-                repository_name,
-                repository_root_path,
-                bytecode_path_list,
-                cache_directory_path_list,
-            ) in python_bytecode_cleanup_plan_list:
-                self._unmanifested_python_bytecode_plan_apply(
-                    bytecode_path_list=bytecode_path_list,
-                    cache_directory_path_list=cache_directory_path_list,
-                    repository_name=repository_name,
-                    repository_root_path=repository_root_path,
-                )
-            return self._retained_product_release_validate(
-                resolved_release_root_path,
-                should_remove_unmanifested_python_bytecode=False,
             )
         return release_name
 
@@ -2157,11 +1839,8 @@ class DevelopmentEnvironment:
                 "host-product-release-restore is supported only on the development host"
             )
         release_root_path = self._retained_product_current_release_path_get()
-        release_name = self._retained_product_release_validate(
-            release_root_path,
-            should_remove_unmanifested_python_bytecode=True,
-        )
-        self._retained_product_release_host_compatibility_validate(
+        release_name = self._retained_product_release_validate(release_root_path)
+        self._retained_product_release_host_identity_validate(
             release_root_path=release_root_path
         )
         self._atomic_symlink_replace(
@@ -2172,12 +1851,12 @@ class DevelopmentEnvironment:
             f"OK: retained Product release {release_name} root-volume link is restored"
         )
 
-    def _retained_product_release_host_compatibility_validate(
+    def _retained_product_release_host_identity_validate(
         self,
         *,
         release_root_path: Path,
     ) -> None:
-        """Require the active host to remain in the retained release runtime lines.
+        """Require the active host to match the retained release host identity.
 
         Args:
             release_root_path: Already byte-validated retained Product release.
@@ -2189,33 +1868,20 @@ class DevelopmentEnvironment:
             )
         except (OSError, json.JSONDecodeError) as error:
             raise DevelopmentEnvironmentError(
-                "Retained Product source manifest is unavailable for host compatibility"
+                "Retained Product source manifest is unavailable for host validation"
             ) from error
         retained_host_artifact_manifest = (
             source_manifest.get("host_artifact_manifest")
             if isinstance(source_manifest, Mapping)
             else None
         )
-        if retained_host_artifact_manifest is None:
-            return
         if not isinstance(retained_host_artifact_manifest, Mapping):
             raise DevelopmentEnvironmentError(
                 "Retained Product host artifact manifest is malformed"
             )
-        try:
-            retained_identity = host_artifact_recovery_compatibility_identity_get(
-                retained_host_artifact_manifest
-            )
-            active_identity = host_artifact_recovery_compatibility_identity_get(
-                self._host_artifact_manifest_get()
-            )
-        except HostArtifactResolutionError as error:
+        if dict(retained_host_artifact_manifest) != self._host_artifact_manifest_get():
             raise DevelopmentEnvironmentError(
-                f"Retained Product host compatibility is invalid: {error}"
-            ) from error
-        if retained_identity != active_identity:
-            raise DevelopmentEnvironmentError(
-                "Retained Product release is incompatible with the active host runtime lines"
+                "Retained Product release has another exact host artifact identity"
             )
 
     def _host_artifact_manifest_get(self) -> dict[str, object]:
@@ -2663,22 +2329,16 @@ WantedBy=multi-user.target
         self,
         *,
         should_publish_infrastructure_source: bool = False,
-        should_allow_instance_launch_template_tag_drift: bool = False,
     ) -> None:
         """Create the external stop lease before starting and verify host readiness.
 
         Args:
             should_publish_infrastructure_source: Whether a newly replaced host needs
                 the already validated exact controller source installed before proof.
-            should_allow_instance_launch_template_tag_drift: Whether an interrupted
-                first-generation cutover may reconcile its one exact known tag drift.
         """
 
         self._host_start_foundation(
             should_validate_source=should_publish_infrastructure_source,
-            should_allow_instance_launch_template_tag_drift=(
-                should_allow_instance_launch_template_tag_drift
-            ),
         )
         if should_publish_infrastructure_source:
             self._infrastructure_source_publish()
@@ -2690,25 +2350,16 @@ WantedBy=multi-user.target
         self,
         *,
         should_validate_source: bool,
-        should_allow_instance_launch_template_tag_drift: bool = False,
     ) -> None:
         """Start the host through SSM without changing its installed controller.
 
         Args:
             should_validate_source: Whether a following exact-source publication
                 requires the local infrastructure checkout to be validated.
-            should_allow_instance_launch_template_tag_drift: Whether the exact
-                transition-only instance tag drift may pass this preflight.
         """
 
         self._local_operator_context_validate()
-        if should_allow_instance_launch_template_tag_drift:
-            self._stack_drift_validate(
-                self._identity.compute_stack_name,
-                should_allow_instance_launch_template_tag_drift=True,
-            )
-        else:
-            self._stack_drift_validate(self._identity.compute_stack_name)
+        self._stack_drift_validate(self._identity.compute_stack_name)
         if should_validate_source:
             self._source_repository_validate(
                 self._project_root_path, "workflow-infrastructure"
@@ -4436,9 +4087,7 @@ WantedBy=multi-user.target
                 "Product recovery status payload is malformed"
             ) from error
         if status not in {"absent", "pending", "ready"}:
-            raise DevelopmentEnvironmentError(
-                "Product recovery status is unsupported"
-            )
+            raise DevelopmentEnvironmentError("Product recovery status is unsupported")
         return status
 
     def _product_recovery_is_pending(self) -> bool:
@@ -4488,20 +4137,6 @@ WantedBy=multi-user.target
             ]
         )
 
-    def _product_bytecode_guard_install(self) -> None:
-        """Install the canonical Product service guard before legacy host-install."""
-
-        self._ssm_shell_run(
-            [
-                "sudo "
-                + shlex.join(
-                    self._current_infrastructure_tool_command_list_get(
-                        "host-product-bytecode-guard-install"
-                    )
-                )
-            ]
-        )
-
     def _product_recovery_apply_run(self) -> None:
         """Reapply the exact retained Product release and reinstall its host service."""
 
@@ -4511,7 +4146,6 @@ WantedBy=multi-user.target
                 + shlex.join(self._current_product_tool_command_list_get("recover"))
             ]
         )
-        self._product_bytecode_guard_install()
         self._ssm_shell_run(
             [
                 "sudo "
@@ -5814,15 +5448,11 @@ shutil.rmtree(root_path)
     def _stack_drift_validate(
         self,
         stack_name: str,
-        *,
-        should_allow_instance_launch_template_tag_drift: bool = False,
     ) -> None:
-        """Prove one stack is in sync or has only the exact reconcilable tag drift.
+        """Prove one stack is in sync.
 
         Args:
             stack_name: Exact CloudFormation stack name.
-            should_allow_instance_launch_template_tag_drift: Whether the pre-apply
-                boundary may accept the first hardened instance's known tag drift.
         """
 
         stack_payload = self._stack_payload_get(stack_name, is_required=True)
@@ -5833,7 +5463,6 @@ shutil.rmtree(root_path)
             raise DevelopmentEnvironmentError(
                 f"Stack {stack_name} is not in a complete operational state"
             )
-        parameter_by_name_map = self._stack_parameter_by_name_map_get(stack_name)
         if not self._stack_output_by_name_map_get(stack_name):
             raise DevelopmentEnvironmentError(
                 f"Stack {stack_name} has no validated outputs"
@@ -5859,21 +5488,6 @@ shutil.rmtree(root_path)
             detection_status = status_payload.get("DetectionStatus")
             if detection_status == "DETECTION_COMPLETE":
                 if status_payload.get("StackDriftStatus") != "IN_SYNC":
-                    if (
-                        should_allow_instance_launch_template_tag_drift
-                        and self._instance_launch_template_tag_drift_is_exact(
-                            stack_name=stack_name,
-                            parameter_by_name_map=parameter_by_name_map,
-                            drifted_resource_count=status_payload.get(
-                                "DriftedStackResourceCount"
-                            ),
-                        )
-                    ):
-                        print(
-                            f"OK: stack {stack_name} has only the reconcilable "
-                            "instance launch-template tag drift"
-                        )
-                        return
                     raise DevelopmentEnvironmentError(
                         f"Stack {stack_name} is not IN_SYNC"
                     )
@@ -5887,141 +5501,6 @@ shutil.rmtree(root_path)
         raise DevelopmentEnvironmentError(
             f"Stack {stack_name} drift detection timed out"
         )
-
-    def _instance_launch_template_tag_drift_is_exact(
-        self,
-        *,
-        stack_name: str,
-        parameter_by_name_map: Mapping[str, str],
-        drifted_resource_count: object,
-    ) -> bool:
-        """Return whether drift is only the retired launch-template instance tags."""
-
-        if drifted_resource_count != 1:
-            return False
-        payload = self._aws_json_get(
-            [
-                "cloudformation",
-                "describe-stack-resource-drifts",
-                "--stack-name",
-                stack_name,
-                "--stack-resource-drift-status-filters",
-                "MODIFIED",
-                "DELETED",
-            ]
-        )
-        drift_list = payload.get("StackResourceDrifts")
-        if not isinstance(drift_list, list) or len(drift_list) != 1:
-            return False
-        drift = drift_list[0]
-        if (
-            not isinstance(drift, dict)
-            or drift.get("LogicalResourceId") != "DevelopmentInstance"
-            or drift.get("ResourceType") != "AWS::EC2::Instance"
-            or drift.get("StackResourceDriftStatus") != "MODIFIED"
-        ):
-            return False
-        try:
-            expected_property_by_name_map = json.loads(str(drift["ExpectedProperties"]))
-            actual_property_by_name_map = json.loads(str(drift["ActualProperties"]))
-        except (KeyError, TypeError, json.JSONDecodeError):
-            return False
-        if not isinstance(expected_property_by_name_map, dict) or not isinstance(
-            actual_property_by_name_map, dict
-        ):
-            return False
-
-        def tag_by_name_map_get(
-            property_by_name_map: Mapping[str, object],
-        ) -> dict[str, str] | None:
-            tag_list = property_by_name_map.get("Tags")
-            if not isinstance(tag_list, list):
-                return None
-            tag_by_name_map: dict[str, str] = {}
-            for tag in tag_list:
-                if not isinstance(tag, dict):
-                    return None
-                name = tag.get("Key")
-                value = tag.get("Value")
-                if (
-                    not isinstance(name, str)
-                    or not isinstance(value, str)
-                    or name in tag_by_name_map
-                ):
-                    return None
-                tag_by_name_map[name] = value
-            return tag_by_name_map
-
-        expected_tag_by_name_map = tag_by_name_map_get(expected_property_by_name_map)
-        actual_tag_by_name_map = tag_by_name_map_get(actual_property_by_name_map)
-        notification_tag_value = parameter_by_name_map.get("NotificationTagValue")
-        replacement_slot = parameter_by_name_map.get("InstanceSlot")
-        if expected_tag_by_name_map != {
-            "Environment": "development",
-            "EnvironmentName": self._identity.environment_name,
-            "ManagedBy": "CloudFormation",
-            "Project": notification_tag_value,
-        } or actual_tag_by_name_map != {
-            **expected_tag_by_name_map,
-            "Name": self._identity.instance_name,
-            "ReplacementSlot": replacement_slot,
-        }:
-            return False
-
-        def volume_identity_list_get(
-            property_by_name_map: Mapping[str, object],
-        ) -> list[tuple[str, str]] | None:
-            volume_list = property_by_name_map.get("Volumes")
-            if not isinstance(volume_list, list):
-                return None
-            identity_list: list[tuple[str, str]] = []
-            for volume in volume_list:
-                if not isinstance(volume, dict):
-                    return None
-                device = volume.get("Device")
-                volume_id = volume.get("VolumeId")
-                if not isinstance(device, str) or not isinstance(volume_id, str):
-                    return None
-                identity_list.append((device, volume_id))
-            return sorted(identity_list)
-
-        if volume_identity_list_get(
-            expected_property_by_name_map
-        ) != volume_identity_list_get(actual_property_by_name_map):
-            return False
-        property_difference_list = drift.get("PropertyDifferences")
-        if (
-            not isinstance(property_difference_list, list)
-            or len(property_difference_list) != 2
-        ):
-            return False
-        actual_difference_tag_by_name_map: dict[str, str] = {}
-        for difference in property_difference_list:
-            if (
-                not isinstance(difference, dict)
-                or difference.get("DifferenceType") != "ADD"
-                or not str(difference.get("PropertyPath", "")).startswith("/Tags/")
-            ):
-                return False
-            try:
-                actual_tag = json.loads(str(difference["ActualValue"]))
-            except (KeyError, TypeError, json.JSONDecodeError):
-                return False
-            if not isinstance(actual_tag, dict):
-                return False
-            name = actual_tag.get("Key")
-            value = actual_tag.get("Value")
-            if (
-                not isinstance(name, str)
-                or not isinstance(value, str)
-                or name in actual_difference_tag_by_name_map
-            ):
-                return False
-            actual_difference_tag_by_name_map[name] = value
-        return actual_difference_tag_by_name_map == {
-            "Name": self._identity.instance_name,
-            "ReplacementSlot": replacement_slot,
-        }
 
     def _stack_output_by_name_map_get(self, stack_name: str) -> dict[str, str]:
         stack_payload = self._stack_payload_get(stack_name, is_required=True)

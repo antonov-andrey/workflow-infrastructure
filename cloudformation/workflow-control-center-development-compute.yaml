@@ -1075,12 +1075,6 @@ Resources:
                 "$retained_root/secrets" \
                 "$retained_root/workflow-registry" \
                 "$retained_root/workflow-run"
-              compatibility_root='/var/lib/workflow-control-center'
-              test ! -L "$compatibility_root"
-              install -d -m 0755 "$compatibility_root"
-              test ! -e "$compatibility_root/product-tool"
-              test ! -L "$compatibility_root/product-tool"
-              ln -s "$retained_root/product-tool" "$compatibility_root/product-tool"
 
               download_verified '${K3sBinaryUrl}' '${K3sBinarySha256}' /tmp/k3s
               install -m 0755 /tmp/k3s /usr/local/bin/k3s

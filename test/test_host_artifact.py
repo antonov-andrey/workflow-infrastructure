@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+import base64
+import gzip
 import hashlib
 import io
 import json
@@ -13,12 +16,13 @@ import pytest
 
 from tool.lib.host_artifact import (
     DOCKER_SIGNING_KEY_FINGERPRINT,
+    HOST_ARTIFACT_NAME_SET,
+    HOST_ARTIFACT_RESOLVED_SOURCE_NAME_SET,
     HostArtifactIdentity,
     HostArtifactResolution,
     HostArtifactResolutionError,
     HostArtifactResolver,
     host_artifact_manifest_decode,
-    host_artifact_recovery_compatibility_identity_get,
 )
 
 
@@ -68,6 +72,14 @@ class RunnerFake:
 def _artifact_get(name: str) -> HostArtifactIdentity:
     """Return one canonical dummy artifact."""
 
+    resolved_source_kwargs = (
+        {
+            "resolved_ref": "refs/tags/v1.2.3",
+            "source_commit_sha": "a" * 40,
+        }
+        if name in HOST_ARTIFACT_RESOLVED_SOURCE_NAME_SET
+        else {}
+    )
     return HostArtifactIdentity(
         name=name,
         selector="stable",
@@ -75,6 +87,7 @@ def _artifact_get(name: str) -> HostArtifactIdentity:
         url=f"https://example.invalid/{name}",
         sha256=hashlib.sha256(name.encode()).hexdigest(),
         size=len(name),
+        **resolved_source_kwargs,
     )
 
 
@@ -226,7 +239,9 @@ def test_manifest_round_trip_is_canonical_and_tamper_evident() -> None:
 
     resolution = HostArtifactResolution(
         architecture="arm64",
-        artifact_by_name_map={"helm": _artifact_get("helm")},
+        artifact_by_name_map={
+            name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET
+        },
         docker_signing_key_fingerprint=DOCKER_SIGNING_KEY_FINGERPRINT,
         python_build="20260718",
     )
@@ -248,58 +263,76 @@ def test_manifest_round_trip_is_canonical_and_tamper_evident() -> None:
         )
 
 
-def test_recovery_compatibility_uses_runtime_lines_not_patch_bytes() -> None:
-    """Patch-level host replacement stays recoverable while line changes fail closed."""
+def test_manifest_decode_rejects_any_noncurrent_shape() -> None:
+    """The retained host contract never accepts unknown compatibility fields."""
 
-    artifact_name_set = {"aws-cli", "helm", "k3s-binary", "python", "uv"}
-
-    def manifest_get(
-        *, architecture: str = "arm64", helm_selector: str = "4"
-    ) -> dict[str, object]:
-        artifact_by_name_map = {
-            name: {
-                **_artifact_get(name).manifest_payload_get(),
-                "selector": (
-                    helm_selector
-                    if name == "helm"
-                    else {
-                        "aws-cli": "2",
-                        "k3s-binary": "1.36",
-                        "python": "3.14",
-                        "uv": "0",
-                    }[name]
-                ),
-            }
-            for name in artifact_name_set
-        }
-        return {
-            "architecture": architecture,
-            "artifact_by_name_map": artifact_by_name_map,
-            "python_selector": "3.14",
-        }
-
-    retained_manifest = manifest_get()
-    replacement_manifest = manifest_get()
-    replacement_artifact_by_name_map = replacement_manifest["artifact_by_name_map"]
-    assert isinstance(replacement_artifact_by_name_map, dict)
-    replacement_helm_artifact = replacement_artifact_by_name_map["helm"]
-    assert isinstance(replacement_helm_artifact, dict)
-    replacement_helm_artifact["version"] = "4.2.0"
-    replacement_helm_artifact["sha256"] = "f" * 64
-
-    assert host_artifact_recovery_compatibility_identity_get(
-        retained_manifest
-    ) == host_artifact_recovery_compatibility_identity_get(replacement_manifest)
-    assert host_artifact_recovery_compatibility_identity_get(
-        retained_manifest
-    ) != host_artifact_recovery_compatibility_identity_get(
-        manifest_get(helm_selector="5")
+    resolution = HostArtifactResolution(
+        architecture="arm64",
+        artifact_by_name_map={
+            name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET
+        },
+        docker_signing_key_fingerprint=DOCKER_SIGNING_KEY_FINGERPRINT,
+        python_build="20260718",
     )
-    assert host_artifact_recovery_compatibility_identity_get(
-        retained_manifest
-    ) != host_artifact_recovery_compatibility_identity_get(
-        manifest_get(architecture="amd64")
+    payload = resolution.manifest_payload_get()
+    payload["compatibility_selector"] = "3.14"
+    payload_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    encoded_manifest = base64.b64encode(gzip.compress(payload_bytes, mtime=0)).decode()
+
+    with pytest.raises(HostArtifactResolutionError, match="exact current shape"):
+        host_artifact_manifest_decode(
+            encoded_manifest=encoded_manifest,
+            expected_sha256=hashlib.sha256(payload_bytes).hexdigest(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("artifact_name", "mutate"),
+    [
+        (
+            "python",
+            lambda artifact: (
+                artifact.pop("resolved_ref"),
+                artifact.pop("source_commit_sha"),
+            ),
+        ),
+        (
+            "docker-ce",
+            lambda artifact: artifact.update(
+                {
+                    "resolved_ref": "refs/tags/v1.2.3",
+                    "source_commit_sha": "a" * 40,
+                }
+            ),
+        ),
+    ],
+)
+def test_manifest_decode_requires_exact_provenance_shape_by_artifact_owner(
+    artifact_name: str,
+    mutate: Callable[[dict[str, object]], object],
+) -> None:
+    """Resolved-source provenance is mandatory only for its exact artifact owners."""
+
+    resolution = HostArtifactResolution(
+        architecture="arm64",
+        artifact_by_name_map={
+            name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET
+        },
+        docker_signing_key_fingerprint=DOCKER_SIGNING_KEY_FINGERPRINT,
+        python_build="20260718",
     )
+    payload = resolution.manifest_payload_get()
+    artifact = payload["artifact_by_name_map"][artifact_name]
+    assert isinstance(artifact, dict)
+    mutate(artifact)
+    payload_bytes = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
+    encoded_manifest = base64.b64encode(gzip.compress(payload_bytes, mtime=0)).decode()
+
+    with pytest.raises(HostArtifactResolutionError, match="exact current shape"):
+        host_artifact_manifest_decode(
+            encoded_manifest=encoded_manifest,
+            expected_sha256=hashlib.sha256(payload_bytes).hexdigest(),
+        )
 
 
 def test_python_selector_chooses_latest_stable_patch_for_target_architecture() -> None:
@@ -605,22 +638,11 @@ def test_artifact_download_rejects_oversized_response_before_cache_publication(
 def test_cloudformation_parameters_bind_every_bootstrap_artifact() -> None:
     """Launch input must carry exact URLs, versions, digests, and full provenance."""
 
-    artifact_name_list = [
-        "aws-cli",
-        "containerd.io",
-        "docker-buildx-plugin",
-        "docker-ce",
-        "docker-ce-cli",
-        "docker-signing-key",
-        "helm",
-        "k3s-binary",
-        "k3s-install-script",
-        "python",
-        "uv",
-    ]
     resolution = HostArtifactResolution(
         architecture="arm64",
-        artifact_by_name_map={name: _artifact_get(name) for name in artifact_name_list},
+        artifact_by_name_map={
+            name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET
+        },
         docker_signing_key_fingerprint=DOCKER_SIGNING_KEY_FINGERPRINT,
         python_build="20260718",
     )

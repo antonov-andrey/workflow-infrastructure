@@ -56,13 +56,52 @@ _ARCHITECTURE_BY_COMPUTE_ARCHITECTURE_MAP = {
         "uv": "aarch64",
     },
 }
-_RECOVERY_RUNTIME_ARTIFACT_NAME_SET = frozenset(
+HOST_ARTIFACT_NAME_SET = frozenset(
+    {
+        "aws-cli",
+        "containerd.io",
+        "docker-buildx-plugin",
+        "docker-ce",
+        "docker-ce-cli",
+        "docker-inrelease",
+        "docker-packages-index",
+        "docker-signing-key",
+        "helm",
+        "k3s-binary",
+        "k3s-install-script",
+        "python",
+        "uv",
+        "uv-python-metadata",
+    }
+)
+HOST_ARTIFACT_RESOLVED_SOURCE_NAME_SET = frozenset(
     {
         "aws-cli",
         "helm",
         "k3s-binary",
+        "k3s-install-script",
         "python",
         "uv",
+        "uv-python-metadata",
+    }
+)
+_HOST_ARTIFACT_MANIFEST_FIELD_NAME_SET = frozenset(
+    {
+        "architecture",
+        "artifact_by_name_map",
+        "docker_signing_key_fingerprint",
+        "python_build",
+        "python_selector",
+    }
+)
+_HOST_ARTIFACT_IDENTITY_FIELD_NAME_SET = frozenset(
+    {"name", "selector", "sha256", "size", "url", "version"}
+)
+_HOST_ARTIFACT_RESOLVED_IDENTITY_FIELD_NAME_SET = frozenset(
+    {
+        *_HOST_ARTIFACT_IDENTITY_FIELD_NAME_SET,
+        "resolved_ref",
+        "source_commit_sha",
     }
 )
 
@@ -110,16 +149,18 @@ class HostArtifactResolution:
     def manifest_payload_get(self) -> dict[str, object]:
         """Return canonical launch/release provenance."""
 
-        return {
-            "architecture": self.architecture,
-            "artifact_by_name_map": {
-                name: artifact.manifest_payload_get()
-                for name, artifact in sorted(self.artifact_by_name_map.items())
-            },
-            "docker_signing_key_fingerprint": self.docker_signing_key_fingerprint,
-            "python_build": self.python_build,
-            "python_selector": PYTHON_SELECTOR,
-        }
+        return host_artifact_manifest_validate(
+            {
+                "architecture": self.architecture,
+                "artifact_by_name_map": {
+                    name: artifact.manifest_payload_get()
+                    for name, artifact in sorted(self.artifact_by_name_map.items())
+                },
+                "docker_signing_key_fingerprint": self.docker_signing_key_fingerprint,
+                "python_build": self.python_build,
+                "python_selector": PYTHON_SELECTOR,
+            }
+        )
 
     def manifest_sha256_get(self) -> str:
         """Return the digest of the canonical launch/release provenance."""
@@ -192,58 +233,6 @@ class HostArtifactResolution:
             "UvVersion": artifact["uv"].version,
         }
         return parameter_by_name_map
-
-
-def host_artifact_recovery_compatibility_identity_get(
-    manifest: Mapping[str, object],
-) -> dict[str, object]:
-    """Return the stable runtime line that may recover one retained Product release.
-
-    Exact artifact versions and bytes remain launch provenance. Recovery compatibility
-    intentionally compares only the architecture and declared runtime selectors used
-    by retained Product tooling; patch updates inside those lines do not rewrite an
-    accepted Product release.
-
-    Args:
-        manifest: Decoded exact host-artifact manifest.
-
-    Returns:
-        Canonical recovery compatibility identity.
-
-    Raises:
-        HostArtifactResolutionError: If the manifest omits a required runtime line.
-    """
-
-    architecture = manifest.get("architecture")
-    artifact_by_name_map = manifest.get("artifact_by_name_map")
-    if architecture not in _ARCHITECTURE_BY_COMPUTE_ARCHITECTURE_MAP or not isinstance(
-        artifact_by_name_map, Mapping
-    ):
-        raise HostArtifactResolutionError(
-            "host artifact recovery compatibility payload is malformed"
-        )
-    selector_by_name_map: dict[str, str] = {}
-    for artifact_name in sorted(_RECOVERY_RUNTIME_ARTIFACT_NAME_SET):
-        artifact = artifact_by_name_map.get(artifact_name)
-        selector = artifact.get("selector") if isinstance(artifact, Mapping) else None
-        if not isinstance(selector, str) or not selector:
-            raise HostArtifactResolutionError(
-                f"host artifact recovery compatibility omits {artifact_name} selector"
-            )
-        selector_by_name_map[artifact_name] = selector
-    python_selector = manifest.get("python_selector")
-    if (
-        not isinstance(python_selector, str)
-        or not python_selector
-        or python_selector != selector_by_name_map["python"]
-    ):
-        raise HostArtifactResolutionError(
-            "host artifact recovery compatibility has inconsistent Python selectors"
-        )
-    return {
-        "architecture": architecture,
-        "selector_by_name_map": selector_by_name_map,
-    }
 
 
 class HostArtifactResolver:
@@ -1090,6 +1079,81 @@ class HostArtifactResolutionError(RuntimeError):
     """Raised when a bootstrap artifact cannot become an immutable input."""
 
 
+def host_artifact_manifest_validate(payload: object) -> dict[str, object]:
+    """Validate the one exact current host-artifact manifest shape."""
+
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != _HOST_ARTIFACT_MANIFEST_FIELD_NAME_SET
+    ):
+        raise HostArtifactResolutionError(
+            "host artifact manifest does not have the exact current shape"
+        )
+    architecture = payload.get("architecture")
+    artifact_by_name_map = payload.get("artifact_by_name_map")
+    if (
+        architecture not in _ARCHITECTURE_BY_COMPUTE_ARCHITECTURE_MAP
+        or not isinstance(artifact_by_name_map, dict)
+        or set(artifact_by_name_map) != HOST_ARTIFACT_NAME_SET
+    ):
+        raise HostArtifactResolutionError("host artifact manifest payload is malformed")
+    for artifact_name, artifact in artifact_by_name_map.items():
+        artifact_field_name_set = set(artifact) if isinstance(artifact, dict) else set()
+        expected_field_name_set = (
+            _HOST_ARTIFACT_RESOLVED_IDENTITY_FIELD_NAME_SET
+            if artifact_name in HOST_ARTIFACT_RESOLVED_SOURCE_NAME_SET
+            else _HOST_ARTIFACT_IDENTITY_FIELD_NAME_SET
+        )
+        if (
+            not isinstance(artifact, dict)
+            or artifact_field_name_set != expected_field_name_set
+        ):
+            raise HostArtifactResolutionError(
+                f"host artifact manifest {artifact_name} does not have the exact current shape"
+            )
+        if (
+            artifact.get("name") != artifact_name
+            or not isinstance(artifact.get("selector"), str)
+            or not artifact["selector"]
+            or not isinstance(artifact.get("version"), str)
+            or not artifact["version"]
+            or not isinstance(artifact.get("url"), str)
+            or not artifact["url"].startswith("https://")
+            or not isinstance(artifact.get("size"), int)
+            or artifact["size"] <= 0
+            or not isinstance(artifact.get("sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", artifact["sha256"]) is None
+        ):
+            raise HostArtifactResolutionError(
+                f"host artifact manifest {artifact_name} identity is invalid"
+            )
+        if artifact_name in HOST_ARTIFACT_RESOLVED_SOURCE_NAME_SET and (
+            not isinstance(artifact.get("resolved_ref"), str)
+            or not artifact["resolved_ref"]
+            or not isinstance(artifact.get("source_commit_sha"), str)
+            or re.fullmatch(r"[0-9a-f]{40}", artifact["source_commit_sha"]) is None
+        ):
+            raise HostArtifactResolutionError(
+                f"host artifact manifest {artifact_name} resolved identity is invalid"
+            )
+    if payload.get("python_selector") != PYTHON_SELECTOR:
+        raise HostArtifactResolutionError(
+            "host artifact manifest has another Python selector"
+        )
+    if (
+        not isinstance(payload.get("python_build"), str)
+        or re.fullmatch(r"[0-9]{8}", payload["python_build"]) is None
+    ):
+        raise HostArtifactResolutionError(
+            "host artifact manifest has no exact Python build"
+        )
+    if payload.get("docker_signing_key_fingerprint") != DOCKER_SIGNING_KEY_FINGERPRINT:
+        raise HostArtifactResolutionError(
+            "host artifact manifest has another Docker signing trust anchor"
+        )
+    return payload
+
+
 def host_artifact_manifest_decode(
     *,
     encoded_manifest: str,
@@ -1125,10 +1189,4 @@ def host_artifact_manifest_decode(
         raise HostArtifactResolutionError(
             "host artifact manifest parameter differs from its digest"
         )
-    if (
-        not isinstance(payload, dict)
-        or not isinstance(payload.get("architecture"), str)
-        or not isinstance(payload.get("artifact_by_name_map"), dict)
-    ):
-        raise HostArtifactResolutionError("host artifact manifest payload is malformed")
-    return payload
+    return host_artifact_manifest_validate(payload)

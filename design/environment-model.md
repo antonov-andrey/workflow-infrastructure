@@ -53,6 +53,10 @@ Product release передаёт backend exact digest собранного optio
 
 Moving resolution применяется только к platform-owned release dependencies. Пользовательский `WorkflowSource` остаётся language-neutral, самостоятельно разрешает свой сохранённый Git selector при создании `WorkflowSourceVersion` и не получает Python dependency либо platform base image принудительно.
 
+До появления production и persisted customer state платформа имеет ровно одну текущую техническую version каждого source manifest, Product release manifest, host/operator CLI и workflow input contract. Отсутствующая, прежняя либо неизвестная technical version отклоняется; readers нескольких shapes, compatibility aliases, migration graphs, sanitizers и transition-only runtime branches запрещены. Immutable Product releases и доменные `WorkflowSourceVersion`, созданные по одному текущему contract, являются обычной release/domain history, а не разрешением legacy format.
+
+Изменение текущего technical contract в pre-production выполняется destructive reset: Product databases, Product object versions, dynamic catalog, workflow volumes, registry и retained Product release/runtime graph очищаются, а новый current-format release создаётся заново. ZITADEL и GlitchTip identity/observability state могут сохраняться отдельным доказанным logical boundary. После production launch изменение этого правила потребует отдельного утверждённого migration/compatibility design; заранее неиспользуемая реализация такого bridge в common Product запрещена.
+
 ## Общая Kubernetes Граница
 
 Environment-neutral resources задают namespaces, service accounts, workload ownership, secrets/config interfaces, health contracts, security contexts, resource requests/limits, release labels и NetworkPolicy для untrusted/runtime trust boundaries, выразимых одинаково во всех средах. Каждый trusted AWS workload family имеет собственные stable ServiceAccount, ConfigMap и Secret interfaces; credentialed control/materialization workload никогда не разделяет ServiceAccount или DB Secret с workflow, browser, VPN, source validation, wait либо другой workload family. Environment adapter связывает только эти exact identities с provider-specific roles/credentials и материализует registry, storage, ingress, scheduling и trusted-control-plane network topology.
@@ -101,7 +105,7 @@ Platform administrator authority не является tenant isolation mechanis
 
 ## Проверки
 
-Contract tests обязаны доказывать отсутствие environment-specific values в common Kubernetes base, полный render каждого adapter, один exact contract source во всех consumers release, отсутствие VCS resolution внутри image build и recovery без network/source resolution.
+Contract tests обязаны доказывать отсутствие environment-specific values в common Kubernetes base, полный render каждого adapter, один exact contract source во всех consumers release, отсутствие VCS resolution внутри image build, strict current technical manifest versions и recovery без network/source resolution или преобразования retained bytes.
 
 AWS acceptance проверяет Retain policies, account-level и bucket-level public-access blocks, tagged tenant prefix policy вместе с narrowing session policy и реальную изоляцию двух users. Kubernetes acceptance проверяет обновление credential directory без restart, disposable builder per attempt, отсутствие credential/token у untrusted workloads и точную registry NetworkPolicy.
 

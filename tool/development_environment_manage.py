@@ -48,13 +48,11 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
             "diagnose",
             "host-controller",
             "host-install",
-            "host-product-bytecode-guard-install",
             "host-product-recovery-begin",
             "host-product-recovery-complete",
             "host-product-recovery-status",
             "host-product-release-activate",
             "host-product-release-restore",
-            "host-product-runtime-retain",
             "host-prepare",
             "host-shutdown",
             "host-status",
@@ -147,8 +145,6 @@ def main(argv_list: list[str]) -> int:
             environment.host_controller()
         elif args.command == "host-install":
             environment.host_install()
-        elif args.command == "host-product-bytecode-guard-install":
-            environment.host_product_bytecode_guard_install()
         elif args.command == "host-product-recovery-begin":
             environment.host_product_recovery_begin()
         elif args.command == "host-product-recovery-complete":
@@ -159,8 +155,6 @@ def main(argv_list: list[str]) -> int:
             environment.host_product_release_activate(args.release)
         elif args.command == "host-product-release-restore":
             environment.host_product_release_restore()
-        elif args.command == "host-product-runtime-retain":
-            environment.host_product_runtime_retain()
         elif args.command == "host-prepare":
             environment.host_prepare()
         elif args.command == "host-shutdown":
