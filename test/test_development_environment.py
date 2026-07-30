@@ -969,6 +969,7 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
     assert "${PythonVersion}" in user_data
     assert "${PythonSha256}" in user_data
     assert "${UvVersion}" in user_data
+    assert "cut --delimiter=' ' --fields=1-2" in user_data
     assert "${HelmVersion}" in user_data
     assert "HostArtifactManifestGzipBase64" in user_data
     assert "manifest_input" in user_data

@@ -1015,7 +1015,8 @@ Resources:
               tar --extract --gzip --file /tmp/uv.tar.gz \
                 --directory /tmp/uv --strip-components=1
               install -m 0755 /tmp/uv/uv /usr/local/bin/uv
-              test "$(/usr/local/bin/uv --version)" = 'uv ${UvVersion}'
+              test "$(/usr/local/bin/uv --version | cut --delimiter=' ' --fields=1-2)" \
+                = 'uv ${UvVersion}'
 
               download_verified '${PythonUrl}' '${PythonSha256}' /tmp/python.tar.gz
               python_root='/opt/python/cpython-${PythonVersion}+${PythonBuild}'
