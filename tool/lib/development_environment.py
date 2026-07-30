@@ -455,7 +455,12 @@ class DevelopmentEnvironment:
             "PlatformRoleName": platform_role_name,
             **host_artifact_resolution.cloudformation_parameter_by_name_map_get(),
         }
-        if compute_stack_exists:
+        if legacy_runtime_transition_is_required:
+            compute_parameter_by_name_map.update(
+                self._replacement_parameter_by_name_map_get()
+            )
+            compute_parameter_by_name_map["InstanceLaunchTemplateVersion"] = "1"
+        elif compute_stack_exists:
             compute_parameter_by_name_map["InstanceLaunchTemplateVersion"] = (
                 self._instance_launch_template_version_get()
             )
@@ -463,20 +468,10 @@ class DevelopmentEnvironment:
             compute_parameter_by_name_map.update(
                 self._replacement_guard_parameter_by_name_map_get()
             )
-        self._stack_apply(
-            stack_name=self._identity.compute_stack_name,
-            template_path=self._project_root_path
-            / "cloudformation/workflow-control-center-development-compute.yaml",
-            parameter_by_name_map=compute_parameter_by_name_map,
-            must_preserve_resource=False,
-            protected_identity_logical_id_set=COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET,
-        )
-        self._retained_volume_attachment_validate()
-        self._instance_launch_template_version_validate(require_latest=False)
-        if self._instance_launch_template_update_is_pending():
+        if legacy_runtime_transition_is_required:
             self.stop(should_validate_drift=False)
             self._replacement_stack_apply(
-                parameter_by_name_map=self._replacement_parameter_by_name_map_get()
+                parameter_by_name_map=compute_parameter_by_name_map
             )
             self.start(should_publish_infrastructure_source=True)
             self._replacement_guard_disable()
@@ -484,8 +479,33 @@ class DevelopmentEnvironment:
             self._product_recovery_apply_run()
             self._product_recovery_acceptance_run()
         else:
-            self.start(should_publish_infrastructure_source=True)
-            self._replacement_guard_disable()
+            self._stack_apply(
+                stack_name=self._identity.compute_stack_name,
+                template_path=self._project_root_path
+                / "cloudformation/workflow-control-center-development-compute.yaml",
+                parameter_by_name_map=compute_parameter_by_name_map,
+                must_preserve_resource=False,
+                protected_identity_logical_id_set=(
+                    COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET
+                ),
+            )
+            self._retained_volume_attachment_validate()
+            self._instance_launch_template_version_validate(require_latest=False)
+            if self._instance_launch_template_update_is_pending():
+                self.stop(should_validate_drift=False)
+                self._replacement_stack_apply(
+                    parameter_by_name_map=(
+                        self._replacement_parameter_by_name_map_get()
+                    )
+                )
+                self.start(should_publish_infrastructure_source=True)
+                self._replacement_guard_disable()
+                self._retained_product_release_link_restore()
+                self._product_recovery_apply_run()
+                self._product_recovery_acceptance_run()
+            else:
+                self.start(should_publish_infrastructure_source=True)
+                self._replacement_guard_disable()
         self._stack_drift_validate(self._identity.data_plane_stack_name)
         self._stack_drift_validate(self._identity.compute_stack_name)
         self._retained_snapshot_policy_validate()
@@ -4917,9 +4937,7 @@ shutil.rmtree(root_path)
                     replacement_detail_list.append(detail)
                     continue
                 target = detail.get("Target")
-                if isinstance(target, dict) and target.get(
-                    "RequiresRecreation"
-                ) in {
+                if isinstance(target, dict) and target.get("RequiresRecreation") in {
                     "Always",
                     "Conditionally",
                 }:
@@ -4928,9 +4946,7 @@ shutil.rmtree(root_path)
                 conditional_safety_by_logical_id_map[logical_resource_id] = False
                 return False
 
-            next_proving_logical_id_set = proving_logical_id_set | {
-                logical_resource_id
-            }
+            next_proving_logical_id_set = proving_logical_id_set | {logical_resource_id}
             for detail in replacement_detail_list:
                 if not isinstance(detail, dict):
                     conditional_safety_by_logical_id_map[logical_resource_id] = False
@@ -5448,8 +5464,7 @@ shutil.rmtree(root_path)
         if head_result.returncode != 0:
             error_text = (head_result.stderr or head_result.stdout).strip()
             if not any(
-                marker in error_text
-                for marker in ("(404)", "NoSuchKey", "Not Found")
+                marker in error_text for marker in ("(404)", "NoSuchKey", "Not Found")
             ):
                 raise DevelopmentEnvironmentError(
                     "Unable to inspect CloudFormation template artifact: "

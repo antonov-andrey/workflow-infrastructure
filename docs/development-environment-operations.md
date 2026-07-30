@@ -149,7 +149,7 @@ rollback volume. Перед следующим restore более старый r
 пустых attachments и отсутствия DLM tag; current volume cleanup не затрагивает.
 `status` показывает current retained-volume slot и source snapshot.
 
-`replace` и `restore` задают следующий alternating slot и включённый двухчасовой replacement guard, gracefully останавливают старый instance, доказывают detachment retained EBS и только затем исполняют replacement change set. CloudFormation создаёт новую launch-template version и запускает instance лишь после обновления guard; после запуска проверяется exact version из EC2 metadata. При rollback старый volume повторно подключается к stack-declared остановленному instance до возврата ошибки. Обычный `apply` этот lifecycle не выполняет.
+`replace` и `restore` задают следующий alternating slot и включённый двухчасовой replacement guard, gracefully останавливают старый instance, доказывают detachment retained EBS и только затем исполняют replacement change set. CloudFormation создаёт новую launch-template version и запускает instance лишь после обновления guard; после запуска проверяется exact version из EC2 metadata. При rollback старый volume повторно подключается к stack-declared остановленному instance до возврата ошибки. Обычный `apply` не требует отдельной operator-команды: при обнаружении новой launch-template version он вызывает тот же controlled replacement primitive автоматически.
 
 После запуска replacement instance orchestration выполняет один порядок:
 

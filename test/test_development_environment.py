@@ -351,7 +351,7 @@ def test_compute_created_resources_preserve_environment_identity_tags() -> None:
         "ManagedBy",
     }
 
-    launch_template_data = resource_by_name_map["DevelopmentLaunchTemplate"][
+    launch_template_data = resource_by_name_map["DevelopmentHostLaunchTemplate"][
         "Properties"
     ]["LaunchTemplateData"]
     for tag_specification in launch_template_data["TagSpecifications"]:
@@ -748,9 +748,7 @@ def test_data_plane_keeps_primary_lake_formation_identity_and_isolates_non_prima
     non_primary_catalog_permission = resource_by_name_map[
         "NonPrimaryPlatformRoleCatalogPermission"
     ]
-    assert non_primary_catalog_permission["Condition"] == (
-        "IsNonPrimaryEnvironment"
-    )
+    assert non_primary_catalog_permission["Condition"] == ("IsNonPrimaryEnvironment")
     assert non_primary_catalog_permission["Properties"] == {
         "Permissions": ["CREATE_DATABASE"],
         "PermissionsWithGrantOption": [],
@@ -767,9 +765,7 @@ def test_data_plane_keeps_primary_lake_formation_identity_and_isolates_non_prima
         "DATA_LOCATION_ACCESS"
     ]
 
-    primary_database_permission = resource_by_name_map[
-        "PlatformRoleDatabasePermission"
-    ]
+    primary_database_permission = resource_by_name_map["PlatformRoleDatabasePermission"]
     assert primary_database_permission["Condition"] == "IsPrimaryEnvironment"
     assert primary_database_permission["DependsOn"] == "GlueDatabase"
     assert primary_database_permission["Properties"]["Principal"] == platform_principal
@@ -948,7 +944,7 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
         "Fn::Sub": "arn:${AWS::Partition}:ec2:*::snapshot/*"
     }
 
-    launch_template_data = resource_by_name_map["DevelopmentLaunchTemplate"][
+    launch_template_data = resource_by_name_map["DevelopmentHostLaunchTemplate"][
         "Properties"
     ]["LaunchTemplateData"]
     assert launch_template_data["MetadataOptions"] == {
@@ -1008,7 +1004,7 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
     }
 
     launch_template_reference = {
-        "LaunchTemplateId": {"Ref": "DevelopmentLaunchTemplate"},
+        "LaunchTemplateId": {"Ref": "DevelopmentHostLaunchTemplate"},
         "Version": {"Ref": "InstanceLaunchTemplateVersion"},
     }
     assert (
@@ -1045,7 +1041,7 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
         "Ref": "RetainedVolumeSnapshotId"
     }
     assert template["Outputs"]["LatestLaunchTemplateVersion"]["Value"] == {
-        "Fn::GetAtt": ["DevelopmentLaunchTemplate", "LatestVersionNumber"]
+        "Fn::GetAtt": ["DevelopmentHostLaunchTemplate", "LatestVersionNumber"]
     }
     assert template["Outputs"]["InstanceLaunchTemplateVersion"]["Value"] == {
         "Ref": "InstanceLaunchTemplateVersion"
@@ -1090,7 +1086,7 @@ def test_compute_bootstrap_is_syntactically_valid_and_fits_ec2_user_data() -> No
         project_root_path,
         "workflow-control-center-development-compute.yaml",
     )
-    user_data = template["Resources"]["DevelopmentLaunchTemplate"]["Properties"][
+    user_data = template["Resources"]["DevelopmentHostLaunchTemplate"]["Properties"][
         "LaunchTemplateData"
     ]["UserData"]["Fn::Base64"]["Fn::Sub"][0]
     parameter_by_name_map = {
@@ -2067,7 +2063,13 @@ def test_moving_source_resolution_retries_race_and_supports_one_exact_override(
     assert override_manifest["override_reason"] == "explicit operator deploy argument"
 
     tree_sha = subprocess.run(
-        ["git", "-C", str(repository_path), "rev-parse", f"{first_commit_sha}^{{tree}}"],
+        [
+            "git",
+            "-C",
+            str(repository_path),
+            "rev-parse",
+            f"{first_commit_sha}^{{tree}}",
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -2278,7 +2280,7 @@ def test_ordinary_compute_apply_rejects_every_possible_stable_identity_replaceme
     change_summary_list = [
         {
             "action": "Modify",
-            "logical_resource_id": "DevelopmentLaunchTemplate",
+            "logical_resource_id": "DevelopmentHostLaunchTemplate",
             "replacement": "False",
         },
         {
@@ -3988,6 +3990,173 @@ def test_legacy_runtime_transition_is_required_only_for_pre_manifest_stack() -> 
                 "InstanceType": "m7g.xlarge",
             }
         )
+    )
+
+
+def test_apply_uses_one_controlled_replacement_for_legacy_launch_template(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The legacy latest-version owner moves once to hardened numeric version one."""
+
+    environment = _environment_get(tmp_path)
+    event_list: list[object] = []
+
+    class HostArtifactResolutionStub:
+        """Expose the one launch input needed to prove parameter propagation."""
+
+        @staticmethod
+        def cloudformation_parameter_by_name_map_get() -> dict[str, str]:
+            return {"HostArtifactManifestSha256": "a" * 64}
+
+    monkeypatch.setattr(environment, "_local_operator_context_validate", lambda: None)
+    monkeypatch.setattr(
+        environment,
+        "_source_repository_validate",
+        lambda repository_path, repository_name: None,
+    )
+    monkeypatch.setattr(environment, "_cost_review_record", lambda: None)
+    monkeypatch.setattr(
+        environment,
+        "_stack_drift_validate",
+        lambda stack_name: event_list.append(("drift", stack_name)),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stack_payload_get",
+        lambda stack_name, *, is_required: {"StackStatus": "UPDATE_COMPLETE"},
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stack_parameter_by_name_map_get",
+        lambda stack_name: {"InstanceSlot": "b"},
+    )
+    monkeypatch.setattr(
+        environment,
+        "_host_artifact_resolution_get",
+        lambda *, compute_stack_exists: HostArtifactResolutionStub(),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stack_resource_id_by_logical_name_map_get",
+        lambda stack_name: {},
+    )
+    monkeypatch.setattr(
+        environment,
+        "_template_validate",
+        lambda template_path: None,
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stack_apply",
+        lambda **keyword_argument_by_name_map: event_list.append(
+            ("ordinary-apply", keyword_argument_by_name_map["stack_name"])
+        ),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_stack_output_by_name_map_get",
+        lambda stack_name: {
+            "PlatformRoleArn": (
+                "arn:aws:iam::463564115167:role/workflow-control-center-platform"
+            )
+        },
+    )
+    monkeypatch.setattr(
+        environment,
+        "_legacy_product_tool_runtime_transition_prepare",
+        lambda: event_list.append("retain-runtime"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_replacement_parameter_by_name_map_get",
+        lambda: {
+            "InstanceLaunchTemplateVersion": "8",
+            "InstanceSlot": "a",
+            "ReplacementGuardScheduleExpression": "at(2026-07-28T14:00:00)",
+            "ReplacementGuardScheduleState": "ENABLED",
+        },
+    )
+    monkeypatch.setattr(
+        environment,
+        "stop",
+        lambda *, should_validate_drift: event_list.append(
+            ("stop", should_validate_drift)
+        ),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_replacement_stack_apply",
+        lambda *, parameter_by_name_map: event_list.append(
+            ("controlled-replacement", parameter_by_name_map)
+        ),
+    )
+    monkeypatch.setattr(
+        environment,
+        "start",
+        lambda *, should_publish_infrastructure_source: event_list.append(
+            ("start", should_publish_infrastructure_source)
+        ),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_replacement_guard_disable",
+        lambda: event_list.append("disable-guard"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_retained_product_release_link_restore",
+        lambda: event_list.append("restore-link"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_product_recovery_apply_run",
+        lambda: event_list.append("recover"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_product_recovery_acceptance_run",
+        lambda: event_list.append("recovery-acceptance"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_retained_snapshot_policy_validate",
+        lambda: event_list.append("snapshot-policy"),
+    )
+
+    environment.apply()
+
+    ordinary_compute_apply_list = [
+        event
+        for event in event_list
+        if event
+        == (
+            "ordinary-apply",
+            "workflow-control-center-development-compute",
+        )
+    ]
+    assert ordinary_compute_apply_list == []
+    controlled_replacement = next(
+        event for event in event_list if event[0] == "controlled-replacement"
+    )
+    assert controlled_replacement[1] == {
+        "EnvironmentName": "primary",
+        "HostArtifactManifestSha256": "a" * 64,
+        "InstanceLaunchTemplateVersion": "1",
+        "InstanceSlot": "a",
+        "PlatformRoleName": "workflow-control-center-platform",
+        "ReplacementGuardScheduleExpression": "at(2026-07-28T14:00:00)",
+        "ReplacementGuardScheduleState": "ENABLED",
+    }
+    assert (
+        event_list.index("retain-runtime")
+        < event_list.index(("stop", False))
+        < event_list.index(controlled_replacement)
+    )
+    assert (
+        event_list.index(controlled_replacement)
+        < event_list.index(("start", True))
+        < event_list.index("disable-guard")
     )
 
 

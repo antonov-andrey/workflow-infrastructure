@@ -831,7 +831,7 @@ Resources:
           MaximumRetryAttempts: 3
         RoleArn: !GetAtt SchedulerExecutionRole.Arn
 
-  DevelopmentLaunchTemplate:
+  DevelopmentHostLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
       LaunchTemplateData:
@@ -1144,16 +1144,16 @@ Resources:
                 - !Sub /srv/workflow-control-center-${EnvironmentName}
       LaunchTemplateName: !If
         - IsPrimaryEnvironment
-        - workflow-control-center-development
-        - !Sub workflow-control-center-development-${EnvironmentName}
+        - workflow-control-center-development-host
+        - !Sub workflow-control-center-development-${EnvironmentName}-host
       TagSpecifications:
         - ResourceType: launch-template
           Tags:
             - Key: Name
               Value: !If
                 - IsPrimaryEnvironment
-                - workflow-control-center-development
-                - !Sub workflow-control-center-development-${EnvironmentName}
+                - workflow-control-center-development-host
+                - !Sub workflow-control-center-development-${EnvironmentName}-host
             - Key: Project
               Value: !Ref NotificationTagValue
             - Key: Environment
@@ -1170,7 +1170,7 @@ Resources:
       - InstanceCreationGuardSchedule
     Properties:
       LaunchTemplate:
-        LaunchTemplateId: !Ref DevelopmentLaunchTemplate
+        LaunchTemplateId: !Ref DevelopmentHostLaunchTemplate
         Version: !Ref InstanceLaunchTemplateVersion
 
   RetainedVolumeAttachment:
@@ -1204,7 +1204,7 @@ Outputs:
   K3sVersion:
     Value: !Ref K3sVersion
   LatestLaunchTemplateVersion:
-    Value: !GetAtt DevelopmentLaunchTemplate.LatestVersionNumber
+    Value: !GetAtt DevelopmentHostLaunchTemplate.LatestVersionNumber
   Region:
     Value: !Ref AWS::Region
   ReplacementGuardScheduleName:
