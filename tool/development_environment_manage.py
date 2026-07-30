@@ -48,6 +48,7 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
             "host-install",
             "host-product-release-activate",
             "host-product-release-restore",
+            "host-product-runtime-retain",
             "host-prepare",
             "host-shutdown",
             "host-status",
@@ -61,6 +62,11 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
         ],
     )
     parser.add_argument(
+        "--environment-name",
+        default="primary",
+        help="Stable development environment selector (default: primary).",
+    )
+    parser.add_argument(
         "--release", help="Exact retained Product release to activate on the host."
     )
     parser.add_argument(
@@ -69,6 +75,11 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--retained-volume-id",
         help="Exact retained EBS volume expected by host-status.",
+    )
+    parser.add_argument(
+        "--workflow-container-contract-commit",
+        default="",
+        help="Exact one-deploy workflow-container-contract commit override.",
     )
     args, remaining_argument_list = parser.parse_known_args(argv_list)
     args.ssh_argument_list = remaining_argument_list
@@ -84,6 +95,10 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
         parser.error("--retained-volume-id is required for host-status")
     if args.retained_volume_id and args.command != "host-status":
         parser.error("--retained-volume-id is supported only for host-status")
+    if args.workflow_container_contract_commit and args.command != "deploy":
+        parser.error(
+            "--workflow-container-contract-commit is supported only for deploy"
+        )
     if args.ssh_argument_list and args.command != "ssh":
         parser.error("arguments after the command are supported only for ssh")
     if args.ssh_argument_list[:1] == ["--"]:
@@ -104,7 +119,10 @@ def main(argv_list: list[str]) -> int:
     args = _args_parse(argv_list)
     project_root_path = Path(__file__).resolve().parents[1]
     environment = DevelopmentEnvironment(
-        clock=Clock(), project_root_path=project_root_path, runner=CommandRunner()
+        clock=Clock(),
+        environment_name=args.environment_name,
+        project_root_path=project_root_path,
+        runner=CommandRunner(),
     )
     try:
         if args.command == "apply":
@@ -114,7 +132,9 @@ def main(argv_list: list[str]) -> int:
         elif args.command == "console":
             return environment.console()
         elif args.command == "deploy":
-            environment.deploy()
+            environment.deploy(
+                workflow_container_contract_commit=args.workflow_container_contract_commit
+            )
         elif args.command == "diagnose":
             environment.diagnose()
         elif args.command == "host-controller":
@@ -125,6 +145,8 @@ def main(argv_list: list[str]) -> int:
             environment.host_product_release_activate(args.release)
         elif args.command == "host-product-release-restore":
             environment.host_product_release_restore()
+        elif args.command == "host-product-runtime-retain":
+            environment.host_product_runtime_retain()
         elif args.command == "host-prepare":
             environment.host_prepare()
         elif args.command == "host-shutdown":

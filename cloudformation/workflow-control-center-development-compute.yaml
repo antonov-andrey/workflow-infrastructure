@@ -2,6 +2,12 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: Workflow Control Center development EC2 and k3s compute plane in us-east-1.
 
 Parameters:
+  EnvironmentName:
+    Type: String
+    Default: primary
+    AllowedPattern: '[a-z][a-z0-9]{0,15}'
+    Description: Stable development environment identity.
+
   Amd64AmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id
@@ -12,6 +18,22 @@ Parameters:
     Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id
     Description: Canonical Ubuntu 24.04 LTS arm64 AMI resolved at deployment time.
 
+  AwsCliSha256:
+    Type: String
+    AllowedPattern: '[0-9a-f]{64}'
+    Description: Verified SHA-256 of the exact AWS CLI archive.
+
+  AwsCliUrl:
+    Type: String
+    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
+    MaxLength: 384
+    Description: Exact versioned AWS CLI archive URL.
+
+  AwsCliVersion:
+    Type: String
+    AllowedPattern: '2\.[0-9]+\.[0-9]+'
+    Description: Exact AWS CLI v2 version resolved for this compute release.
+
   ComputeArchitecture:
     Type: String
     Default: arm64
@@ -19,6 +41,96 @@ Parameters:
       - amd64
       - arm64
     Description: Architecture of the development compute instance and runtime platform.
+
+  DockerBuildxPackageSha256:
+    Type: String
+    AllowedPattern: '[0-9a-f]{64}'
+
+  DockerBuildxPackageUrl:
+    Type: String
+    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
+    MaxLength: 384
+
+  DockerBuildxPackageVersion:
+    Type: String
+    AllowedPattern: '[A-Za-z0-9.+:~_-]+'
+
+  DockerCeCliPackageSha256:
+    Type: String
+    AllowedPattern: '[0-9a-f]{64}'
+
+  DockerCeCliPackageUrl:
+    Type: String
+    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
+    MaxLength: 384
+
+  DockerCeCliPackageVersion:
+    Type: String
+    AllowedPattern: '[A-Za-z0-9.+:~_-]+'
+
+  DockerCePackageSha256:
+    Type: String
+    AllowedPattern: '[0-9a-f]{64}'
+
+  DockerCePackageUrl:
+    Type: String
+    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
+    MaxLength: 384
+
+  DockerCePackageVersion:
+    Type: String
+    AllowedPattern: '[A-Za-z0-9.+:~_-]+'
+
+  DockerContainerdPackageSha256:
+    Type: String
+    AllowedPattern: '[0-9a-f]{64}'
+
+  DockerContainerdPackageUrl:
+    Type: String
+    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
+    MaxLength: 384
+
+  DockerContainerdPackageVersion:
+    Type: String
+    AllowedPattern: '[A-Za-z0-9.+:~_-]+'
+
+  DockerSigningKeyFingerprint:
+    Type: String
+    AllowedPattern: '[0-9A-F]{40}'
+    Description: Explicit Docker repository signing trust anchor.
+
+  DockerSigningKeySha256:
+    Type: String
+    AllowedPattern: '[0-9a-f]{64}'
+
+  DockerSigningKeyUrl:
+    Type: String
+    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
+    MaxLength: 384
+
+  HelmSha256:
+    Type: String
+    AllowedPattern: '[0-9a-f]{64}'
+
+  HelmUrl:
+    Type: String
+    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
+    MaxLength: 384
+
+  HelmVersion:
+    Type: String
+    AllowedPattern: 'v4\.[0-9]+\.[0-9]+'
+
+  HostArtifactManifestGzipBase64:
+    Type: String
+    AllowedPattern: '[A-Za-z0-9+/=]+'
+    MaxLength: 3072
+    Description: Canonical compressed immutable host artifact provenance.
+
+  HostArtifactManifestSha256:
+    Type: String
+    AllowedPattern: '[0-9a-f]{64}'
+    Description: SHA-256 of canonical uncompressed host artifact provenance.
 
   InstanceSlot:
     Type: String
@@ -28,6 +140,12 @@ Parameters:
       - b
     Description: Alternating logical slot used for explicit replacement-instance recovery.
 
+  InstanceLaunchTemplateVersion:
+    Type: String
+    Default: '1'
+    AllowedPattern: '[1-9][0-9]*'
+    Description: Exact launch-template version active on the current instance.
+
   InstanceType:
     Type: String
     Default: m7g.xlarge
@@ -36,15 +154,30 @@ Parameters:
 
   K3sVersion:
     Type: String
-    Default: v1.36.2+k3s1
     AllowedPattern: 'v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+'
     Description: Exact k3s release installed by host bootstrap.
 
   K3sInstallScriptSha256:
     Type: String
-    Default: 46177d4c99440b4c0311b67233823a8e8a2fc09693f6c89af1a7161e152fbfad
     AllowedPattern: '[0-9a-f]{64}'
     Description: Exact SHA-256 of install.sh at the selected k3s release tag.
+
+  K3sInstallScriptUrl:
+    Type: String
+    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
+    MaxLength: 384
+    Description: Exact commit-addressed k3s installer URL.
+
+  K3sBinarySha256:
+    Type: String
+    AllowedPattern: '[0-9a-f]{64}'
+    Description: Exact SHA-256 of the selected k3s binary.
+
+  K3sBinaryUrl:
+    Type: String
+    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
+    MaxLength: 384
+    Description: Exact versioned k3s binary URL.
 
   NotificationTagValue:
     Type: String
@@ -57,6 +190,25 @@ Parameters:
     Default: workflow-control-center-platform
     AllowedPattern: '[A-Za-z0-9+=,.@_-]+'
     Description: Existing data-plane platform role attached to the EC2 instance profile.
+
+  PythonBuild:
+    Type: String
+    AllowedPattern: '[0-9]{8}'
+    Description: Exact python-build-standalone build selected by the resolved uv release.
+
+  PythonSha256:
+    Type: String
+    AllowedPattern: '[0-9a-f]{64}'
+
+  PythonUrl:
+    Type: String
+    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
+    MaxLength: 384
+
+  PythonVersion:
+    Type: String
+    AllowedPattern: '3\.14\.[0-9]+'
+    Description: Exact patch release resolved from the supported Python 3.14 selector.
 
   RetainedVolumeSizeGiB:
     Type: Number
@@ -107,6 +259,19 @@ Parameters:
       - 'true'
     Description: Whether to create the no-hourly-charge S3 gateway endpoint.
 
+  UvSha256:
+    Type: String
+    AllowedPattern: '[0-9a-f]{64}'
+
+  UvUrl:
+    Type: String
+    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
+    MaxLength: 384
+
+  UvVersion:
+    Type: String
+    AllowedPattern: '0\.[0-9]+\.[0-9]+'
+
 Rules:
   RetainedVolumeSourceIsConsistent:
     Assertions:
@@ -122,6 +287,7 @@ Rules:
 
 Conditions:
   IsAmd64: !Equals [!Ref ComputeArchitecture, amd64]
+  IsPrimaryEnvironment: !Equals [!Ref EnvironmentName, primary]
   UseRetainedVolumeBase: !Equals [!Ref RetainedVolumeSlot, base]
   UseRetainedVolumeRestoreA: !Equals [!Ref RetainedVolumeSlot, a]
   UseRetainedVolumeRestoreB: !Equals [!Ref RetainedVolumeSlot, b]
@@ -138,6 +304,8 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
 
@@ -166,6 +334,8 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
 
@@ -183,6 +353,17 @@ Resources:
       RouteTableIds:
         - !Ref DevelopmentRouteTable
       ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-development-s3
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
+        - Key: ManagedBy
+          Value: CloudFormation
       VpcEndpointType: Gateway
       VpcId: !Ref DevelopmentVpc
 
@@ -202,6 +383,8 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
 
@@ -219,6 +402,8 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
 
@@ -242,13 +427,18 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
 
   HostInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
-      InstanceProfileName: workflow-control-center-development
+      InstanceProfileName: !If
+        - IsPrimaryEnvironment
+        - workflow-control-center-development
+        - !Sub workflow-control-center-development-${EnvironmentName}
       Roles:
         - !Ref PlatformRoleName
 
@@ -264,6 +454,8 @@ Resources:
         TargetTags:
           - Key: workflow-control-center-retained-backup
             Value: enabled
+          - Key: EnvironmentName
+            Value: !Ref EnvironmentName
         Schedules:
           - CopyTags: false
             CreateRule:
@@ -281,6 +473,8 @@ Resources:
                 Value: !Ref NotificationTagValue
               - Key: Environment
                 Value: development
+              - Key: EnvironmentName
+                Value: !Ref EnvironmentName
               - Key: ManagedBy
                 Value: DLM
       State: ENABLED
@@ -291,13 +485,18 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
 
   RetainedSnapshotRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: workflow-control-center-development-dlm
+      RoleName: !If
+        - IsPrimaryEnvironment
+        - workflow-control-center-development-dlm
+        - !Sub workflow-control-center-development-${EnvironmentName}-dlm
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -323,7 +522,7 @@ Resources:
               - Effect: Allow
                 Action:
                   - ec2:CreateTags
-                Resource: arn:aws:ec2:*::snapshot/*
+                Resource: !Sub arn:${AWS::Partition}:ec2:*::snapshot/*
       Tags:
         - Key: Name
           Value: workflow-control-center-development-dlm
@@ -331,6 +530,8 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
 
@@ -351,6 +552,8 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
         - Key: workflow-control-center-retained-backup
@@ -374,6 +577,8 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
         - Key: workflow-control-center-retained-backup
@@ -397,6 +602,8 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
         - Key: workflow-control-center-retained-backup
@@ -405,7 +612,10 @@ Resources:
   SchedulerExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: workflow-control-center-development-scheduler
+      RoleName: !If
+        - IsPrimaryEnvironment
+        - workflow-control-center-development-scheduler
+        - !Sub workflow-control-center-development-${EnvironmentName}-scheduler
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -431,13 +641,18 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
 
   LeaseStopFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: /aws/lambda/workflow-control-center-development-stop-current-instance
+      LogGroupName: !If
+        - IsPrimaryEnvironment
+        - /aws/lambda/workflow-control-center-development-stop-current-instance
+        - !Sub /aws/lambda/workflow-control-center-${EnvironmentName}-stop-instance
       RetentionInDays: 30
       Tags:
         - Key: Name
@@ -446,13 +661,18 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
 
   LeaseStopFunctionExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: workflow-control-center-development-stop-current-instance
+      RoleName: !If
+        - IsPrimaryEnvironment
+        - workflow-control-center-development-stop-current-instance
+        - !Sub workflow-control-center-${EnvironmentName}-stop-instance
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -474,13 +694,14 @@ Resources:
                 Condition:
                   StringEquals:
                     ec2:ResourceTag/Environment: development
+                    ec2:ResourceTag/EnvironmentName: !Ref EnvironmentName
                     ec2:ResourceTag/ManagedBy: CloudFormation
                     ec2:ResourceTag/Project: !Ref NotificationTagValue
               - Effect: Allow
                 Action:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
-                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/workflow-control-center-development-stop-current-instance:*
+                Resource: !GetAtt LeaseStopFunctionLogGroup.Arn
       Tags:
         - Key: Name
           Value: workflow-control-center-development-stop-current-instance
@@ -488,6 +709,8 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
 
@@ -495,7 +718,10 @@ Resources:
     Type: AWS::Lambda::Function
     DependsOn: LeaseStopFunctionLogGroup
     Properties:
-      FunctionName: workflow-control-center-development-stop-current-instance
+      FunctionName: !If
+        - IsPrimaryEnvironment
+        - workflow-control-center-development-stop-current-instance
+        - !Sub workflow-control-center-${EnvironmentName}-stop-instance
       Architectures:
         - arm64
       Code:
@@ -527,6 +753,10 @@ Resources:
                           "Values": ["development"],
                       },
                       {
+                          "Name": "tag:EnvironmentName",
+                          "Values": [os.environ["ENVIRONMENT_NAME"]],
+                      },
+                      {
                           "Name": "instance-state-name",
                           "Values": ["running"],
                       },
@@ -542,6 +772,7 @@ Resources:
               return {"stopped_instance_count": len(instance_ids)}
       Environment:
         Variables:
+          ENVIRONMENT_NAME: !Ref EnvironmentName
           PROJECT_TAG_VALUE: !Ref NotificationTagValue
           STACK_NAME: !Ref AWS::StackName
       Handler: index.handler
@@ -556,13 +787,18 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
 
   SchedulerGroup:
     Type: AWS::Scheduler::ScheduleGroup
     Properties:
-      Name: workflow-control-center-development
+      Name: !If
+        - IsPrimaryEnvironment
+        - workflow-control-center-development
+        - !Sub workflow-control-center-development-${EnvironmentName}
       Tags:
         - Key: Name
           Value: workflow-control-center-development
@@ -570,13 +806,18 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
 
   InstanceCreationGuardSchedule:
     Type: AWS::Scheduler::Schedule
     Properties:
-      Name: workflow-control-center-development-instance-creation-guard
+      Name: !If
+        - IsPrimaryEnvironment
+        - workflow-control-center-development-instance-creation-guard
+        - !Sub workflow-control-center-${EnvironmentName}-instance-guard
       FlexibleTimeWindow:
         Mode: 'OFF'
       ScheduleExpression: !Ref ReplacementGuardScheduleExpression
@@ -624,11 +865,16 @@ Resources:
           - ResourceType: instance
             Tags:
               - Key: Name
-                Value: workflow-control-center-development
+                Value: !If
+                  - IsPrimaryEnvironment
+                  - workflow-control-center-development
+                  - !Sub workflow-control-center-development-${EnvironmentName}
               - Key: Project
                 Value: !Ref NotificationTagValue
               - Key: Environment
                 Value: development
+              - Key: EnvironmentName
+                Value: !Ref EnvironmentName
               - Key: ManagedBy
                 Value: CloudFormation
               - Key: ReplacementSlot
@@ -636,11 +882,16 @@ Resources:
           - ResourceType: volume
             Tags:
               - Key: Name
-                Value: workflow-control-center-development-root
+                Value: !If
+                  - IsPrimaryEnvironment
+                  - workflow-control-center-development-root
+                  - !Sub workflow-control-center-development-${EnvironmentName}-root
               - Key: Project
                 Value: !Ref NotificationTagValue
               - Key: Environment
                 Value: development
+              - Key: EnvironmentName
+                Value: !Ref EnvironmentName
               - Key: ManagedBy
                 Value: CloudFormation
         UserData:
@@ -650,38 +901,160 @@ Resources:
               set -euo pipefail
               export DEBIAN_FRONTEND=noninteractive
 
-              apt-get update
-              apt-get install --no-install-recommends -y ca-certificates curl ec2-instance-connect gnupg iptables jq openssh-server rsync unzip xfsprogs
+              download_verified() {
+                url="$1"
+                sha256="$2"
+                path="$3"
+                tmp="$path.part"
+                curl --fail --location --proto '=https' --show-error --silent \
+                  --tlsv1.2 "$url" -o "$tmp"
+                printf '%s  %s\n' "$sha256" "$tmp" \
+                  | sha256sum --check --strict
+                mv "$tmp" "$path"
+              }
 
-              case "$(dpkg --print-architecture)" in
-                amd64) aws_cli_architecture=x86_64 ;;
-                arm64) aws_cli_architecture=aarch64 ;;
-                *) echo 'Unsupported AWS CLI architecture.' >&2; exit 1 ;;
-              esac
-              curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-$aws_cli_architecture.zip" -o /tmp/awscliv2.zip
+              apt-get update
+              apt-get install --no-install-recommends -y ca-certificates curl ec2-instance-connect gnupg iptables jq openssh-server rsync tar unzip xfsprogs
+
+              install -d -m 0755 /etc/workflow-control-center
+              printf '%s\n' '${HostArtifactManifestSha256}' \
+                > /etc/workflow-control-center/host-artifact-manifest.sha256
+              printf '%s' '${HostArtifactManifestGzipBase64}' \
+                > /etc/workflow-control-center/host-artifact-manifest.json.gz.b64
+              manifest_path='/etc/workflow-control-center/host-artifact-manifest.json'
+              printf '%s' '${HostArtifactManifestGzipBase64}' \
+                | base64 --decode \
+                | gzip --decompress \
+                > "$manifest_path"
+              chmod 0600 "$manifest_path"
+              printf '%s  %s\n' '${HostArtifactManifestSha256}' \
+                "$manifest_path" \
+                | sha256sum --check --strict
+
+              manifest_input="$(
+                jq --exit-status --raw-output '
+                  def artifact($name):
+                    .artifact_by_name_map[$name] | .version, .url, .sha256;
+                  .architecture,
+                  .docker_signing_key_fingerprint,
+                  .python_build,
+                  artifact("aws-cli"),
+                  artifact("docker-signing-key"),
+                  artifact("containerd.io"),
+                  artifact("docker-buildx-plugin"),
+                  artifact("docker-ce"),
+                  artifact("docker-ce-cli"),
+                  artifact("uv"),
+                  artifact("python"),
+                  artifact("helm"),
+                  artifact("k3s-binary"),
+                  artifact("k3s-install-script")
+                ' "$manifest_path" | sha256sum | awk '{print $1}'
+              )"
+              direct_input="$(
+                printf '%s\n' \
+                  '${ComputeArchitecture}' \
+                  '${DockerSigningKeyFingerprint}' \
+                  '${PythonBuild}' \
+                  '${AwsCliVersion}' '${AwsCliUrl}' '${AwsCliSha256}' \
+                  '${DockerSigningKeyFingerprint}' '${DockerSigningKeyUrl}' \
+                  '${DockerSigningKeySha256}' \
+                  '${DockerContainerdPackageVersion}' \
+                  '${DockerContainerdPackageUrl}' '${DockerContainerdPackageSha256}' \
+                  '${DockerBuildxPackageVersion}' '${DockerBuildxPackageUrl}' \
+                  '${DockerBuildxPackageSha256}' \
+                  '${DockerCePackageVersion}' '${DockerCePackageUrl}' \
+                  '${DockerCePackageSha256}' \
+                  '${DockerCeCliPackageVersion}' '${DockerCeCliPackageUrl}' \
+                  '${DockerCeCliPackageSha256}' \
+                  '${UvVersion}' '${UvUrl}' '${UvSha256}' \
+                  '${PythonVersion}' '${PythonUrl}' '${PythonSha256}' \
+                  '${HelmVersion}' '${HelmUrl}' '${HelmSha256}' \
+                  '${K3sVersion}' '${K3sBinaryUrl}' '${K3sBinarySha256}' \
+                  '${K3sVersion}' '${K3sInstallScriptUrl}' \
+                  '${K3sInstallScriptSha256}' \
+                  | sha256sum | awk '{print $1}'
+              )"
+              test "$manifest_input" = "$direct_input"
+
+              download_verified '${AwsCliUrl}' '${AwsCliSha256}' /tmp/awscliv2.zip
               unzip -q /tmp/awscliv2.zip -d /tmp
               /tmp/aws/install
+              /usr/local/bin/aws --version 2>&1 | grep -F "aws-cli/${AwsCliVersion} "
               rm -rf /tmp/aws /tmp/awscliv2.zip
 
               install -d -m 0755 /etc/apt/keyrings
-              curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+              download_verified '${DockerSigningKeyUrl}' '${DockerSigningKeySha256}' \
+                /etc/apt/keyrings/docker.asc
               chmod 0644 /etc/apt/keyrings/docker.asc
-              . /etc/os-release
-              printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu %s stable\n' \
-                "$(dpkg --print-architecture)" "$VERSION_CODENAME" > /etc/apt/sources.list.d/docker.list
-              apt-get update
-              apt-get install --no-install-recommends -y docker-buildx-plugin docker-ce docker-ce-cli containerd.io
+              install -d -m 0700 /tmp/docker-gpg
+              GNUPGHOME=/tmp/docker-gpg gpg --batch --show-keys --with-colons \
+                --fingerprint /etc/apt/keyrings/docker.asc \
+                > /tmp/docker-key-colons
+              docker_primary_key_count="$(
+                awk -F: '$1 == "pub" {count++} END {print count + 0}' \
+                  /tmp/docker-key-colons
+              )"
+              test "$docker_primary_key_count" = 1
+              docker_signing_fingerprint="$(
+                awk -F: '
+                  $1 == "pub" {primary = 1; next}
+                  primary && $1 == "fpr" {print $10; exit}
+                ' /tmp/docker-key-colons
+              )"
+              test "$docker_signing_fingerprint" = '${DockerSigningKeyFingerprint}'
+
+              download_verified '${DockerContainerdPackageUrl}' \
+                '${DockerContainerdPackageSha256}' /tmp/containerd.io.deb
+              download_verified '${DockerBuildxPackageUrl}' \
+                '${DockerBuildxPackageSha256}' /tmp/docker-buildx-plugin.deb
+              download_verified '${DockerCePackageUrl}' \
+                '${DockerCePackageSha256}' /tmp/docker-ce.deb
+              download_verified '${DockerCeCliPackageUrl}' \
+                '${DockerCeCliPackageSha256}' /tmp/docker-ce-cli.deb
+              apt-get install --no-install-recommends -y \
+                /tmp/containerd.io.deb \
+                /tmp/docker-buildx-plugin.deb \
+                /tmp/docker-ce.deb \
+                /tmp/docker-ce-cli.deb
+              test "$(dpkg-query --show --showformat='${!Version}' containerd.io)" \
+                = '${DockerContainerdPackageVersion}'
+              test "$(dpkg-query --show --showformat='${!Version}' docker-buildx-plugin)" \
+                = '${DockerBuildxPackageVersion}'
+              test "$(dpkg-query --show --showformat='${!Version}' docker-ce)" \
+                = '${DockerCePackageVersion}'
+              test "$(dpkg-query --show --showformat='${!Version}' docker-ce-cli)" \
+                = '${DockerCeCliPackageVersion}'
               systemctl enable --now containerd docker ssh
 
-              curl -LsSf https://astral.sh/uv/install.sh -o /tmp/uv-install
-              UV_INSTALL_DIR=/usr/local/bin sh /tmp/uv-install
-              rm -f /tmp/uv-install
-              UV_PYTHON_INSTALL_DIR=/opt/python /usr/local/bin/uv python install 3.14
-              ln -sfn "$(UV_PYTHON_INSTALL_DIR=/opt/python /usr/local/bin/uv python find 3.14)" /usr/local/bin/python3.14
+              download_verified '${UvUrl}' '${UvSha256}' /tmp/uv.tar.gz
+              install -d -m 0755 /tmp/uv
+              tar --extract --gzip --file /tmp/uv.tar.gz \
+                --directory /tmp/uv --strip-components=1
+              install -m 0755 /tmp/uv/uv /usr/local/bin/uv
+              test "$(/usr/local/bin/uv --version)" = 'uv ${UvVersion}'
 
-              retained_volume_id='${RetainedVolumeId}'
-              retained_volume_serial="$(printf '%s' "$retained_volume_id" | tr -d '-')"
-              retained_device="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$retained_volume_serial"
+              download_verified '${PythonUrl}' '${PythonSha256}' /tmp/python.tar.gz
+              python_root='/opt/python/cpython-${PythonVersion}+${PythonBuild}'
+              install -d -m 0755 "$python_root"
+              tar --extract --gzip --file /tmp/python.tar.gz \
+                --directory "$python_root" --strip-components=1
+              test "$("$python_root/bin/python3.14" \
+                -c 'import platform; print(platform.python_version())')" \
+                = '${PythonVersion}'
+              ln -sfn "$python_root/bin/python3.14" /usr/local/bin/python3.14
+
+              download_verified '${HelmUrl}' '${HelmSha256}' /tmp/helm.tar.gz
+              install -d -m 0755 /tmp/helm
+              tar --extract --gzip --file /tmp/helm.tar.gz \
+                --directory /tmp/helm --strip-components=1
+              install -m 0755 /tmp/helm/helm /usr/local/bin/helm
+              test "$(/usr/local/bin/helm version --template '{{.Version}}')" \
+                = '${HelmVersion}'
+
+              volume_id='${RetainedVolumeId}'
+              volume_serial="$(printf '%s' "$volume_id" | tr -d '-')"
+              retained_device="/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_$volume_serial"
               for attempt in $(seq 1 180); do
                 if [ -b "$retained_device" ]; then
                   break
@@ -693,29 +1066,46 @@ Resources:
                 exit 1
               fi
               if ! blkid "$retained_device" >/dev/null 2>&1; then
-                mkfs.xfs -f "$retained_device"
+                retained_device_size="$(blockdev --getsize64 "$retained_device")"
+                if ! cmp --silent --bytes="$retained_device_size" \
+                  "$retained_device" /dev/zero; then
+                  echo 'Retained EBS device has data but no recognized filesystem.' >&2
+                  exit 1
+                fi
+                mkfs.xfs "$retained_device"
               fi
               retained_uuid="$(blkid -s UUID -o value "$retained_device")"
-              install -d -m 0755 /srv/workflow-control-center
+              retained_root='${RetainedRootPath}'
+              install -d -m 0755 "$retained_root"
               if ! grep -q "UUID=$retained_uuid " /etc/fstab; then
-                printf 'UUID=%s /srv/workflow-control-center xfs defaults,nofail,x-systemd.device-timeout=30 0 2\n' \
-                  "$retained_uuid" >> /etc/fstab
+                printf 'UUID=%s %s xfs defaults,nofail,x-systemd.device-timeout=30 0 2\n' \
+                  "$retained_uuid" "$retained_root" >> /etc/fstab
               fi
-              mount /srv/workflow-control-center
+              mount "$retained_root"
               install -d -m 0750 \
-                /srv/workflow-control-center/glitchtip \
-                /srv/workflow-control-center/observability \
-                /srv/workflow-control-center/postgres \
-                /srv/workflow-control-center/release \
-                /srv/workflow-control-center/secrets \
-                /srv/workflow-control-center/workflow-registry \
-                /srv/workflow-control-center/workflow-run
+                "$retained_root/glitchtip" \
+                "$retained_root/observability" \
+                "$retained_root/postgres" \
+                "$retained_root/product-tool" \
+                "$retained_root/release" \
+                "$retained_root/secrets" \
+                "$retained_root/workflow-registry" \
+                "$retained_root/workflow-run"
+              compatibility_root='/var/lib/workflow-control-center'
+              test ! -L "$compatibility_root"
+              install -d -m 0755 "$compatibility_root"
+              test ! -e "$compatibility_root/product-tool"
+              test ! -L "$compatibility_root/product-tool"
+              ln -s "$retained_root/product-tool" "$compatibility_root/product-tool"
 
-              curl -fsSL "https://raw.githubusercontent.com/k3s-io/k3s/${K3sVersion}/install.sh" -o /tmp/k3s-install
-              printf '%s  %s\n' '${K3sInstallScriptSha256}' /tmp/k3s-install | sha256sum --check --strict
+              download_verified '${K3sBinaryUrl}' '${K3sBinarySha256}' /tmp/k3s
+              install -m 0755 /tmp/k3s /usr/local/bin/k3s
+              download_verified '${K3sInstallScriptUrl}' \
+                '${K3sInstallScriptSha256}' /tmp/k3s-install
               chmod 0755 /tmp/k3s-install
               INSTALL_K3S_VERSION='${K3sVersion}' \
-                INSTALL_K3S_EXEC='server --disable traefik --secrets-encryption --write-kubeconfig-mode 0600 --node-label apwid.com/workflow-run-eligible=true' \
+                INSTALL_K3S_SKIP_DOWNLOAD=true \
+                INSTALL_K3S_EXEC='server --cluster-cidr 10.42.0.0/16 --service-cidr 10.43.0.0/16 --disable traefik --secrets-encryption --write-kubeconfig-mode 0600 --node-label apwid.com/workflow-run-eligible=true' \
                 /tmp/k3s-install
               rm -f /tmp/k3s-install
 
@@ -748,16 +1138,28 @@ Resources:
                   - UseRetainedVolumeRestoreA
                   - !Ref RetainedVolumeRestoreA
                   - !Ref RetainedVolumeRestoreB
-      LaunchTemplateName: workflow-control-center-development
+              RetainedRootPath: !If
+                - IsPrimaryEnvironment
+                - /srv/workflow-control-center
+                - !Sub /srv/workflow-control-center-${EnvironmentName}
+      LaunchTemplateName: !If
+        - IsPrimaryEnvironment
+        - workflow-control-center-development
+        - !Sub workflow-control-center-development-${EnvironmentName}
       TagSpecifications:
         - ResourceType: launch-template
           Tags:
             - Key: Name
-              Value: workflow-control-center-development
+              Value: !If
+                - IsPrimaryEnvironment
+                - workflow-control-center-development
+                - !Sub workflow-control-center-development-${EnvironmentName}
             - Key: Project
               Value: !Ref NotificationTagValue
             - Key: Environment
               Value: development
+            - Key: EnvironmentName
+              Value: !Ref EnvironmentName
             - Key: ManagedBy
               Value: CloudFormation
 
@@ -769,7 +1171,7 @@ Resources:
     Properties:
       LaunchTemplate:
         LaunchTemplateId: !Ref DevelopmentLaunchTemplate
-        Version: !GetAtt DevelopmentLaunchTemplate.LatestVersionNumber
+        Version: !Ref InstanceLaunchTemplateVersion
 
   RetainedVolumeAttachment:
     Type: AWS::EC2::VolumeAttachment
@@ -789,8 +1191,12 @@ Outputs:
     Value: !Ref AWS::AccountId
   ComputeArchitecture:
     Value: !Ref ComputeArchitecture
+  EnvironmentName:
+    Value: !Ref EnvironmentName
   InstanceId:
     Value: !Ref DevelopmentInstance
+  InstanceLaunchTemplateVersion:
+    Value: !Ref InstanceLaunchTemplateVersion
   InstanceSlot:
     Value: !Ref InstanceSlot
   InstanceType:

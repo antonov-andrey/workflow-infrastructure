@@ -10,12 +10,22 @@ import io
 import json
 import os
 from pathlib import Path, PurePosixPath
-import platform
+import re
 import shlex
+import shutil
 import subprocess
 import tarfile
 import tempfile
 import time
+import tomllib
+
+from tool.lib.host_artifact import (
+    HostArtifactResolution,
+    HostArtifactResolutionError,
+    HostArtifactResolver,
+    host_artifact_manifest_decode,
+    host_artifact_recovery_compatibility_identity_get,
+)
 
 AWS_ACCOUNT_ID = "463564115167"
 AWS_PROFILE = "workflow-control-center-devel"
@@ -30,10 +40,27 @@ COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET = frozenset(
         "RetainedVolumeRestoreB",
     }
 )
+COMPUTE_RETAINED_VOLUME_LOGICAL_ID_SET = frozenset(
+    {
+        "RetainedVolume",
+        "RetainedVolumeRestoreA",
+        "RetainedVolumeRestoreB",
+    }
+)
 DATA_PLANE_STACK_NAME = "workflow-control-center-development"
 HOST_CONTROL_CURRENT_SOURCE_PATH = Path("/opt/workflow-infrastructure/control/current")
 HOST_CONTROL_RELEASE_ROOT_PATH = Path("/opt/workflow-infrastructure/control/releases")
 HOST_CURRENT_SOURCE_PATH = Path("/opt/workflow-infrastructure/current")
+HOST_LEGACY_PRODUCT_TOOL_RUNTIME_ROOT_PATH = Path(
+    "/var/lib/workflow-control-center/product-tool"
+)
+HOST_PYTHON_PATH = Path("/usr/local/bin/python3.14")
+HOST_ARTIFACT_MANIFEST_PATH = Path(
+    "/etc/workflow-control-center/host-artifact-manifest.json.gz.b64"
+)
+HOST_ARTIFACT_MANIFEST_SHA256_PATH = Path(
+    "/etc/workflow-control-center/host-artifact-manifest.sha256"
+)
 HOST_EBS_DEVICE_BY_ID_ROOT_PATH = Path("/dev/disk/by-id")
 HOST_RETAINED_ROOT_PATH = Path("/srv/workflow-control-center")
 HOST_RETAINED_RELEASE_ROOT_PATH = HOST_RETAINED_ROOT_PATH / "release"
@@ -41,17 +68,6 @@ HOST_RETAINED_CURRENT_RELEASE_PATH = HOST_RETAINED_RELEASE_ROOT_PATH / "current"
 HOST_RELEASE_ROOT_PATH = HOST_RETAINED_RELEASE_ROOT_PATH / "releases"
 HOST_STATE_ROOT_PATH = Path("/var/lib/workflow-infrastructure")
 HELM_BINARY_PATH = Path("/usr/local/bin/helm")
-HELM_VERSION = "v4.2.3"
-HELM_RELEASE_BY_MACHINE_MAP = {
-    "aarch64": (
-        "arm64",
-        "21abd9354d39b2cd79a8d76be6912cd137a983cbf997193503fb8a6a6e2f2785",
-    ),
-    "x86_64": (
-        "amd64",
-        "e9b88b4ee95b18c706839c28d3a0220e5bc470e9cd9262410c90793c45ff8b7c",
-    ),
-}
 INSTANCE_NAME = "workflow-control-center-development"
 LEASE_DURATION = timedelta(hours=2)
 LEASE_GROUP_NAME = "workflow-control-center-development"
@@ -62,10 +78,11 @@ LIFECYCLE_ACCEPTANCE_RENEW_DELAY_SECONDS = 45
 LIFECYCLE_ACCEPTANCE_RENEWED_LEASE_DURATION = timedelta(minutes=4)
 LIFECYCLE_ACCEPTANCE_RENEWAL_PROOF_DELAY = timedelta(minutes=3, seconds=15)
 LIFECYCLE_ACCEPTANCE_STOP_GRACE = timedelta(minutes=5)
+MOVING_SOURCE_RESOLUTION_ATTEMPT_COUNT = 3
+MOVING_SOURCE_SELECTOR = "HEAD"
 PRODUCT_SOURCE_REPOSITORY_NAME_LIST = [
     "browser-runtime",
     "vpn-runtime",
-    "workflow-container-contract",
     "workflow-container-runtime",
     "workflow-control-center",
 ]
@@ -82,8 +99,178 @@ SSM_COMMAND_TIMEOUT_SECONDS = 3600
 SSM_ONLINE_TIMEOUT_SECONDS = 1800
 HOST_READY_TIMEOUT_SECONDS = 1800
 HOST_STATUS_COMMAND_TIMEOUT_SECONDS = 120
+SOURCE_MANIFEST_VERSION = 3
+SUPPORTED_SOURCE_MANIFEST_VERSION_SET = frozenset({2, SOURCE_MANIFEST_VERSION})
 STACK_POLL_INTERVAL_SECONDS = 5
 STACK_TIMEOUT_SECONDS = 3600
+ENVIRONMENT_NAME_PATTERN = re.compile(r"[a-z][a-z0-9]{0,15}")
+
+
+class DevelopmentEnvironmentIdentity:
+    """Derive every physical development identity from one stable machine name."""
+
+    def __init__(self, environment_name: str = "primary") -> None:
+        """Validate and retain one environment name.
+
+        Args:
+            environment_name: Stable lowercase environment selector.
+
+        Raises:
+            DevelopmentEnvironmentError: If the selector is unsafe across AWS and host paths.
+        """
+
+        if ENVIRONMENT_NAME_PATTERN.fullmatch(environment_name) is None:
+            raise DevelopmentEnvironmentError(
+                "environment_name must match [a-z][a-z0-9]{0,15}"
+            )
+        self.environment_name = environment_name
+
+    @property
+    def is_primary(self) -> bool:
+        """Return whether legacy physical identities must remain exact."""
+
+        return self.environment_name == "primary"
+
+    @property
+    def data_plane_stack_name(self) -> str:
+        """Return the exact data-plane stack identity."""
+
+        if self.is_primary:
+            return DATA_PLANE_STACK_NAME
+        return f"workflow-control-center-development-{self.environment_name}"
+
+    @property
+    def compute_stack_name(self) -> str:
+        """Return the exact compute stack identity."""
+
+        if self.is_primary:
+            return COMPUTE_STACK_NAME
+        return f"workflow-control-center-development-{self.environment_name}-compute"
+
+    @property
+    def instance_name(self) -> str:
+        """Return the local SSH alias and EC2 Name identity."""
+
+        if self.is_primary:
+            return INSTANCE_NAME
+        return f"workflow-control-center-development-{self.environment_name}"
+
+    @property
+    def lease_group_name(self) -> str:
+        """Return the environment-owned Scheduler group name."""
+
+        if self.is_primary:
+            return LEASE_GROUP_NAME
+        return f"workflow-control-center-development-{self.environment_name}"
+
+    @property
+    def lease_name(self) -> str:
+        """Return the renewable stop-lease schedule name."""
+
+        if self.is_primary:
+            return LEASE_NAME
+        return f"workflow-control-center-development-{self.environment_name}-stop"
+
+    @property
+    def host_control_root_path(self) -> Path:
+        """Return the disposable infrastructure-control source root."""
+
+        if self.is_primary:
+            return HOST_CONTROL_RELEASE_ROOT_PATH.parent
+        return (
+            Path("/opt/workflow-infrastructure/environments")
+            / self.environment_name
+            / "control"
+        )
+
+    @property
+    def host_control_release_root_path(self) -> Path:
+        """Return the exact infrastructure-control release collection."""
+
+        if self.is_primary:
+            return HOST_CONTROL_RELEASE_ROOT_PATH
+        return self.host_control_root_path / "releases"
+
+    @property
+    def host_control_current_source_path(self) -> Path:
+        """Return the current infrastructure-control release pointer."""
+
+        if self.is_primary:
+            return HOST_CONTROL_CURRENT_SOURCE_PATH
+        return self.host_control_root_path / "current"
+
+    @property
+    def host_retained_root_path(self) -> Path:
+        """Return the environment-exclusive retained volume mount."""
+
+        if self.is_primary:
+            return HOST_RETAINED_ROOT_PATH
+        return Path(f"/srv/workflow-control-center-{self.environment_name}")
+
+    @property
+    def host_retained_release_root_path(self) -> Path:
+        """Return the retained Product release owner root."""
+
+        if self.is_primary:
+            return HOST_RETAINED_RELEASE_ROOT_PATH
+        return self.host_retained_root_path / "release"
+
+    @property
+    def host_release_root_path(self) -> Path:
+        """Return the retained immutable Product release collection."""
+
+        if self.is_primary:
+            return HOST_RELEASE_ROOT_PATH
+        return self.host_retained_release_root_path / "releases"
+
+    @property
+    def host_retained_current_release_path(self) -> Path:
+        """Return the retained accepted Product release pointer."""
+
+        if self.is_primary:
+            return HOST_RETAINED_CURRENT_RELEASE_PATH
+        return self.host_retained_release_root_path / "current"
+
+    @property
+    def host_current_source_path(self) -> Path:
+        """Return the root-volume Product current-source pointer."""
+
+        if self.is_primary:
+            return HOST_CURRENT_SOURCE_PATH
+        return (
+            Path("/opt/workflow-infrastructure/environments")
+            / self.environment_name
+            / "current"
+        )
+
+    @property
+    def host_state_root_path(self) -> Path:
+        """Return the disposable host-controller state root."""
+
+        if self.is_primary:
+            return HOST_STATE_ROOT_PATH
+        return Path("/var/lib/workflow-infrastructure") / self.environment_name
+
+    @property
+    def qualified_registry_identity(self) -> str:
+        """Return the collision-proof logical registry identity."""
+
+        return f"{self.compute_stack_name}:" "apwid-workflow/workflow-image-registry"
+
+    @property
+    def qualified_product_database_identity(self) -> str:
+        """Return the collision-proof logical Product database identity."""
+
+        return f"{self.compute_stack_name}:apwid-db/apwid"
+
+    @property
+    def qualified_credential_identity(self) -> str:
+        """Return the collision-proof logical renewable credential identity."""
+
+        return (
+            f"{self.compute_stack_name}:"
+            "apwid-platform/workflow-control-center-aws-credentials"
+        )
 
 
 class CommandRunner:
@@ -165,20 +352,27 @@ class DevelopmentEnvironment:
     """Own the complete bounded development-environment workflow."""
 
     def __init__(
-        self, *, clock: Clock, project_root_path: Path, runner: CommandRunner
+        self,
+        *,
+        clock: Clock,
+        environment_name: str = "primary",
+        project_root_path: Path,
+        runner: CommandRunner,
     ) -> None:
         """Initialize the environment workflow.
 
         Args:
             clock: UTC and monotonic time boundary.
+            environment_name: Stable development environment selector.
             project_root_path: Root of the workflow-infrastructure checkout.
             runner: External process boundary.
         """
 
         self._clock = clock
+        self._identity = DevelopmentEnvironmentIdentity(environment_name)
         self._is_host = project_root_path.is_relative_to(
-            HOST_CONTROL_RELEASE_ROOT_PATH
-        ) or project_root_path.is_relative_to(HOST_RELEASE_ROOT_PATH)
+            self._identity.host_control_release_root_path
+        ) or project_root_path.is_relative_to(self._identity.host_release_root_path)
         self._project_root_path = project_root_path
         self._runner = runner
         self._workspace_root_path = project_root_path.parent
@@ -191,14 +385,29 @@ class DevelopmentEnvironment:
             self._project_root_path, "workflow-infrastructure"
         )
         self._cost_review_record()
-        self._stack_drift_validate(DATA_PLANE_STACK_NAME)
+        self._stack_drift_validate(self._identity.data_plane_stack_name)
         compute_stack_exists = bool(
-            self._stack_payload_get(COMPUTE_STACK_NAME, is_required=False)
+            self._stack_payload_get(
+                self._identity.compute_stack_name, is_required=False
+            )
         )
+        legacy_runtime_transition_is_required = False
         if compute_stack_exists:
-            self._stack_drift_validate(COMPUTE_STACK_NAME)
+            self._stack_drift_validate(self._identity.compute_stack_name)
+            legacy_runtime_transition_is_required = (
+                self._legacy_product_tool_runtime_transition_is_required(
+                    self._stack_parameter_by_name_map_get(
+                        self._identity.compute_stack_name
+                    )
+                )
+            )
+        host_artifact_resolution = self._host_artifact_resolution_get(
+            compute_stack_exists=compute_stack_exists
+        )
         data_resource_id_by_logical_name_map = (
-            self._stack_resource_id_by_logical_name_map_get(DATA_PLANE_STACK_NAME)
+            self._stack_resource_id_by_logical_name_map_get(
+                self._identity.data_plane_stack_name
+            )
         )
         self._template_validate(
             self._project_root_path
@@ -209,30 +418,50 @@ class DevelopmentEnvironment:
             / "cloudformation/workflow-control-center-development-compute.yaml"
         )
         self._stack_apply(
-            stack_name=DATA_PLANE_STACK_NAME,
+            stack_name=self._identity.data_plane_stack_name,
             template_path=self._project_root_path
             / "cloudformation/workflow-control-center-development.yaml",
-            parameter_by_name_map={"UiOrigin": "http://localhost:8080"},
+            parameter_by_name_map={
+                "EnvironmentName": self._identity.environment_name,
+                "UiOrigin": "http://localhost:8080",
+            },
             must_preserve_resource=True,
         )
         if data_resource_id_by_logical_name_map:
             current_resource_id_by_logical_name_map = (
-                self._stack_resource_id_by_logical_name_map_get(DATA_PLANE_STACK_NAME)
+                self._stack_resource_id_by_logical_name_map_get(
+                    self._identity.data_plane_stack_name
+                )
             )
-            if (
-                current_resource_id_by_logical_name_map
-                != data_resource_id_by_logical_name_map
-            ):
-                raise DevelopmentEnvironmentError(
-                    "Stable data-plane physical resource identity changed"
-        )
-        compute_parameter_by_name_map: dict[str, str] = {}
-        if not compute_stack_exists:
+            self._existing_stack_resource_identity_validate(
+                current_resource_id_by_logical_name_map=current_resource_id_by_logical_name_map,
+                previous_resource_id_by_logical_name_map=data_resource_id_by_logical_name_map,
+            )
+        platform_role_arn = self._stack_output_by_name_map_get(
+            self._identity.data_plane_stack_name
+        )["PlatformRoleArn"]
+        platform_role_name = platform_role_arn.rsplit("/", maxsplit=1)[-1]
+        if not platform_role_name:
+            raise DevelopmentEnvironmentError(
+                "Data-plane platform role output is malformed"
+            )
+        if legacy_runtime_transition_is_required:
+            self._legacy_product_tool_runtime_transition_prepare()
+        compute_parameter_by_name_map: dict[str, str] = {
+            "EnvironmentName": self._identity.environment_name,
+            "PlatformRoleName": platform_role_name,
+            **host_artifact_resolution.cloudformation_parameter_by_name_map_get(),
+        }
+        if compute_stack_exists:
+            compute_parameter_by_name_map["InstanceLaunchTemplateVersion"] = (
+                self._instance_launch_template_version_get()
+            )
+        else:
             compute_parameter_by_name_map.update(
                 self._replacement_guard_parameter_by_name_map_get()
             )
         self._stack_apply(
-            stack_name=COMPUTE_STACK_NAME,
+            stack_name=self._identity.compute_stack_name,
             template_path=self._project_root_path
             / "cloudformation/workflow-control-center-development-compute.yaml",
             parameter_by_name_map=compute_parameter_by_name_map,
@@ -240,13 +469,66 @@ class DevelopmentEnvironment:
             protected_identity_logical_id_set=COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET,
         )
         self._retained_volume_attachment_validate()
-        self._instance_launch_template_version_validate()
-        self.start(should_publish_infrastructure_source=True)
-        self._replacement_guard_disable()
-        self._stack_drift_validate(DATA_PLANE_STACK_NAME)
-        self._stack_drift_validate(COMPUTE_STACK_NAME)
+        self._instance_launch_template_version_validate(require_latest=False)
+        if self._instance_launch_template_update_is_pending():
+            self.stop(should_validate_drift=False)
+            self._replacement_stack_apply(
+                parameter_by_name_map=self._replacement_parameter_by_name_map_get()
+            )
+            self.start(should_publish_infrastructure_source=True)
+            self._replacement_guard_disable()
+            self._retained_product_release_link_restore()
+            self._product_recovery_apply_run()
+            self._product_recovery_acceptance_run()
+        else:
+            self.start(should_publish_infrastructure_source=True)
+            self._replacement_guard_disable()
+        self._stack_drift_validate(self._identity.data_plane_stack_name)
+        self._stack_drift_validate(self._identity.compute_stack_name)
         self._retained_snapshot_policy_validate()
         print("OK: development data-plane and compute stacks are applied")
+
+    def _legacy_product_tool_runtime_transition_prepare(self) -> None:
+        """Retain the current Product-tool runtime before the first root replacement.
+
+        The pre-hardening host kept this runtime on its disposable root volume.
+        The old installed controller remains the readiness owner because the
+        pre-hardening host has no immutable host-artifact manifest required by
+        the new controller installer. Publishing the new infrastructure control
+        source without reinstalling that controller gives graceful shutdown and
+        this one-time copy an exact, auditable owner before the compute stack can
+        replace that root.
+        """
+
+        self._host_start_foundation(should_validate_source=True)
+        self._infrastructure_source_publish(should_install_host_controller=False)
+        self._host_readiness_wait()
+        with self._ssh_control_session() as ssh_control_path:
+            self._ssh_run(
+                [
+                    "sudo",
+                    "python3.14",
+                    str(
+                        self._identity.host_control_current_source_path
+                        / "sources"
+                        / "workflow-infrastructure"
+                        / "tool"
+                        / "development_environment_manage.py"
+                    ),
+                    "host-product-runtime-retain",
+                    "--environment-name",
+                    self._identity.environment_name,
+                ],
+                ssh_control_path=ssh_control_path,
+            )
+
+    @staticmethod
+    def _legacy_product_tool_runtime_transition_is_required(
+        compute_parameter_by_name_map: Mapping[str, str],
+    ) -> bool:
+        """Return whether the live compute stack predates retained runtime ownership."""
+
+        return "HostArtifactManifestSha256" not in compute_parameter_by_name_map
 
     def connect(self) -> int:
         """Open the Product HTTP tunnel through Session Manager.
@@ -306,8 +588,12 @@ class DevelopmentEnvironment:
         )
         return result.returncode
 
-    def deploy(self) -> None:
-        """Publish exact Product sources and invoke the Product-owned deployment."""
+    def deploy(self, *, workflow_container_contract_commit: str = "") -> None:
+        """Publish exact Product sources and invoke the Product-owned deployment.
+
+        Args:
+            workflow_container_contract_commit: Optional exact one-deploy source override.
+        """
 
         self._local_operator_context_validate()
         self._source_repository_validate(
@@ -317,9 +603,10 @@ class DevelopmentEnvironment:
             self._source_repository_validate(
                 self._workspace_root_path / repository_name, repository_name
             )
-        self._stack_drift_validate(DATA_PLANE_STACK_NAME)
-        self._stack_drift_validate(COMPUTE_STACK_NAME)
+        self._stack_drift_validate(self._identity.data_plane_stack_name)
+        self._stack_drift_validate(self._identity.compute_stack_name)
         self._instance_online_wait()
+        self._instance_launch_template_version_validate(require_latest=True)
         release_name = self._clock.now().strftime("%Y%m%d%H%M%S%f")
         source_manifest_by_repository_name_map: dict[str, dict[str, object]] = {}
         with self._ssh_control_session() as ssh_control_path:
@@ -338,27 +625,39 @@ class DevelopmentEnvironment:
                         repository_name=repository_name,
                         repository_path=repository_path,
                         release_name=release_name,
-                        remote_release_root_path=HOST_RELEASE_ROOT_PATH,
+                        remote_release_root_path=self._identity.host_release_root_path,
                         ssh_control_path=ssh_control_path,
                     )
                 )
+            source_manifest_by_repository_name_map["workflow-container-contract"] = (
+                self._moving_source_archive_publish(
+                    exact_override_commit=workflow_container_contract_commit,
+                    release_name=release_name,
+                    remote_release_root_path=self._identity.host_release_root_path,
+                    repository_name="workflow-container-contract",
+                    ssh_control_path=ssh_control_path,
+                )
+            )
             release_manifest_text = json.dumps(
                 {
+                    "environment_name": self._identity.environment_name,
+                    "host_artifact_manifest": self._host_artifact_manifest_payload_get(),
                     "release": release_name,
                     "repository_by_name_map": source_manifest_by_repository_name_map,
+                    "source_manifest_version": SOURCE_MANIFEST_VERSION,
                     "t_deploy": self._clock.now().isoformat().replace("+00:00", "Z"),
                 },
                 indent=2,
                 sort_keys=True,
             )
             self._remote_text_write(
-                remote_path=HOST_RELEASE_ROOT_PATH
+                remote_path=self._identity.host_release_root_path
                 / release_name
                 / "source-manifest.json",
                 text=release_manifest_text,
                 ssh_control_path=ssh_control_path,
             )
-            release_root_path = HOST_RELEASE_ROOT_PATH / release_name
+            release_root_path = self._identity.host_release_root_path / release_name
             self._ssh_run(
                 [
                     "sudo",
@@ -371,6 +670,8 @@ class DevelopmentEnvironment:
                         / "development_environment_manage.py"
                     ),
                     "host-prepare",
+                    "--environment-name",
+                    self._identity.environment_name,
                 ],
                 ssh_control_path=ssh_control_path,
             )
@@ -392,6 +693,8 @@ class DevelopmentEnvironment:
                 str(release_root_path / "sources"),
                 "--target-platform",
                 platform,
+                "--environment-name",
+                self._identity.environment_name,
             ]
             self._ssh_run(
                 product_command_list,
@@ -410,6 +713,8 @@ class DevelopmentEnvironment:
                         / "development_environment_manage.py"
                     ),
                     "host-product-release-activate",
+                    "--environment-name",
+                    self._identity.environment_name,
                     "--release",
                     release_name,
                 ],
@@ -422,7 +727,7 @@ class DevelopmentEnvironment:
                     "-d",
                     "-m",
                     "0755",
-                    str(HOST_CONTROL_RELEASE_ROOT_PATH),
+                    str(self._identity.host_control_release_root_path),
                 ],
                 ssh_control_path=ssh_control_path,
             )
@@ -432,7 +737,7 @@ class DevelopmentEnvironment:
                     "ln",
                     "-sfn",
                     str(release_root_path),
-                    str(HOST_CONTROL_CURRENT_SOURCE_PATH),
+                    str(self._identity.host_control_current_source_path),
                 ],
                 ssh_control_path=ssh_control_path,
             )
@@ -441,13 +746,15 @@ class DevelopmentEnvironment:
                     "sudo",
                     "python3.14",
                     str(
-                        HOST_CURRENT_SOURCE_PATH
+                        self._identity.host_current_source_path
                         / "sources"
                         / "workflow-control-center"
                         / "tool"
                         / "development_kubernetes_manage.py"
                     ),
                     "host-install",
+                    "--environment-name",
+                    self._identity.environment_name,
                 ],
                 ssh_control_path=ssh_control_path,
             )
@@ -456,17 +763,50 @@ class DevelopmentEnvironment:
                     "sudo",
                     "python3.14",
                     str(
-                        HOST_CONTROL_CURRENT_SOURCE_PATH
+                        self._identity.host_control_current_source_path
                         / "sources"
                         / "workflow-infrastructure"
                         / "tool"
                         / "development_environment_manage.py"
                     ),
                     "host-install",
+                    "--environment-name",
+                    self._identity.environment_name,
                 ],
                 ssh_control_path=ssh_control_path,
             )
         print(f"OK: exact Product release {release_name} is deployed for {platform}")
+
+    def _current_product_tool_command_list_get(self, command: str) -> list[str]:
+        """Return one environment-bound command for the current Product tool.
+
+        Args:
+            command: Product management subcommand.
+
+        Returns:
+            Exact Python command with the selected environment identity.
+        """
+
+        product_tool_path = (
+            self._identity.host_current_source_path
+            / "sources"
+            / "workflow-control-center"
+            / "tool"
+            / "development_kubernetes_manage.py"
+        )
+        command_list = [
+            "python3.14",
+            str(product_tool_path),
+            command,
+        ]
+        if self._identity.environment_name != "primary":
+            command_list.extend(
+                [
+                    "--environment-name",
+                    self._identity.environment_name,
+                ]
+            )
+        return command_list
 
     def diagnose(self) -> None:
         """Print bounded infrastructure and Product diagnostics without secret values."""
@@ -479,14 +819,17 @@ class DevelopmentEnvironment:
             return
         self._ssm_shell_run(
             [
-                "df -h / /srv/workflow-control-center",
+                f"df -h / {self._identity.host_retained_root_path}",
                 "sudo systemctl --no-pager --full status k3s workflow-control-center-host-controller || true",
                 "sudo k3s kubectl get nodes,namespaces -o wide",
                 "sudo k3s kubectl get pods --all-namespaces -o wide",
                 "sudo k3s kubectl get events --all-namespaces --sort-by=.lastTimestamp | tail -200",
                 (
-                    f"sudo python3.14 {HOST_CURRENT_SOURCE_PATH}/sources/workflow-control-center/"
-                    "tool/development_kubernetes_manage.py diagnose || true"
+                    "sudo "
+                    + shlex.join(
+                        self._current_product_tool_command_list_get("diagnose")
+                    )
+                    + " || true"
                 ),
             ]
         )
@@ -498,13 +841,15 @@ class DevelopmentEnvironment:
         self._runner.run(
             ["k3s", "kubectl", "uncordon", self._host_node_name_get()], check=False
         )
-        idle_start_path = HOST_STATE_ROOT_PATH / "idle-start"
-        HOST_STATE_ROOT_PATH.mkdir(mode=0o750, parents=True, exist_ok=True)
+        idle_start_path = self._identity.host_state_root_path / "idle-start"
+        self._identity.host_state_root_path.mkdir(
+            mode=0o750, parents=True, exist_ok=True
+        )
         idle_start_path.unlink(missing_ok=True)
         t_last_lease_renew = datetime.min.replace(tzinfo=UTC)
         while True:
             t_now = self._clock.now()
-            have_session = self._host_active_session_count_get(instance_id) > 0
+            have_session = self._host_session_state_is_busy(instance_id)
             product_activity = self._host_product_activity_get()
             is_busy = have_session or product_activity == "busy"
             if is_busy:
@@ -524,7 +869,7 @@ class DevelopmentEnvironment:
                     self._clock.sleep(60)
                     continue
                 if t_now - t_idle_start >= timedelta(minutes=30):
-                    have_session = self._host_active_session_count_get(instance_id) > 0
+                    have_session = self._host_session_state_is_busy(instance_id)
                     product_activity = self._host_product_activity_get()
                     if not have_session and product_activity == "idle":
                         self.host_shutdown()
@@ -539,8 +884,229 @@ class DevelopmentEnvironment:
             raise DevelopmentEnvironmentError(
                 "host-prepare is supported only from an exact source release on the development host"
             )
-        self._helm_ensure()
-        print(f"OK: exact Helm {HELM_VERSION} is installed")
+        host_artifact_manifest = self._host_artifact_manifest_get()
+        if self._project_root_path.is_relative_to(
+            self._identity.host_release_root_path
+        ):
+            source_manifest_path = (
+                self._project_root_path.parent.parent / "source-manifest.json"
+            )
+            try:
+                source_manifest = json.loads(
+                    source_manifest_path.read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError) as error:
+                raise DevelopmentEnvironmentError(
+                    "Product source manifest is unavailable during host preparation"
+                ) from error
+            if (
+                not isinstance(source_manifest, Mapping)
+                or source_manifest.get("environment_name")
+                != self._identity.environment_name
+                or source_manifest.get("host_artifact_manifest")
+                != host_artifact_manifest
+            ):
+                raise DevelopmentEnvironmentError(
+                    "Product release and active host artifact identities differ"
+                )
+        helm_version = self._helm_validate(host_artifact_manifest)
+        print(f"OK: exact Helm {helm_version} is installed")
+
+    @staticmethod
+    def _product_tool_runtime_validate(runtime_path: Path) -> None:
+        """Require one portable Product-tool virtual environment.
+
+        Args:
+            runtime_path: Content-addressed runtime directory to validate.
+
+        Raises:
+            DevelopmentEnvironmentError: If runtime ownership or Python links
+                can depend on the disposable root volume.
+        """
+
+        if (
+            not runtime_path.is_dir()
+            or runtime_path.is_symlink()
+            or not (runtime_path / "pyvenv.cfg").is_file()
+        ):
+            raise DevelopmentEnvironmentError(
+                "Product-tool runtime directory is unavailable or unsafe"
+            )
+        try:
+            pyvenv_line_list = (
+                (runtime_path / "pyvenv.cfg").read_text(encoding="utf-8").splitlines()
+            )
+        except OSError as error:
+            raise DevelopmentEnvironmentError(
+                "Product-tool runtime Python metadata is unavailable"
+            ) from error
+        pyvenv_value_by_name_map: dict[str, str] = {}
+        for line in pyvenv_line_list:
+            name, separator, value = line.partition("=")
+            if separator:
+                pyvenv_value_by_name_map[name.strip()] = value.strip()
+        if pyvenv_value_by_name_map.get("home") != str(HOST_PYTHON_PATH.parent):
+            raise DevelopmentEnvironmentError(
+                "Product-tool runtime Python home is not host-portable"
+            )
+        executable = pyvenv_value_by_name_map.get("executable")
+        if executable is not None and executable != str(HOST_PYTHON_PATH):
+            raise DevelopmentEnvironmentError(
+                "Product-tool runtime Python executable is not host-portable"
+            )
+        for python_name in ("python", "python3", "python3.14"):
+            python_path = runtime_path / "bin" / python_name
+            if not python_path.is_symlink() or os.readlink(python_path) != str(
+                HOST_PYTHON_PATH
+            ):
+                raise DevelopmentEnvironmentError(
+                    "Product-tool runtime Python link is not host-portable"
+                )
+
+    @staticmethod
+    def _product_tool_runtime_python_metadata_rewrite(
+        *,
+        runtime_path: Path,
+        retained_runtime_path: Path,
+    ) -> None:
+        """Rewrite venv base-Python metadata away from the disposable old root."""
+
+        pyvenv_path = runtime_path / "pyvenv.cfg"
+        try:
+            line_list = pyvenv_path.read_text(encoding="utf-8").splitlines()
+        except OSError as error:
+            raise DevelopmentEnvironmentError(
+                "Legacy Product-tool runtime Python metadata is unavailable"
+            ) from error
+        replacement_by_name_map = {
+            "command": f"{HOST_PYTHON_PATH} -m venv {retained_runtime_path}",
+            "executable": str(HOST_PYTHON_PATH),
+            "home": str(HOST_PYTHON_PATH.parent),
+        }
+        observed_name_set: set[str] = set()
+        rewritten_line_list: list[str] = []
+        for line in line_list:
+            name, separator, _value = line.partition("=")
+            normalized_name = name.strip()
+            if separator and normalized_name in replacement_by_name_map:
+                rewritten_line_list.append(
+                    f"{normalized_name} = {replacement_by_name_map[normalized_name]}"
+                )
+                observed_name_set.add(normalized_name)
+            else:
+                rewritten_line_list.append(line)
+        for name in ("home", "executable", "command"):
+            if name not in observed_name_set:
+                rewritten_line_list.append(f"{name} = {replacement_by_name_map[name]}")
+        pyvenv_path.write_text(
+            "\n".join(rewritten_line_list) + "\n",
+            encoding="utf-8",
+        )
+
+    def host_product_runtime_retain(self) -> None:
+        """Atomically retain the current accepted Product-tool runtime.
+
+        This command is the one-time compatibility boundary for a host created
+        before Product-tool environments moved from the disposable root volume
+        to retained storage. It may resolve the old exact pinned requirements
+        while the old host is still intact, but recovery never performs that
+        resolution.
+        """
+
+        if not self._is_host:
+            raise DevelopmentEnvironmentError(
+                "host-product-runtime-retain is supported only on the development host"
+            )
+        workflow_control_center_source_path = (
+            self._identity.host_current_source_path
+            / "sources"
+            / "workflow-control-center"
+        )
+        requirement_path = (
+            workflow_control_center_source_path
+            / "tool"
+            / "requirements-development-kubernetes.txt"
+        )
+        product_tool_path = (
+            workflow_control_center_source_path
+            / "tool"
+            / "development_kubernetes_manage.py"
+        )
+        if not requirement_path.is_file() or not product_tool_path.is_file():
+            raise DevelopmentEnvironmentError(
+                "Current accepted Product release cannot prepare its tool runtime"
+            )
+        requirement_digest = hashlib.sha256(requirement_path.read_bytes()).hexdigest()
+        retained_runtime_root_path = (
+            self._identity.host_retained_root_path / "product-tool"
+        )
+        if retained_runtime_root_path.is_symlink():
+            raise DevelopmentEnvironmentError(
+                "Retained Product-tool runtime root must not be a symlink"
+            )
+        retained_runtime_root_path.mkdir(mode=0o755, parents=True, exist_ok=True)
+        retained_runtime_path = retained_runtime_root_path / requirement_digest
+        if retained_runtime_path.exists():
+            self._product_tool_runtime_validate(retained_runtime_path)
+            self._runner.run(
+                [
+                    str(retained_runtime_path / "bin" / "python"),
+                    "-c",
+                    "import pydantic; import yaml",
+                ]
+            )
+            print(
+                f"OK: retained Product-tool runtime {requirement_digest} already exists"
+            )
+            return
+
+        legacy_runtime_path = (
+            HOST_LEGACY_PRODUCT_TOOL_RUNTIME_ROOT_PATH / requirement_digest
+        )
+        if not (legacy_runtime_path / "bin" / "python").is_file():
+            self._runner.run(
+                [
+                    "python3.14",
+                    str(product_tool_path),
+                    "--help",
+                ],
+                should_capture=False,
+            )
+        if not legacy_runtime_path.is_dir() or legacy_runtime_path.is_symlink():
+            raise DevelopmentEnvironmentError(
+                "Legacy Product-tool runtime could not be prepared"
+            )
+
+        with tempfile.TemporaryDirectory(
+            dir=retained_runtime_root_path,
+            prefix=".retain-",
+        ) as temporary_root_text:
+            temporary_runtime_path = Path(temporary_root_text) / "runtime"
+            shutil.copytree(
+                legacy_runtime_path,
+                temporary_runtime_path,
+                symlinks=True,
+            )
+            self._product_tool_runtime_python_metadata_rewrite(
+                runtime_path=temporary_runtime_path,
+                retained_runtime_path=retained_runtime_path,
+            )
+            for python_name in ("python", "python3", "python3.14"):
+                python_path = temporary_runtime_path / "bin" / python_name
+                python_path.unlink(missing_ok=True)
+                python_path.symlink_to(HOST_PYTHON_PATH)
+            self._product_tool_runtime_validate(temporary_runtime_path)
+            self._runner.run(
+                [
+                    str(temporary_runtime_path / "bin" / "python"),
+                    "-c",
+                    "import pydantic; import yaml",
+                ]
+            )
+            os.replace(temporary_runtime_path, retained_runtime_path)
+        self._runner.run(["sync", "-f", str(retained_runtime_root_path)])
+        self._product_tool_runtime_validate(retained_runtime_path)
+        print(f"OK: Product-tool runtime {requirement_digest} retained atomically")
 
     def host_status(self, retained_volume_id: str) -> None:
         """Print safe host state from one exact infrastructure release.
@@ -555,9 +1121,7 @@ class DevelopmentEnvironment:
                 "on the development host"
             )
         payload = self._host_status_payload_validate(
-            self._host_status_local_payload_get(
-                retained_volume_id=retained_volume_id
-            )
+            self._host_status_local_payload_get(retained_volume_id=retained_volume_id)
         )
         print(json.dumps(payload, sort_keys=True))
 
@@ -581,7 +1145,9 @@ class DevelopmentEnvironment:
 
         try:
             resolved_release_root_path = release_root_path.resolve(strict=True)
-            resolved_release_parent_path = HOST_RELEASE_ROOT_PATH.resolve(strict=True)
+            resolved_release_parent_path = (
+                self._identity.host_release_root_path.resolve(strict=True)
+            )
         except OSError as error:
             raise DevelopmentEnvironmentError(
                 "Retained Product release path is unavailable"
@@ -618,6 +1184,32 @@ class DevelopmentEnvironment:
             raise DevelopmentEnvironmentError(
                 "Retained Product release manifests have inconsistent identities"
             )
+        source_manifest_version = source_manifest.get("source_manifest_version")
+        is_legacy_manifest = source_manifest_version is None
+        if (
+            not is_legacy_manifest
+            and source_manifest_version not in SUPPORTED_SOURCE_MANIFEST_VERSION_SET
+        ):
+            raise DevelopmentEnvironmentError(
+                "Retained Product source manifest version is unsupported"
+            )
+        source_environment_name = source_manifest.get("environment_name")
+        if source_manifest_version == SOURCE_MANIFEST_VERSION:
+            if source_environment_name != self._identity.environment_name:
+                raise DevelopmentEnvironmentError(
+                    "Retained Product source manifest belongs to another environment"
+                )
+        elif source_environment_name not in {None, self._identity.environment_name}:
+            raise DevelopmentEnvironmentError(
+                "Retained Product source manifest belongs to another environment"
+            )
+        product_environment_name = product_manifest.get("environment_name")
+        if product_environment_name is None:
+            product_environment_name = "primary"
+        if product_environment_name != self._identity.environment_name:
+            raise DevelopmentEnvironmentError(
+                "Retained Product release manifest belongs to another environment"
+            )
         if (
             product_manifest.get("source_manifest_sha256")
             != hashlib.sha256(source_manifest_bytes).hexdigest()
@@ -637,6 +1229,7 @@ class DevelopmentEnvironment:
         required_repository_name_set = {
             "workflow-infrastructure",
             *PRODUCT_SOURCE_REPOSITORY_NAME_LIST,
+            "workflow-container-contract",
         }
         if not isinstance(repository_by_name_map, Mapping) or set(
             repository_by_name_map
@@ -686,12 +1279,90 @@ class DevelopmentEnvironment:
                 raise DevelopmentEnvironmentError(
                     f"Retained Product source {repository_name} repository URL is invalid"
                 )
+            source_kind = repository_payload.get("source_kind")
+            expected_source_kind = (
+                "resolved_moving_source"
+                if repository_name == "workflow-container-contract"
+                and not is_legacy_manifest
+                else "exact_checkout"
+            )
+            if is_legacy_manifest:
+                if source_kind not in {None, "exact_checkout"}:
+                    raise DevelopmentEnvironmentError(
+                        f"Retained Product source {repository_name} source kind is invalid"
+                    )
+            elif source_kind != expected_source_kind:
+                raise DevelopmentEnvironmentError(
+                    f"Retained Product source {repository_name} source kind is invalid"
+                )
+            if not is_legacy_manifest:
+                source_identity["source_kind"] = expected_source_kind
+            moving_field_name_set = {
+                "override_identity",
+                "override_reason",
+                "package_version",
+                "requested_selector",
+                "resolved_ref",
+            }
+            if expected_source_kind == "resolved_moving_source":
+                submodule_by_path_map = repository_payload.get("submodule_by_path_map")
+                if submodule_by_path_map != {}:
+                    raise DevelopmentEnvironmentError(
+                        "Retained workflow-container-contract moving source has submodules"
+                    )
+                for field_name in (
+                    "package_version",
+                    "requested_selector",
+                    "resolved_ref",
+                ):
+                    field_value = repository_payload.get(field_name)
+                    if not isinstance(field_value, str) or not field_value:
+                        raise DevelopmentEnvironmentError(
+                            "Retained workflow-container-contract "
+                            f"{field_name} is invalid"
+                        )
+                    source_identity[field_name] = field_value
+                if source_identity["requested_selector"] != MOVING_SOURCE_SELECTOR:
+                    raise DevelopmentEnvironmentError(
+                        "Retained workflow-container-contract selector is invalid"
+                    )
+                if not source_identity["resolved_ref"].startswith("refs/heads/"):
+                    raise DevelopmentEnvironmentError(
+                        "Retained workflow-container-contract ref is invalid"
+                    )
+                override_identity = repository_payload.get("override_identity")
+                override_reason = repository_payload.get("override_reason")
+                if override_identity is None and override_reason is None:
+                    pass
+                elif (
+                    isinstance(override_identity, str)
+                    and override_identity == source_identity["commit_sha"]
+                    and isinstance(override_reason, str)
+                    and bool(override_reason)
+                ):
+                    source_identity["override_identity"] = override_identity
+                    source_identity["override_reason"] = override_reason
+                else:
+                    raise DevelopmentEnvironmentError(
+                        "Retained workflow-container-contract override provenance is invalid"
+                    )
+            elif not is_legacy_manifest and any(
+                field_name in repository_payload for field_name in moving_field_name_set
+            ):
+                raise DevelopmentEnvironmentError(
+                    f"Retained exact source {repository_name} has moving provenance"
+                )
             file_sha256_by_path_map = repository_payload.get("file_sha256_by_path_map")
             if not isinstance(file_sha256_by_path_map, Mapping):
                 raise DevelopmentEnvironmentError(
                     f"Retained Product source {repository_name} file graph is invalid"
                 )
             repository_root_path = source_root_path / repository_name
+            if not repository_root_path.is_dir() or repository_root_path.is_symlink():
+                raise DevelopmentEnvironmentError(
+                    f"Retained Product source root is unavailable: {repository_name}"
+                )
+            expected_file_sha256_by_path_map: dict[str, str] = {}
             for relative_path_text, expected_sha256 in file_sha256_by_path_map.items():
                 if (
                     not isinstance(relative_path_text, str)
@@ -719,23 +1390,35 @@ class DevelopmentEnvironment:
                     raise DevelopmentEnvironmentError(
                         f"Retained Product source {repository_name} path is unsafe"
                     )
-                source_path = repository_root_path.joinpath(*relative_path.parts)
+                expected_file_sha256_by_path_map[relative_path_text] = expected_sha256
+            actual_file_sha256_by_path_map: dict[str, str] = {}
+            for source_path in repository_root_path.rglob("*"):
                 try:
-                    source_payload = (
-                        os.readlink(source_path).encode()
-                        if source_path.is_symlink()
-                        else source_path.read_bytes()
-                    )
+                    if source_path.is_symlink():
+                        source_payload = os.readlink(source_path).encode()
+                    elif source_path.is_file():
+                        source_payload = source_path.read_bytes()
+                    elif source_path.is_dir():
+                        continue
+                    else:
+                        raise DevelopmentEnvironmentError(
+                            "Retained Product source contains an unsupported filesystem "
+                            f"entry: {repository_name}/"
+                            f"{source_path.relative_to(repository_root_path).as_posix()}"
+                        )
                 except OSError as error:
                     raise DevelopmentEnvironmentError(
-                        f"Retained Product source file is unavailable: "
-                        f"{repository_name}/{relative_path_text}"
+                        "Retained Product source file is unavailable: "
+                        f"{repository_name}/"
+                        f"{source_path.relative_to(repository_root_path).as_posix()}"
                     ) from error
-                if hashlib.sha256(source_payload).hexdigest() != expected_sha256:
-                    raise DevelopmentEnvironmentError(
-                        f"Retained Product source file digest differs: "
-                        f"{repository_name}/{relative_path_text}"
-                    )
+                actual_file_sha256_by_path_map[
+                    source_path.relative_to(repository_root_path).as_posix()
+                ] = hashlib.sha256(source_payload).hexdigest()
+            if actual_file_sha256_by_path_map != expected_file_sha256_by_path_map:
+                raise DevelopmentEnvironmentError(
+                    f"Retained Product source file graph differs: {repository_name}"
+                )
             source_identity_by_name_map[repository_name] = source_identity
         if product_manifest.get("source_by_name_map") != source_identity_by_name_map:
             raise DevelopmentEnvironmentError(
@@ -750,7 +1433,7 @@ class DevelopmentEnvironment:
             raise DevelopmentEnvironmentError(
                 "host-product-release-activate is supported only on the development host"
             )
-        release_root_path = HOST_RELEASE_ROOT_PATH / release_name
+        release_root_path = self._identity.host_release_root_path / release_name
         accepted_release_name = self._retained_product_release_validate(
             release_root_path
         )
@@ -759,12 +1442,12 @@ class DevelopmentEnvironment:
                 "Retained Product release activation changed exact identity"
             )
         self._atomic_symlink_replace(
-            link_path=HOST_RETAINED_CURRENT_RELEASE_PATH,
+            link_path=self._identity.host_retained_current_release_path,
             target_path=release_root_path,
         )
         self._atomic_symlink_replace(
-            link_path=HOST_CURRENT_SOURCE_PATH,
-            target_path=HOST_RETAINED_CURRENT_RELEASE_PATH,
+            link_path=self._identity.host_current_source_path,
+            target_path=self._identity.host_retained_current_release_path,
         )
         print(f"OK: retained Product release {release_name} is current")
 
@@ -775,131 +1458,153 @@ class DevelopmentEnvironment:
             raise DevelopmentEnvironmentError(
                 "host-product-release-restore is supported only on the development host"
             )
-        if not HOST_RETAINED_CURRENT_RELEASE_PATH.is_symlink():
+        if not self._identity.host_retained_current_release_path.is_symlink():
             raise DevelopmentEnvironmentError(
                 "Retained Product current-release link is unavailable"
             )
         try:
-            release_root_path = HOST_RETAINED_CURRENT_RELEASE_PATH.resolve(strict=True)
+            release_root_path = (
+                self._identity.host_retained_current_release_path.resolve(strict=True)
+            )
         except OSError as error:
             raise DevelopmentEnvironmentError(
                 "Retained Product current-release link is broken"
             ) from error
-        if os.readlink(HOST_RETAINED_CURRENT_RELEASE_PATH) != str(release_root_path):
+        if os.readlink(self._identity.host_retained_current_release_path) != str(
+            release_root_path
+        ):
             raise DevelopmentEnvironmentError(
                 "Retained Product current-release link is not an exact absolute target"
             )
         release_name = self._retained_product_release_validate(release_root_path)
+        self._retained_product_release_host_compatibility_validate(
+            release_root_path=release_root_path
+        )
         self._atomic_symlink_replace(
-            link_path=HOST_CURRENT_SOURCE_PATH,
-            target_path=HOST_RETAINED_CURRENT_RELEASE_PATH,
+            link_path=self._identity.host_current_source_path,
+            target_path=self._identity.host_retained_current_release_path,
         )
         print(
             f"OK: retained Product release {release_name} root-volume link is restored"
         )
 
-    def _helm_ensure(self) -> None:
-        """Install the pinned Helm release atomically after archive verification."""
+    def _retained_product_release_host_compatibility_validate(
+        self,
+        *,
+        release_root_path: Path,
+    ) -> None:
+        """Require the active host to remain in the retained release runtime lines.
 
-        if HELM_BINARY_PATH.is_file():
-            current_result = self._runner.run(
-                [
-                    str(HELM_BINARY_PATH),
-                    "version",
-                    "--template",
-                    "{{.Version}}",
-                ],
-                check=False,
+        Args:
+            release_root_path: Already byte-validated retained Product release.
+        """
+
+        try:
+            source_manifest = json.loads(
+                (release_root_path / "source-manifest.json").read_text(encoding="utf-8")
             )
-            if (
-                current_result.returncode == 0
-                and current_result.stdout.strip() == HELM_VERSION
-            ):
-                return
-        machine = platform.machine()
-        release = HELM_RELEASE_BY_MACHINE_MAP.get(machine)
-        if release is None:
+        except (OSError, json.JSONDecodeError) as error:
             raise DevelopmentEnvironmentError(
-                f"Unsupported Helm host architecture {machine}"
+                "Retained Product source manifest is unavailable for host compatibility"
+            ) from error
+        retained_host_artifact_manifest = (
+            source_manifest.get("host_artifact_manifest")
+            if isinstance(source_manifest, Mapping)
+            else None
+        )
+        if retained_host_artifact_manifest is None:
+            return
+        if not isinstance(retained_host_artifact_manifest, Mapping):
+            raise DevelopmentEnvironmentError(
+                "Retained Product host artifact manifest is malformed"
             )
-        archive_architecture, expected_sha256 = release
-        archive_name = f"helm-{HELM_VERSION}-linux-{archive_architecture}.tar.gz"
-        member_name = f"linux-{archive_architecture}/helm"
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            temporary_root_path = Path(temporary_directory)
-            archive_path = temporary_root_path / archive_name
-            self._runner.run(
-                [
-                    "curl",
-                    "--fail",
-                    "--silent",
-                    "--show-error",
-                    "--location",
-                    f"https://get.helm.sh/{archive_name}",
-                    "-o",
-                    str(archive_path),
-                ]
+        try:
+            retained_identity = host_artifact_recovery_compatibility_identity_get(
+                retained_host_artifact_manifest
             )
-            actual_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
-            if actual_sha256 != expected_sha256:
-                raise DevelopmentEnvironmentError(
-                    "Downloaded Helm archive digest does not match the pinned release"
-                )
-            with tarfile.open(archive_path, "r:gz") as archive:
-                try:
-                    member = archive.getmember(member_name)
-                except KeyError as error:
-                    raise DevelopmentEnvironmentError(
-                        "Pinned Helm archive does not contain its expected binary"
-                    ) from error
-                if not member.isfile():
-                    raise DevelopmentEnvironmentError(
-                        "Pinned Helm archive member is not a regular file"
-                    )
-                source_file = archive.extractfile(member)
-                if source_file is None:
-                    raise DevelopmentEnvironmentError(
-                        "Pinned Helm archive binary is unreadable"
-                    )
-                binary_payload = source_file.read()
-            if not binary_payload.startswith(b"\x7fELF"):
-                raise DevelopmentEnvironmentError(
-                    "Pinned Helm archive does not contain a Linux executable"
-                )
-            temporary_binary_path: Path | None = None
-            try:
-                with tempfile.NamedTemporaryFile(
-                    dir=HELM_BINARY_PATH.parent,
-                    delete=False,
-                ) as temporary_binary:
-                    temporary_binary_path = Path(temporary_binary.name)
-                    temporary_binary.write(binary_payload)
-                    temporary_binary.flush()
-                    os.fsync(temporary_binary.fileno())
-                os.chmod(temporary_binary_path, 0o755)
-                os.replace(temporary_binary_path, HELM_BINARY_PATH)
-            finally:
-                if temporary_binary_path is not None:
-                    temporary_binary_path.unlink(missing_ok=True)
+            active_identity = host_artifact_recovery_compatibility_identity_get(
+                self._host_artifact_manifest_get()
+            )
+        except HostArtifactResolutionError as error:
+            raise DevelopmentEnvironmentError(
+                f"Retained Product host compatibility is invalid: {error}"
+            ) from error
+        if retained_identity != active_identity:
+            raise DevelopmentEnvironmentError(
+                "Retained Product release is incompatible with the active host runtime lines"
+            )
+
+    def _host_artifact_manifest_get(self) -> dict[str, object]:
+        """Return the immutable launch manifest installed on this exact host."""
+
+        try:
+            encoded_manifest = HOST_ARTIFACT_MANIFEST_PATH.read_text(encoding="utf-8")
+            expected_sha256 = HOST_ARTIFACT_MANIFEST_SHA256_PATH.read_text(
+                encoding="utf-8"
+            ).strip()
+            manifest = host_artifact_manifest_decode(
+                encoded_manifest=encoded_manifest,
+                expected_sha256=expected_sha256,
+            )
+        except OSError as error:
+            raise DevelopmentEnvironmentError(
+                "Host artifact manifest is unavailable"
+            ) from error
+        except HostArtifactResolutionError as error:
+            raise DevelopmentEnvironmentError(
+                f"Host artifact manifest is invalid: {error}"
+            ) from error
+        return manifest
+
+    def _helm_validate(self, host_artifact_manifest: Mapping[str, object]) -> str:
+        """Validate the preinstalled Helm binary against immutable launch input."""
+
+        artifact_by_name_map = host_artifact_manifest.get("artifact_by_name_map")
+        helm_artifact = (
+            artifact_by_name_map.get("helm")
+            if isinstance(artifact_by_name_map, dict)
+            else None
+        )
+        helm_version = (
+            helm_artifact.get("version") if isinstance(helm_artifact, dict) else None
+        )
+        if (
+            not isinstance(helm_version, str)
+            or re.fullmatch(r"v4\.[0-9]+\.[0-9]+", helm_version) is None
+        ):
+            raise DevelopmentEnvironmentError(
+                "Host artifact manifest has no exact Helm identity"
+            )
+        if not HELM_BINARY_PATH.is_file():
+            raise DevelopmentEnvironmentError(
+                "Exact Helm binary was not installed by host bootstrap"
+            )
         installed_result = self._runner.run(
             [
                 str(HELM_BINARY_PATH),
                 "version",
                 "--template",
                 "{{.Version}}",
-            ]
+            ],
+            check=False,
         )
-        if installed_result.stdout.strip() != HELM_VERSION:
+        if (
+            installed_result.returncode != 0
+            or installed_result.stdout.strip() != helm_version
+        ):
             raise DevelopmentEnvironmentError(
-                "Installed Helm version does not match the pinned release"
+                "Installed Helm version differs from immutable launch input"
             )
+        return helm_version
 
     def host_install(self) -> None:
         """Install the source-owned host controller service from the current exact release."""
 
         self.host_prepare()
         infrastructure_source_path = (
-            HOST_CONTROL_CURRENT_SOURCE_PATH / "sources" / "workflow-infrastructure"
+            self._identity.host_control_current_source_path
+            / "sources"
+            / "workflow-infrastructure"
         )
         self._runner.run(
             [
@@ -918,7 +1623,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart={infrastructure_source_path}/.venv/bin/python {infrastructure_source_path}/tool/development_environment_manage.py host-controller
+ExecStart={infrastructure_source_path}/.venv/bin/python {infrastructure_source_path}/tool/development_environment_manage.py host-controller --environment-name {self._identity.environment_name}
 Restart=always
 RestartSec=30
 User=root
@@ -940,16 +1645,12 @@ WantedBy=multi-user.target
     def host_shutdown(self) -> None:
         """Gracefully stop Product workloads and power off the development instance."""
 
-        product_tool_path = (
-            HOST_CURRENT_SOURCE_PATH
-            / "sources"
-            / "workflow-control-center"
-            / "tool"
-            / "development_kubernetes_manage.py"
+        product_tool_path = Path(
+            self._current_product_tool_command_list_get("shutdown")[1]
         )
         if product_tool_path.is_file():
             result = self._runner.run(
-                ["python3.14", str(product_tool_path), "shutdown"],
+                self._current_product_tool_command_list_get("shutdown"),
                 check=False,
                 should_capture=False,
             )
@@ -968,7 +1669,7 @@ WantedBy=multi-user.target
     def lifecycle_acceptance(self) -> None:
         """Exercise the real renewable stop lease with bounded acceptance timings.
 
-        This disruptive operator-only check leaves the production controller policy
+        This disruptive operator-only check leaves the ordinary development controller policy
         unchanged. It temporarily stops that controller, creates and renews the real
         EventBridge Scheduler lease, proves that the original deadline is superseded,
         then proves fail-safe EC2 stop and schedule auto-deletion before restoring the
@@ -979,7 +1680,7 @@ WantedBy=multi-user.target
         self._source_repository_validate(
             self._project_root_path, "workflow-infrastructure"
         )
-        self._stack_drift_validate(COMPUTE_STACK_NAME)
+        self._stack_drift_validate(self._identity.compute_stack_name)
         instance_id = self._instance_id_get()
         if self._instance_state_get(instance_id) != "running":
             raise DevelopmentEnvironmentError(
@@ -987,7 +1688,7 @@ WantedBy=multi-user.target
             )
         host_status_payload = self._host_status_payload_get(
             retained_volume_id=self._stack_output_by_name_map_get(
-                COMPUTE_STACK_NAME
+                self._identity.compute_stack_name
             )["RetainedVolumeId"]
         )
         if host_status_payload.get("wcc_activity") != "idle":
@@ -1001,8 +1702,8 @@ WantedBy=multi-user.target
                 [
                     "sudo systemctl stop workflow-control-center-host-controller",
                     (
-                        "test \"$(systemctl is-active "
-                        "workflow-control-center-host-controller || true)\" = inactive"
+                        'test "$(systemctl is-active '
+                        'workflow-control-center-host-controller || true)" = inactive'
                     ),
                 ]
             )
@@ -1027,9 +1728,7 @@ WantedBy=multi-user.target
                     "Lifecycle acceptance lease renewal did not change its deadline"
                 )
 
-            self._wait_until(
-                t_initial_lease + LIFECYCLE_ACCEPTANCE_RENEWAL_PROOF_DELAY
-            )
+            self._wait_until(t_initial_lease + LIFECYCLE_ACCEPTANCE_RENEWAL_PROOF_DELAY)
             if self._instance_state_get(instance_id) != "running":
                 raise DevelopmentEnvironmentError(
                     "Lifecycle acceptance instance stopped at the superseded deadline"
@@ -1043,8 +1742,7 @@ WantedBy=multi-user.target
                 ),
             )
             self._stop_lease_absence_wait(
-                t_deadline=self._clock.now()
-                + LIFECYCLE_ACCEPTANCE_STOP_GRACE
+                t_deadline=self._clock.now() + LIFECYCLE_ACCEPTANCE_STOP_GRACE
             )
             self.start()
             self._product_recovery_acceptance_run()
@@ -1078,13 +1776,12 @@ WantedBy=multi-user.target
             restore_parameter_by_name_map,
         ) = self._retained_volume_restore_plan_get(snapshot_id=snapshot_id)
         replacement_parameter_by_name_map.update(restore_parameter_by_name_map)
-        self._stack_drift_validate(COMPUTE_STACK_NAME)
-        self._retired_retained_volume_cleanup(
-            current_volume_id=source_volume_id
-        )
+        self._stack_drift_validate(self._identity.compute_stack_name)
+        self._retired_retained_volume_cleanup(current_volume_id=source_volume_id)
         self.stop(should_validate_drift=False)
         self._replacement_stack_apply(
-            parameter_by_name_map=replacement_parameter_by_name_map
+            parameter_by_name_map=replacement_parameter_by_name_map,
+            allow_retained_volume_transition=True,
         )
         self._retained_volume_snapshot_restore_validate(
             snapshot_id=snapshot_id,
@@ -1109,7 +1806,7 @@ WantedBy=multi-user.target
             self._replacement_parameter_by_name_map_get()
         )
         replacement_slot = replacement_parameter_by_name_map["InstanceSlot"]
-        self._stack_drift_validate(COMPUTE_STACK_NAME)
+        self._stack_drift_validate(self._identity.compute_stack_name)
         self.stop(should_validate_drift=False)
         self._replacement_stack_apply(
             parameter_by_name_map=replacement_parameter_by_name_map
@@ -1130,7 +1827,9 @@ WantedBy=multi-user.target
             Parameter overrides that deliberately replace the current instance.
         """
 
-        output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
+        output_by_name_map = self._stack_output_by_name_map_get(
+            self._identity.compute_stack_name
+        )
         try:
             current_slot = output_by_name_map["InstanceSlot"]
         except KeyError as error:
@@ -1143,6 +1842,24 @@ WantedBy=multi-user.target
             )
         parameter_by_name_map = self._replacement_guard_parameter_by_name_map_get()
         parameter_by_name_map["InstanceSlot"] = "b" if current_slot == "a" else "a"
+        try:
+            latest_launch_template_version = output_by_name_map[
+                "LatestLaunchTemplateVersion"
+            ]
+        except KeyError as error:
+            raise DevelopmentEnvironmentError(
+                "Compute stack launch-template output is missing"
+            ) from error
+        if (
+            not isinstance(latest_launch_template_version, str)
+            or not latest_launch_template_version.isdigit()
+        ):
+            raise DevelopmentEnvironmentError(
+                "Compute stack launch-template output is malformed"
+            )
+        parameter_by_name_map["InstanceLaunchTemplateVersion"] = (
+            latest_launch_template_version
+        )
         return parameter_by_name_map
 
     def _replacement_guard_parameter_by_name_map_get(self) -> dict[str, str]:
@@ -1159,13 +1876,15 @@ WantedBy=multi-user.target
     def _replacement_guard_disable(self) -> None:
         """Disable the CloudFormation guard after the renewable lease is proven."""
 
-        output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
+        output_by_name_map = self._stack_output_by_name_map_get(
+            self._identity.compute_stack_name
+        )
         if "ReplacementGuardScheduleName" not in output_by_name_map:
             raise DevelopmentEnvironmentError(
                 "Compute stack replacement guard output is missing"
             )
         self._stack_apply(
-            stack_name=COMPUTE_STACK_NAME,
+            stack_name=self._identity.compute_stack_name,
             template_path=self._project_root_path
             / "cloudformation/workflow-control-center-development-compute.yaml",
             parameter_by_name_map={"ReplacementGuardScheduleState": "DISABLED"},
@@ -1174,12 +1893,17 @@ WantedBy=multi-user.target
         )
 
     def _replacement_stack_apply(
-        self, *, parameter_by_name_map: dict[str, str]
+        self,
+        *,
+        parameter_by_name_map: dict[str, str],
+        allow_retained_volume_transition: bool = False,
     ) -> None:
         """Apply one explicit replacement after proving the retained volume detached.
 
         Args:
             parameter_by_name_map: Exact replacement and optional restore parameters.
+            allow_retained_volume_transition: Whether this operation explicitly replaces
+                the retained volume from a caller-selected snapshot.
         """
 
         if (
@@ -1189,7 +1913,9 @@ WantedBy=multi-user.target
             raise DevelopmentEnvironmentError(
                 "Explicit replacement requires an enabled CloudFormation guard"
             )
-        output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
+        output_by_name_map = self._stack_output_by_name_map_get(
+            self._identity.compute_stack_name
+        )
         renewable_lease_created = "StopLeaseTargetArn" in output_by_name_map
         if renewable_lease_created:
             self._stop_lease_upsert()
@@ -1201,11 +1927,16 @@ WantedBy=multi-user.target
             raise
         try:
             self._stack_apply(
-                stack_name=COMPUTE_STACK_NAME,
+                stack_name=self._identity.compute_stack_name,
                 template_path=self._project_root_path
                 / "cloudformation/workflow-control-center-development-compute.yaml",
                 parameter_by_name_map=parameter_by_name_map,
                 must_preserve_resource=False,
+                protected_identity_logical_id_set=(
+                    ()
+                    if allow_retained_volume_transition
+                    else COMPUTE_RETAINED_VOLUME_LOGICAL_ID_SET
+                ),
             )
         except Exception as error:
             try:
@@ -1234,14 +1965,17 @@ WantedBy=multi-user.target
         self._local_operator_context_validate()
         self._instance_online_wait()
         with self._ssh_control_session() as ssh_control_path:
-            command_list = ["ssh", "-S", str(ssh_control_path), INSTANCE_NAME]
+            command_list = [
+                "ssh",
+                "-S",
+                str(ssh_control_path),
+                self._identity.instance_name,
+            ]
             command_list.extend(ssh_argument_list)
             result = self._runner.run(command_list, check=False, should_capture=False)
             return result.returncode
 
-    def start(
-        self, *, should_publish_infrastructure_source: bool = False
-    ) -> None:
+    def start(self, *, should_publish_infrastructure_source: bool = False) -> None:
         """Create the external stop lease before starting and verify host readiness.
 
         Args:
@@ -1249,9 +1983,26 @@ WantedBy=multi-user.target
                 the already validated exact controller source installed before proof.
         """
 
-        self._local_operator_context_validate()
-        self._stack_drift_validate(COMPUTE_STACK_NAME)
+        self._host_start_foundation(
+            should_validate_source=should_publish_infrastructure_source
+        )
         if should_publish_infrastructure_source:
+            self._infrastructure_source_publish()
+        self._host_readiness_wait()
+        instance_id = self._instance_id_get()
+        print(f"OK: development instance {instance_id} is ready")
+
+    def _host_start_foundation(self, *, should_validate_source: bool) -> None:
+        """Start the host through SSM without changing its installed controller.
+
+        Args:
+            should_validate_source: Whether a following exact-source publication
+                requires the local infrastructure checkout to be validated.
+        """
+
+        self._local_operator_context_validate()
+        self._stack_drift_validate(self._identity.compute_stack_name)
+        if should_validate_source:
             self._source_repository_validate(
                 self._project_root_path, "workflow-infrastructure"
             )
@@ -1269,17 +2020,17 @@ WantedBy=multi-user.target
             ["cloud-init status --wait"],
             timeout_seconds=HOST_READY_TIMEOUT_SECONDS,
         )
-        if should_publish_infrastructure_source:
-            self._infrastructure_source_publish()
-        self._host_readiness_wait()
-        print(f"OK: development instance {instance_id} is ready")
 
     def status(self) -> None:
         """Print safe infrastructure, access, lease, storage, and release state."""
 
         self._local_operator_context_validate()
-        data_stack = self._stack_payload_get(DATA_PLANE_STACK_NAME, is_required=False)
-        compute_stack = self._stack_payload_get(COMPUTE_STACK_NAME, is_required=False)
+        data_stack = self._stack_payload_get(
+            self._identity.data_plane_stack_name, is_required=False
+        )
+        compute_stack = self._stack_payload_get(
+            self._identity.compute_stack_name, is_required=False
+        )
         payload: dict[str, object] = {
             "account_id": AWS_ACCOUNT_ID,
             "compute_stack_status": compute_stack.get("StackStatus", "absent"),
@@ -1287,7 +2038,9 @@ WantedBy=multi-user.target
             "region": AWS_REGION,
         }
         if compute_stack:
-            output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
+            output_by_name_map = self._stack_output_by_name_map_get(
+                self._identity.compute_stack_name
+            )
             instance_id = output_by_name_map["InstanceId"]
             instance_state = self._instance_state_get(instance_id)
             ssm_ping_status = self._instance_ssm_ping_status_get(instance_id)
@@ -1303,9 +2056,7 @@ WantedBy=multi-user.target
                         self._latest_snapshot_id_get(
                             output_by_name_map["RetainedVolumeId"]
                         )
-                        or output_by_name_map.get(
-                            "RetainedVolumeSourceSnapshotId", ""
-                        )
+                        or output_by_name_map.get("RetainedVolumeSourceSnapshotId", "")
                     ),
                     "retained_volume_id": output_by_name_map["RetainedVolumeId"],
                     "retained_volume_slot": output_by_name_map.get(
@@ -1342,7 +2093,7 @@ WantedBy=multi-user.target
 
         self._local_operator_context_validate()
         if should_validate_drift:
-            self._stack_drift_validate(COMPUTE_STACK_NAME)
+            self._stack_drift_validate(self._identity.compute_stack_name)
         instance_id = self._instance_id_get()
         state = self._instance_state_get(instance_id)
         if state == "stopped":
@@ -1356,10 +2107,11 @@ WantedBy=multi-user.target
         command_id = self._ssm_command_start(
             [
                 (
-                    f"if [ -f {HOST_CONTROL_CURRENT_SOURCE_PATH}/sources/workflow-infrastructure/"
+                    f"if [ -f {self._identity.host_control_current_source_path}/sources/workflow-infrastructure/"
                     "tool/development_environment_manage.py ]; then "
-                    f"sudo python3.14 {HOST_CONTROL_CURRENT_SOURCE_PATH}/sources/workflow-infrastructure/"
-                    "tool/development_environment_manage.py host-shutdown; "
+                    f"sudo python3.14 {self._identity.host_control_current_source_path}/sources/workflow-infrastructure/"
+                    "tool/development_environment_manage.py host-shutdown "
+                    f"--environment-name {self._identity.environment_name}; "
                     "else sudo systemctl stop k3s || true; sudo systemctl poweroff; fi"
                 )
             ]
@@ -1443,6 +2195,14 @@ WantedBy=multi-user.target
             )
         return len(session_list)
 
+    def _host_session_state_is_busy(self, instance_id: str) -> bool:
+        """Fail closed when Session Manager cannot prove that no session exists."""
+
+        try:
+            return self._host_active_session_count_get(instance_id) > 0
+        except DevelopmentEnvironmentError:
+            return True
+
     def _host_node_name_get(self) -> str:
         result = self._runner.run(
             [
@@ -1460,23 +2220,44 @@ WantedBy=multi-user.target
         return node_name
 
     def _host_product_activity_get(self) -> str:
-        product_tool_path = (
-            HOST_CURRENT_SOURCE_PATH
-            / "sources"
-            / "workflow-control-center"
-            / "tool"
-            / "development_kubernetes_manage.py"
+        product_tool_path = Path(
+            self._current_product_tool_command_list_get("activity")[1]
         )
         if not product_tool_path.is_file():
             return "busy"
         result = self._runner.run(
-            ["python3.14", str(product_tool_path), "activity"],
+            self._current_product_tool_command_list_get("activity"),
             check=False,
         )
-        activity = result.stdout.strip()
-        if result.returncode != 0 or activity not in {"busy", "idle"}:
+        if result.returncode != 0:
             return "busy"
-        return activity
+        try:
+            observation = json.loads(result.stdout)
+            status = observation["status"]
+            reason_key_list = observation["reason_key_list"]
+            t_observed = datetime.fromisoformat(observation["t_observed"])
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return "busy"
+        if (
+            status not in {"busy", "idle"}
+            or not isinstance(reason_key_list, list)
+            or any(
+                not isinstance(reason_key, str)
+                or reason_key
+                not in {
+                    "controller_unavailable",
+                    "persisted_work",
+                    "probe_unavailable",
+                    "recovery",
+                }
+                for reason_key in reason_key_list
+            )
+            or t_observed.utcoffset() != timedelta(0)
+            or (status == "idle" and reason_key_list)
+            or (status == "busy" and not reason_key_list)
+        ):
+            return "busy"
+        return status
 
     def _cost_review_record(self) -> None:
         instance_hour_price = self._price_usd_get(
@@ -1650,11 +2431,9 @@ WantedBy=multi-user.target
                 ),
                 "price_meter_by_name_map": price_meter_by_name_map,
             }
-        kms_key_price_dimension_list = (
-            price_dimension_list_by_service_meter_map[
-                ("kms", "customer_managed_key")
-            ]
-        )
+        kms_key_price_dimension_list = price_dimension_list_by_service_meter_map[
+            ("kms", "customer_managed_key")
+        ]
         kms_key_price_set = {
             Decimal(price_dimension["price_per_unit_usd"])
             for price_dimension in kms_key_price_dimension_list
@@ -1674,9 +2453,7 @@ WantedBy=multi-user.target
         estimated_kms_key_monthly = (
             kms_key_monthly_price * kms_customer_managed_key_count
         )
-        retained_rollback_monthly_delta_max = (
-            gp3_gib_month_price * Decimal(80)
-        )
+        retained_rollback_monthly_delta_max = gp3_gib_month_price * Decimal(80)
         review_payload = {
             "architecture_delta_monthly_usd": {
                 "bounded_retained_rollback_volume_max": str(
@@ -1690,22 +2467,16 @@ WantedBy=multi-user.target
             "assumption": {
                 "active_hour_count_monthly": int(active_hour_count_monthly),
                 "gp3_gib_count_max": int(gp3_gib_count_max),
-                "kms_customer_managed_key_count": int(
-                    kms_customer_managed_key_count
-                ),
+                "kms_customer_managed_key_count": int(kms_customer_managed_key_count),
                 "snapshot_retention_count": int(snapshot_retention_count),
                 "snapshot_source_volume_gib_count_max": int(
                     snapshot_source_volume_gib_count_max
                 ),
-                "snapshot_stored_gib_count_max": int(
-                    snapshot_stored_gib_count_max
-                ),
+                "snapshot_stored_gib_count_max": int(snapshot_stored_gib_count_max),
             },
             "estimated_monthly_usd": {
                 "compute": str(estimated_compute_monthly.quantize(Decimal("0.01"))),
-                "gp3_max": str(
-                    estimated_gp3_monthly_max.quantize(Decimal("0.01"))
-                ),
+                "gp3_max": str(estimated_gp3_monthly_max.quantize(Decimal("0.01"))),
                 "kms_customer_managed_key": str(
                     estimated_kms_key_monthly.quantize(Decimal("0.01"))
                 ),
@@ -1738,14 +2509,25 @@ WantedBy=multi-user.target
         os.chmod(review_path, 0o600)
         print(json.dumps(review_payload, indent=2, sort_keys=True))
 
-    def _infrastructure_source_publish(self) -> None:
+    def _infrastructure_source_publish(
+        self,
+        *,
+        should_install_host_controller: bool = True,
+    ) -> None:
+        """Publish one exact control source and optionally install its controller.
+
+        Args:
+            should_install_host_controller: Whether the target host already owns
+                the immutable host-artifact manifest required by ``host-install``.
+        """
+
         release_name = self._clock.now().strftime("%Y%m%d%H%M%S%f")
         with self._ssh_control_session() as ssh_control_path:
             self._source_archive_publish(
                 repository_name="workflow-infrastructure",
                 repository_path=self._project_root_path,
                 release_name=release_name,
-                remote_release_root_path=HOST_CONTROL_RELEASE_ROOT_PATH,
+                remote_release_root_path=self._identity.host_control_release_root_path,
                 ssh_control_path=ssh_control_path,
             )
             self._ssh_run(
@@ -1755,7 +2537,11 @@ WantedBy=multi-user.target
                     "-d",
                     "-m",
                     "0755",
-                    str(HOST_CONTROL_RELEASE_ROOT_PATH / release_name / "sources"),
+                    str(
+                        self._identity.host_control_release_root_path
+                        / release_name
+                        / "sources"
+                    ),
                 ],
                 ssh_control_path=ssh_control_path,
             )
@@ -1764,29 +2550,112 @@ WantedBy=multi-user.target
                     "sudo",
                     "ln",
                     "-sfn",
-                    str(HOST_CONTROL_RELEASE_ROOT_PATH / release_name),
-                    str(HOST_CONTROL_CURRENT_SOURCE_PATH),
+                    str(self._identity.host_control_release_root_path / release_name),
+                    str(self._identity.host_control_current_source_path),
                 ],
                 ssh_control_path=ssh_control_path,
             )
-            self._ssh_run(
-                [
-                    "sudo",
-                    "python3.14",
-                    str(
-                        HOST_CONTROL_CURRENT_SOURCE_PATH
-                        / "sources"
-                        / "workflow-infrastructure"
-                        / "tool"
-                        / "development_environment_manage.py"
-                    ),
-                    "host-install",
-                ],
-                ssh_control_path=ssh_control_path,
+            if should_install_host_controller:
+                self._ssh_run(
+                    [
+                        "sudo",
+                        "python3.14",
+                        str(
+                            self._identity.host_control_current_source_path
+                            / "sources"
+                            / "workflow-infrastructure"
+                            / "tool"
+                            / "development_environment_manage.py"
+                        ),
+                        "host-install",
+                        "--environment-name",
+                        self._identity.environment_name,
+                    ],
+                    ssh_control_path=ssh_control_path,
+                )
+
+    def _host_artifact_resolution_get(
+        self,
+        *,
+        compute_stack_exists: bool,
+    ) -> HostArtifactResolution:
+        """Resolve and persist one exact host bootstrap graph before compute apply.
+
+        Args:
+            compute_stack_exists: Whether the current environment already owns compute.
+
+        Returns:
+            Verified architecture-specific artifact identities.
+        """
+
+        architecture = "arm64"
+        if compute_stack_exists:
+            architecture = self._stack_parameter_by_name_map_get(
+                self._identity.compute_stack_name
+            ).get("ComputeArchitecture", architecture)
+        try:
+            resolution = HostArtifactResolver(
+                cache_root_path=self._project_root_path
+                / ".local"
+                / "host-artifact-cache",
+                runner=self._runner,
+            ).resolve(architecture)
+        except HostArtifactResolutionError as error:
+            raise DevelopmentEnvironmentError(
+                f"Host artifact resolution failed: {error}"
+            ) from error
+        manifest_payload = {
+            **resolution.manifest_payload_get(),
+            "manifest_sha256": resolution.manifest_sha256_get(),
+        }
+        manifest_path = (
+            self._project_root_path
+            / ".local"
+            / f"host-artifact-resolution-{self._identity.environment_name}.json"
+        )
+        manifest_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        manifest_path.write_text(
+            json.dumps(manifest_payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        os.chmod(manifest_path, 0o600)
+        return resolution
+
+    def _host_artifact_manifest_payload_get(self) -> dict[str, object]:
+        """Load exact host bootstrap provenance retained by the compute stack."""
+
+        parameter_by_name_map = self._stack_parameter_by_name_map_get(
+            self._identity.compute_stack_name
+        )
+        encoded_manifest = parameter_by_name_map.get(
+            "HostArtifactManifestGzipBase64",
+            "",
+        )
+        expected_sha256 = parameter_by_name_map.get(
+            "HostArtifactManifestSha256",
+            "",
+        )
+        try:
+            payload = host_artifact_manifest_decode(
+                encoded_manifest=encoded_manifest,
+                expected_sha256=expected_sha256,
             )
+        except HostArtifactResolutionError as error:
+            raise DevelopmentEnvironmentError(
+                f"Compute stack host artifact provenance is invalid: {error}"
+            ) from error
+        if payload.get("architecture") != parameter_by_name_map.get(
+            "ComputeArchitecture"
+        ):
+            raise DevelopmentEnvironmentError(
+                "Compute stack host artifact architecture is inconsistent"
+            )
+        return payload
 
     def _instance_id_get(self) -> str:
-        return self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)["InstanceId"]
+        return self._stack_output_by_name_map_get(self._identity.compute_stack_name)[
+            "InstanceId"
+        ]
 
     def _instance_metadata_get(self, path: str) -> str:
         token_result = self._runner.run(
@@ -1863,17 +2732,15 @@ WantedBy=multi-user.target
             )
         ping_status = information_list[0].get("PingStatus")
         if ping_status not in {"ConnectionLost", "Inactive", "Online"}:
-            raise DevelopmentEnvironmentError(
-                "SSM instance ping status is malformed"
-            )
+            raise DevelopmentEnvironmentError("SSM instance ping status is malformed")
         return ping_status
 
     def _host_readiness_wait(self) -> None:
         """Prove retained storage, k3s, node, and lifecycle-controller readiness."""
 
-        retained_volume_id = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)[
-            "RetainedVolumeId"
-        ]
+        retained_volume_id = self._stack_output_by_name_map_get(
+            self._identity.compute_stack_name
+        )["RetainedVolumeId"]
         t_deadline = self._clock.monotonic() + HOST_READY_TIMEOUT_SECONDS
         host_status_payload = self._host_status_unavailable_payload_get()
         while self._clock.monotonic() < t_deadline:
@@ -1903,9 +2770,7 @@ WantedBy=multi-user.target
             f"{safe_status_text}"
         )
 
-    def _host_status_payload_get(
-        self, *, retained_volume_id: str
-    ) -> dict[str, str]:
+    def _host_status_payload_get(self, *, retained_volume_id: str) -> dict[str, str]:
         """Inspect safe host state through one bounded SSM Run Command.
 
         Args:
@@ -1922,13 +2787,15 @@ WantedBy=multi-user.target
                     [
                         "python3.14",
                         str(
-                            HOST_CONTROL_CURRENT_SOURCE_PATH
+                            self._identity.host_control_current_source_path
                             / "sources"
                             / "workflow-infrastructure"
                             / "tool"
                             / "development_environment_manage.py"
                         ),
                         "host-status",
+                        "--environment-name",
+                        self._identity.environment_name,
                         "--retained-volume-id",
                         retained_volume_id,
                     ]
@@ -1995,30 +2862,27 @@ WantedBy=multi-user.target
             "wcc_activity": self._host_product_activity_get(),
         }
 
-    @staticmethod
-    def _host_current_release_get() -> str:
+    def _host_current_release_get(self) -> str:
         """Return the safe exact retained release name or its invalid state."""
 
-        if not HOST_RETAINED_CURRENT_RELEASE_PATH.is_symlink():
+        if not self._identity.host_retained_current_release_path.is_symlink():
             return ""
         try:
-            current_release_path = HOST_RETAINED_CURRENT_RELEASE_PATH.resolve(
-                strict=True
+            current_release_path = (
+                self._identity.host_retained_current_release_path.resolve(strict=True)
             )
         except OSError:
             return "invalid"
         release_name = current_release_path.name
         if (
-            current_release_path.parent == HOST_RELEASE_ROOT_PATH
+            current_release_path.parent == self._identity.host_release_root_path
             and len(release_name) == 20
             and release_name.isdigit()
         ):
             return release_name
         return "invalid"
 
-    def _host_kubernetes_node_status_get(
-        self, *, k3s_service_status: str
-    ) -> str:
+    def _host_kubernetes_node_status_get(self, *, k3s_service_status: str) -> str:
         """Return normalized readiness across every node in the local k3s cluster.
 
         Args:
@@ -2077,8 +2941,7 @@ WantedBy=multi-user.target
         """
 
         retained_device_path = HOST_EBS_DEVICE_BY_ID_ROOT_PATH / (
-            "nvme-Amazon_Elastic_Block_Store_"
-            + retained_volume_id.replace("-", "")
+            "nvme-Amazon_Elastic_Block_Store_" + retained_volume_id.replace("-", "")
         )
         findmnt_result = self._runner.run(
             [
@@ -2087,7 +2950,7 @@ WantedBy=multi-user.target
                 "--output",
                 "SOURCE,FSTYPE,TARGET",
                 "--target",
-                str(HOST_RETAINED_ROOT_PATH),
+                str(self._identity.host_retained_root_path),
             ],
             check=False,
         )
@@ -2105,7 +2968,7 @@ WantedBy=multi-user.target
         if (
             actual_device_path == expected_device_path
             and filesystem_type == "xfs"
-            and target_text == str(HOST_RETAINED_ROOT_PATH)
+            and target_text == str(self._identity.host_retained_root_path)
         ):
             return "ready"
         return "wrong-device"
@@ -2267,12 +3130,10 @@ WantedBy=multi-user.target
             raise DevelopmentEnvironmentError("EC2 instance state is not text")
         return state
 
-    def _instance_launch_template_version_validate(self) -> None:
-        """Prove the instance records the exact latest immutable template version."""
+    def _instance_launch_template_version_get(self) -> str:
+        """Return the exact launch-template version recorded by the EC2 instance."""
 
-        output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
-        instance_id = output_by_name_map["InstanceId"]
-        expected_version = output_by_name_map["LatestLaunchTemplateVersion"]
+        instance_id = self._instance_id_get()
         payload = self._aws_json_get(
             ["ec2", "describe-instances", "--instance-ids", instance_id]
         )
@@ -2293,10 +3154,57 @@ WantedBy=multi-user.target
             for tag in tag_list
             if isinstance(tag.get("Key"), str)
         }
+        actual_version = tag_by_name_map.get("aws:ec2launchtemplate:version")
+        if not isinstance(actual_version, str) or not actual_version.isdigit():
+            raise DevelopmentEnvironmentError(
+                "EC2 instance has no exact launch-template version"
+            )
+        return actual_version
+
+    def _instance_launch_template_update_is_pending(self) -> bool:
+        """Return whether an exact new launch input requires controlled replacement."""
+
+        output_by_name_map = self._stack_output_by_name_map_get(
+            self._identity.compute_stack_name
+        )
+        active_version = output_by_name_map.get("InstanceLaunchTemplateVersion")
+        latest_version = output_by_name_map.get("LatestLaunchTemplateVersion")
         if (
-            not isinstance(expected_version, str)
-            or not expected_version.isdigit()
-            or tag_by_name_map.get("aws:ec2launchtemplate:version") != expected_version
+            not isinstance(active_version, str)
+            or not active_version.isdigit()
+            or not isinstance(latest_version, str)
+            or not latest_version.isdigit()
+        ):
+            raise DevelopmentEnvironmentError(
+                "Compute stack launch-template outputs are malformed"
+            )
+        return active_version != latest_version
+
+    def _instance_launch_template_version_validate(
+        self,
+        *,
+        require_latest: bool = True,
+    ) -> None:
+        """Prove the instance uses the declared active and optionally latest version."""
+
+        output_by_name_map = self._stack_output_by_name_map_get(
+            self._identity.compute_stack_name
+        )
+        active_version = output_by_name_map.get("InstanceLaunchTemplateVersion")
+        latest_version = output_by_name_map.get("LatestLaunchTemplateVersion")
+        actual_version = self._instance_launch_template_version_get()
+        if (
+            not isinstance(active_version, str)
+            or not active_version.isdigit()
+            or actual_version != active_version
+        ):
+            raise DevelopmentEnvironmentError(
+                "EC2 instance does not use the declared launch-template version"
+            )
+        if require_latest and (
+            not isinstance(latest_version, str)
+            or not latest_version.isdigit()
+            or active_version != latest_version
         ):
             raise DevelopmentEnvironmentError(
                 "EC2 instance does not use the exact latest launch-template version"
@@ -2328,7 +3236,9 @@ WantedBy=multi-user.target
     def _retained_volume_attachment_validate(self) -> None:
         """Prove the current retained volume is attached only to the stack instance."""
 
-        output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
+        output_by_name_map = self._stack_output_by_name_map_get(
+            self._identity.compute_stack_name
+        )
         instance_id = output_by_name_map["InstanceId"]
         volume_id = output_by_name_map["RetainedVolumeId"]
         state, attachment_list = self._retained_volume_state_get(volume_id=volume_id)
@@ -2348,7 +3258,9 @@ WantedBy=multi-user.target
     def _retained_volume_detach_for_replacement(self) -> None:
         """Detach the retained volume only after the old instance is proven stopped."""
 
-        output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
+        output_by_name_map = self._stack_output_by_name_map_get(
+            self._identity.compute_stack_name
+        )
         instance_id = output_by_name_map["InstanceId"]
         volume_id = output_by_name_map["RetainedVolumeId"]
         if self._instance_state_get(instance_id) != "stopped":
@@ -2391,7 +3303,9 @@ WantedBy=multi-user.target
     def _retained_volume_attachment_ensure(self) -> None:
         """Recover the stack-declared attachment after a failed replacement."""
 
-        output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
+        output_by_name_map = self._stack_output_by_name_map_get(
+            self._identity.compute_stack_name
+        )
         instance_id = output_by_name_map["InstanceId"]
         volume_id = output_by_name_map["RetainedVolumeId"]
         state, attachment_list = self._retained_volume_state_get(volume_id=volume_id)
@@ -2429,7 +3343,9 @@ WantedBy=multi-user.target
             Source volume identity and exact CloudFormation parameter overrides.
         """
 
-        output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
+        output_by_name_map = self._stack_output_by_name_map_get(
+            self._identity.compute_stack_name
+        )
         source_volume_id = output_by_name_map.get("RetainedVolumeId")
         current_slot = output_by_name_map.get("RetainedVolumeSlot", "base")
         if not isinstance(source_volume_id, str) or not source_volume_id.startswith(
@@ -2505,7 +3421,9 @@ WantedBy=multi-user.target
             source_volume_id: Retained volume active before restore.
         """
 
-        output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
+        output_by_name_map = self._stack_output_by_name_map_get(
+            self._identity.compute_stack_name
+        )
         restored_volume_id = output_by_name_map.get("RetainedVolumeId")
         if (
             not isinstance(restored_volume_id, str)
@@ -2564,9 +3482,7 @@ WantedBy=multi-user.target
                 "Previous retained volume still belongs to the daily backup set"
             )
 
-    def _retired_retained_volume_cleanup(
-        self, *, current_volume_id: str
-    ) -> None:
+    def _retired_retained_volume_cleanup(self, *, current_volume_id: str) -> None:
         """Delete stale rollback volumes before creating the next bounded rollback.
 
         Args:
@@ -2585,6 +3501,7 @@ WantedBy=multi-user.target
                 "Name=tag:Name,Values=workflow-control-center-development-retained",
                 "Name=tag:Project,Values=workflow-control-center",
                 "Name=tag:Environment,Values=development",
+                f"Name=tag:EnvironmentName,Values={self._identity.environment_name}",
                 "Name=tag:ManagedBy,Values=CloudFormation",
             ]
         )
@@ -2613,10 +3530,11 @@ WantedBy=multi-user.target
             }
             required_tag_by_name_map = {
                 "Environment": "development",
+                "EnvironmentName": self._identity.environment_name,
                 "ManagedBy": "CloudFormation",
                 "Name": "workflow-control-center-development-retained",
                 "Project": "workflow-control-center",
-                "aws:cloudformation:stack-name": COMPUTE_STACK_NAME,
+                "aws:cloudformation:stack-name": self._identity.compute_stack_name,
             }
             if any(
                 tag_by_name_map.get(tag_name) != tag_value
@@ -2638,9 +3556,7 @@ WantedBy=multi-user.target
                     f"Retained rollback volume {volume_id} is not safe to replace"
                 )
             self._aws_run(["ec2", "delete-volume", "--volume-id", volume_id])
-            self._aws_run(
-                ["ec2", "wait", "volume-deleted", "--volume-ids", volume_id]
-            )
+            self._aws_run(["ec2", "wait", "volume-deleted", "--volume-ids", volume_id])
             print(f"OK: stale retained rollback volume {volume_id} deleted")
 
     def _retained_volume_payload_get(self, *, volume_id: str) -> dict[str, object]:
@@ -2671,7 +3587,9 @@ WantedBy=multi-user.target
         """Return safe provider status for the exact stack-owned DLM policy."""
 
         resource_id_by_logical_name_map = (
-            self._stack_resource_id_by_logical_name_map_get(COMPUTE_STACK_NAME)
+            self._stack_resource_id_by_logical_name_map_get(
+                self._identity.compute_stack_name
+            )
         )
         policy_id = resource_id_by_logical_name_map.get(
             "RetainedSnapshotLifecyclePolicy"
@@ -2758,7 +3676,7 @@ WantedBy=multi-user.target
                 "cloudformation",
                 "describe-stacks",
                 "--stack-name",
-                DATA_PLANE_STACK_NAME,
+                self._identity.data_plane_stack_name,
             ],
         ]
         for aws_argument_list in readiness_command_list:
@@ -2767,9 +3685,9 @@ WantedBy=multi-user.target
     def _product_recovery_acceptance_run(self) -> None:
         self._ssm_shell_run(
             [
-                (
-                    f"sudo python3.14 {HOST_CURRENT_SOURCE_PATH}/sources/workflow-control-center/"
-                    "tool/development_kubernetes_manage.py recovery-acceptance"
+                "sudo "
+                + shlex.join(
+                    self._current_product_tool_command_list_get("recovery-acceptance")
                 )
             ]
         )
@@ -2780,8 +3698,9 @@ WantedBy=multi-user.target
         self._ssm_shell_run(
             [
                 (
-                    f"sudo python3.14 {HOST_CONTROL_CURRENT_SOURCE_PATH}/sources/workflow-infrastructure/"
-                    "tool/development_environment_manage.py host-product-release-restore"
+                    f"sudo python3.14 {self._identity.host_control_current_source_path}/sources/workflow-infrastructure/"
+                    "tool/development_environment_manage.py host-product-release-restore "
+                    f"--environment-name {self._identity.environment_name}"
                 )
             ]
         )
@@ -2791,17 +3710,15 @@ WantedBy=multi-user.target
 
         self._ssm_shell_run(
             [
-                (
-                    f"sudo python3.14 {HOST_CURRENT_SOURCE_PATH}/sources/workflow-control-center/"
-                    "tool/development_kubernetes_manage.py recover"
-                )
+                "sudo "
+                + shlex.join(self._current_product_tool_command_list_get("recover"))
             ]
         )
         self._ssm_shell_run(
             [
-                (
-                    f"sudo python3.14 {HOST_CURRENT_SOURCE_PATH}/sources/workflow-control-center/"
-                    "tool/development_kubernetes_manage.py host-install"
+                "sudo "
+                + shlex.join(
+                    self._current_product_tool_command_list_get("host-install")
                 )
             ]
         )
@@ -2951,7 +3868,7 @@ WantedBy=multi-user.target
                     "-o",
                     f"ControlPath={ssh_control_path}",
                     str(local_path),
-                    f"{INSTANCE_NAME}:/tmp/{remote_path.name}",
+                    f"{self._identity.instance_name}:/tmp/{remote_path.name}",
                 ]
             )
             self._ssh_run(
@@ -3019,6 +3936,249 @@ WantedBy=multi-user.target
             )
         return next(iter(platform_set))
 
+    def _moving_source_archive_create(
+        self,
+        *,
+        archive_path: Path,
+        exact_override_commit: str,
+        manifest_path: Path,
+        repository_name: str,
+    ) -> dict[str, object]:
+        """Resolve and export one remote moving source into an immutable archive.
+
+        Args:
+            archive_path: Destination deterministic source archive.
+            exact_override_commit: Optional exact one-deploy commit override.
+            manifest_path: Destination immutable source manifest.
+            repository_name: Configured moving-source repository name.
+
+        Returns:
+            Immutable resolved source manifest.
+        """
+
+        repository_url = REPOSITORY_URL_BY_NAME_MAP[repository_name]
+        if (
+            exact_override_commit
+            and re.fullmatch(r"[0-9a-f]{40}", exact_override_commit) is None
+        ):
+            raise DevelopmentEnvironmentError(
+                "workflow-container-contract override must be one lowercase 40-character commit SHA"
+            )
+        for _attempt_index in range(MOVING_SOURCE_RESOLUTION_ATTEMPT_COUNT):
+            remote_head_by_field_map = self._moving_source_head_by_field_map_get(
+                repository_url=repository_url
+            )
+            resolved_ref = remote_head_by_field_map["resolved_ref"]
+            commit_sha = exact_override_commit or remote_head_by_field_map["commit_sha"]
+            with tempfile.TemporaryDirectory() as temporary_directory:
+                repository_path = Path(temporary_directory) / repository_name
+                self._runner.run(["git", "init", "--quiet", str(repository_path)])
+                self._runner.run(
+                    [
+                        "git",
+                        "-C",
+                        str(repository_path),
+                        "fetch",
+                        "--depth=1",
+                        "--no-tags",
+                        repository_url,
+                        commit_sha if exact_override_commit else resolved_ref,
+                    ]
+                )
+                fetched_commit_sha = self._git_stdout_get(
+                    repository_path, ["rev-parse", "FETCH_HEAD"]
+                )
+                if fetched_commit_sha != commit_sha:
+                    if exact_override_commit:
+                        raise DevelopmentEnvironmentError(
+                            "workflow-container-contract override resolved to another commit"
+                        )
+                    continue
+                if (
+                    self._git_stdout_get(
+                        repository_path,
+                        ["cat-file", "-t", commit_sha],
+                    )
+                    != "commit"
+                ):
+                    raise DevelopmentEnvironmentError(
+                        "workflow-container-contract source identity is not a commit"
+                    )
+                remote_head_after_by_field_map = (
+                    self._moving_source_head_by_field_map_get(
+                        repository_url=repository_url
+                    )
+                )
+                if remote_head_after_by_field_map["resolved_ref"] != resolved_ref or (
+                    not exact_override_commit
+                    and remote_head_after_by_field_map["commit_sha"] != commit_sha
+                ):
+                    continue
+                tree_result = self._runner.run(
+                    [
+                        "git",
+                        "-C",
+                        str(repository_path),
+                        "ls-tree",
+                        "-r",
+                        "--full-tree",
+                        commit_sha,
+                    ]
+                )
+                if any(
+                    line.startswith("160000 ")
+                    for line in tree_result.stdout.splitlines()
+                ):
+                    raise DevelopmentEnvironmentError(
+                        "workflow-container-contract moving source must not contain submodules"
+                    )
+                pyproject_result = self._runner.run(
+                    [
+                        "git",
+                        "-C",
+                        str(repository_path),
+                        "show",
+                        f"{commit_sha}:pyproject.toml",
+                    ]
+                )
+                try:
+                    pyproject = tomllib.loads(pyproject_result.stdout)
+                except tomllib.TOMLDecodeError as error:
+                    raise DevelopmentEnvironmentError(
+                        "workflow-container-contract pyproject.toml is malformed"
+                    ) from error
+                project = pyproject.get("project")
+                package_version = (
+                    project.get("version") if isinstance(project, dict) else None
+                )
+                if (
+                    not isinstance(project, dict)
+                    or project.get("name") != "workflow-container-contract"
+                    or not isinstance(package_version, str)
+                    or not package_version
+                ):
+                    raise DevelopmentEnvironmentError(
+                        "workflow-container-contract package identity is malformed"
+                    )
+                self._runner.run(
+                    [
+                        "git",
+                        "-C",
+                        str(repository_path),
+                        "archive",
+                        "--format=tar",
+                        f"--output={archive_path}",
+                        commit_sha,
+                    ]
+                )
+            manifest: dict[str, object] = {
+                "archive_sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+                "commit_sha": commit_sha,
+                "file_sha256_by_path_map": self._source_file_sha256_by_path_map_get(
+                    archive_path=archive_path
+                ),
+                "package_version": package_version,
+                "repository_url": repository_url,
+                "requested_selector": MOVING_SOURCE_SELECTOR,
+                "resolved_ref": resolved_ref,
+                "source_kind": "resolved_moving_source",
+                "submodule_by_path_map": {},
+            }
+            if exact_override_commit:
+                manifest.update(
+                    {
+                        "override_identity": exact_override_commit,
+                        "override_reason": "explicit operator deploy argument",
+                    }
+                )
+            manifest_path.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
+            )
+            return manifest
+        raise DevelopmentEnvironmentError(
+            "workflow-container-contract default branch changed during every bounded resolution attempt"
+        )
+
+    def _moving_source_archive_publish(
+        self,
+        *,
+        exact_override_commit: str,
+        release_name: str,
+        remote_release_root_path: Path,
+        repository_name: str,
+        ssh_control_path: Path,
+    ) -> dict[str, object]:
+        """Resolve, transfer, and verify one moving source exactly once.
+
+        Args:
+            exact_override_commit: Optional exact one-deploy commit override.
+            release_name: Exact Product release identity.
+            remote_release_root_path: Remote root that owns immutable releases.
+            repository_name: Configured moving-source repository name.
+            ssh_control_path: Active SSH control socket path.
+
+        Returns:
+            Immutable resolved source manifest.
+        """
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            temporary_root_path = Path(temporary_directory)
+            archive_path = temporary_root_path / f"{repository_name}.tar"
+            manifest_path = temporary_root_path / f"{repository_name}.json"
+            manifest = self._moving_source_archive_create(
+                archive_path=archive_path,
+                exact_override_commit=exact_override_commit,
+                manifest_path=manifest_path,
+                repository_name=repository_name,
+            )
+            return self._source_archive_transfer(
+                archive_path=archive_path,
+                manifest=manifest,
+                manifest_path=manifest_path,
+                release_name=release_name,
+                remote_release_root_path=remote_release_root_path,
+                repository_name=repository_name,
+                ssh_control_path=ssh_control_path,
+            )
+
+    def _moving_source_head_by_field_map_get(
+        self, *, repository_url: str
+    ) -> dict[str, str]:
+        """Return the advertised symbolic remote HEAD and exact commit.
+
+        Args:
+            repository_url: Configured moving-source repository URL.
+
+        Returns:
+            Remote head fields keyed by `resolved_ref` and `commit_sha`.
+        """
+
+        result = self._runner.run(
+            ["git", "ls-remote", "--symref", repository_url, MOVING_SOURCE_SELECTOR]
+        )
+        resolved_ref = ""
+        commit_sha = ""
+        for line in result.stdout.splitlines():
+            field_list = line.split()
+            if (
+                len(field_list) == 3
+                and field_list[0] == "ref:"
+                and field_list[1].startswith("refs/heads/")
+                and field_list[2] == MOVING_SOURCE_SELECTOR
+            ):
+                resolved_ref = field_list[1]
+            elif (
+                len(field_list) == 2
+                and field_list[1] == MOVING_SOURCE_SELECTOR
+                and re.fullmatch(r"[0-9a-f]{40}", field_list[0])
+            ):
+                commit_sha = field_list[0]
+        if not resolved_ref or not commit_sha:
+            raise DevelopmentEnvironmentError(
+                "workflow-container-contract remote HEAD has no advertised symbolic branch and exact commit"
+            )
+        return {"commit_sha": commit_sha, "resolved_ref": resolved_ref}
+
     def _source_archive_publish(
         self,
         *,
@@ -3038,25 +4198,59 @@ WantedBy=multi-user.target
                 repository_name=repository_name,
                 repository_path=repository_path,
             )
-            remote_staging_path = (
-                f"/tmp/workflow-source-{release_name}-{repository_name}"
+            return self._source_archive_transfer(
+                archive_path=archive_path,
+                manifest=manifest,
+                manifest_path=manifest_path,
+                release_name=release_name,
+                remote_release_root_path=remote_release_root_path,
+                repository_name=repository_name,
+                ssh_control_path=ssh_control_path,
             )
-            self._runner.run(
-                [
-                    "rsync",
-                    "--archive",
-                    "--checksum",
-                    "--rsh",
-                    f"ssh -o ControlPath={ssh_control_path}",
-                    f"{archive_path}",
-                    f"{manifest_path}",
-                    f"{INSTANCE_NAME}:{remote_staging_path}/",
-                ]
-            )
-            remote_release_path = (
-                remote_release_root_path / release_name / "sources" / repository_name
-            )
-            verification_code = f"""\
+
+    def _source_archive_transfer(
+        self,
+        *,
+        archive_path: Path,
+        manifest: dict[str, object],
+        manifest_path: Path,
+        release_name: str,
+        remote_release_root_path: Path,
+        repository_name: str,
+        ssh_control_path: Path,
+    ) -> dict[str, object]:
+        """Transfer and verify one already prepared immutable source archive.
+
+        Args:
+            archive_path: Prepared deterministic source archive.
+            manifest: Prepared immutable source manifest.
+            manifest_path: Serialized source manifest path.
+            release_name: Exact Product release identity.
+            remote_release_root_path: Remote root that owns immutable releases.
+            repository_name: Source repository name.
+            ssh_control_path: Active SSH control socket path.
+
+        Returns:
+            Transferred source manifest.
+        """
+
+        remote_staging_path = f"/tmp/workflow-source-{release_name}-{repository_name}"
+        self._runner.run(
+            [
+                "rsync",
+                "--archive",
+                "--checksum",
+                "--rsh",
+                f"ssh -o ControlPath={ssh_control_path}",
+                f"{archive_path}",
+                f"{manifest_path}",
+                f"{self._identity.instance_name}:{remote_staging_path}/",
+            ]
+        )
+        remote_release_path = (
+            remote_release_root_path / release_name / "sources" / repository_name
+        )
+        verification_code = f"""\
 import hashlib
 import json
 import os
@@ -3071,8 +4265,8 @@ archive_sha256 = hashlib.sha256(archive_path.read_bytes()).hexdigest()
 if archive_sha256 != manifest["archive_sha256"]:
     raise RuntimeError("source archive digest mismatch")
 target_path = Path({str(remote_release_path)!r})
-shutil.rmtree(target_path, ignore_errors=True)
-target_path.mkdir(parents=True)
+target_path.parent.mkdir(parents=True, exist_ok=True)
+target_path.mkdir()
 with tarfile.open(archive_path) as source_archive:
     source_archive.extractall(target_path, filter="data")
 actual_file_sha256_by_path_map = {{}}
@@ -3089,16 +4283,16 @@ if actual_file_sha256_by_path_map != manifest["file_sha256_by_path_map"]:
     raise RuntimeError("extracted source manifest mismatch")
 shutil.rmtree(root_path)
 """
-            self._ssh_run(
-                [
-                    "sudo",
-                    "python3",
-                    "-c",
-                    verification_code,
-                ],
-                ssh_control_path=ssh_control_path,
-            )
-            return manifest
+        self._ssh_run(
+            [
+                "sudo",
+                "python3",
+                "-c",
+                verification_code,
+            ],
+            ssh_control_path=ssh_control_path,
+        )
+        return manifest
 
     def _source_archive_create(
         self,
@@ -3140,12 +4334,70 @@ shutil.rmtree(root_path)
             "commit_sha": self._git_stdout_get(repository_path, ["rev-parse", "HEAD"]),
             "file_sha256_by_path_map": file_sha256_by_path_map,
             "repository_url": REPOSITORY_URL_BY_NAME_MAP[repository_name],
+            "source_kind": "exact_checkout",
             "submodule_by_path_map": self._submodule_by_path_map_get(repository_path),
         }
         manifest_path.write_text(
             json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8"
         )
         return manifest
+
+    def _source_file_sha256_by_path_map_get(
+        self, *, archive_path: Path
+    ) -> dict[str, str]:
+        """Return every file and symlink digest from one deterministic source archive.
+
+        Args:
+            archive_path: Candidate source tar archive.
+
+        Returns:
+            File SHA-256 values keyed by safe relative path.
+        """
+
+        file_sha256_by_path_map: dict[str, str] = {}
+        member_name_set: set[str] = set()
+        try:
+            with tarfile.open(archive_path, "r") as archive:
+                for member in archive.getmembers():
+                    normalized_member_name = member.name.removesuffix("/")
+                    relative_path = PurePosixPath(normalized_member_name)
+                    if (
+                        not normalized_member_name
+                        or relative_path.is_absolute()
+                        or relative_path.as_posix() != normalized_member_name
+                        or any(
+                            path_part in {"", ".", ".."}
+                            for path_part in relative_path.parts
+                        )
+                        or normalized_member_name in member_name_set
+                    ):
+                        raise DevelopmentEnvironmentError(
+                            "workflow-container-contract archive contains an unsafe or duplicate path"
+                        )
+                    member_name_set.add(normalized_member_name)
+                    if member.isdir():
+                        continue
+                    if member.issym():
+                        payload = member.linkname.encode()
+                    elif member.isfile():
+                        source_file = archive.extractfile(member)
+                        if source_file is None:
+                            raise DevelopmentEnvironmentError(
+                                "workflow-container-contract archive file cannot be read"
+                            )
+                        payload = source_file.read()
+                    else:
+                        raise DevelopmentEnvironmentError(
+                            "workflow-container-contract archive contains an unsupported entry"
+                        )
+                    file_sha256_by_path_map[normalized_member_name] = hashlib.sha256(
+                        payload
+                    ).hexdigest()
+        except (OSError, tarfile.TarError) as error:
+            raise DevelopmentEnvironmentError(
+                "workflow-container-contract archive is malformed"
+            ) from error
+        return file_sha256_by_path_map
 
     def _source_repository_validate(
         self, repository_path: Path, repository_name: str
@@ -3268,7 +4520,7 @@ shutil.rmtree(root_path)
                 "ssh",
                 "-o",
                 f"ControlPath={ssh_control_path}",
-                INSTANCE_NAME,
+                self._identity.instance_name,
                 remote_command_text,
             ],
             should_capture=should_capture,
@@ -3426,6 +4678,11 @@ shutil.rmtree(root_path)
             f"file://{template_path}",
             "--capabilities",
             "CAPABILITY_NAMED_IAM",
+            "--tags",
+            "Key=Project,Value=workflow-control-center",
+            "Key=Environment,Value=development",
+            f"Key=EnvironmentName,Value={self._identity.environment_name}",
+            "Key=ManagedBy,Value=CloudFormation",
         ]
         if stack_payload:
             current_parameter_by_name_map = self._stack_parameter_by_name_map_get(
@@ -3878,15 +5135,48 @@ shutil.rmtree(root_path)
             resource_id_by_logical_name_map[logical_name] = resource_id
         return resource_id_by_logical_name_map
 
+    @staticmethod
+    def _existing_stack_resource_identity_validate(
+        *,
+        current_resource_id_by_logical_name_map: Mapping[str, str],
+        previous_resource_id_by_logical_name_map: Mapping[str, str],
+    ) -> None:
+        """Prove that an update preserved every pre-existing physical identity.
+
+        A stack update may add new owned resources. It must not remove or replace
+        any resource that existed when the guarded operation began.
+
+        Args:
+            current_resource_id_by_logical_name_map: Physical identities after the update.
+            previous_resource_id_by_logical_name_map: Physical identities before the update.
+
+        Raises:
+            DevelopmentEnvironmentError: If a pre-existing physical identity is absent or changed.
+        """
+
+        changed_logical_id_list = sorted(
+            logical_id
+            for logical_id, previous_physical_id in (
+                previous_resource_id_by_logical_name_map.items()
+            )
+            if current_resource_id_by_logical_name_map.get(logical_id)
+            != previous_physical_id
+        )
+        if changed_logical_id_list:
+            raise DevelopmentEnvironmentError(
+                "Stable data-plane physical resource identity changed: "
+                + ", ".join(changed_logical_id_list)
+            )
+
     def _stop_lease_delete(self) -> None:
         result = self._aws_run(
             [
                 "scheduler",
                 "delete-schedule",
                 "--group-name",
-                LEASE_GROUP_NAME,
+                self._identity.lease_group_name,
                 "--name",
-                LEASE_NAME,
+                self._identity.lease_name,
             ],
             check=False,
         )
@@ -3901,9 +5191,9 @@ shutil.rmtree(root_path)
                 "scheduler",
                 "get-schedule",
                 "--group-name",
-                LEASE_GROUP_NAME,
+                self._identity.lease_group_name,
                 "--name",
-                LEASE_NAME,
+                self._identity.lease_name,
                 "--output",
                 "json",
             ],
@@ -3933,16 +5223,14 @@ shutil.rmtree(root_path)
             "target_arn": target_payload.get("Arn"),
         }
 
-    def _stop_lease_upsert(
-        self, *, lease_duration: timedelta = LEASE_DURATION
-    ) -> None:
+    def _stop_lease_upsert(self, *, lease_duration: timedelta = LEASE_DURATION) -> None:
         """Create or renew a lease that resolves the current instance at expiry."""
 
-        output_by_name_map = self._stack_output_by_name_map_get(COMPUTE_STACK_NAME)
+        output_by_name_map = self._stack_output_by_name_map_get(
+            self._identity.compute_stack_name
+        )
         if lease_duration <= timedelta():
-            raise DevelopmentEnvironmentError(
-                "Stop lease duration must be positive"
-            )
+            raise DevelopmentEnvironmentError("Stop lease duration must be positive")
         t_stop = self._clock.now() + lease_duration
         schedule_expression = f"at({t_stop.strftime('%Y-%m-%dT%H:%M:%S')})"
         target_arn = output_by_name_map["StopLeaseTargetArn"]
@@ -3961,9 +5249,9 @@ shutil.rmtree(root_path)
             "--flexible-time-window",
             json.dumps({"Mode": "OFF"}, separators=(",", ":")),
             "--group-name",
-            LEASE_GROUP_NAME,
+            self._identity.lease_group_name,
             "--name",
-            LEASE_NAME,
+            self._identity.lease_name,
             "--schedule-expression",
             schedule_expression,
             "--schedule-expression-timezone",
@@ -3978,9 +5266,9 @@ shutil.rmtree(root_path)
                 "scheduler",
                 "get-schedule",
                 "--group-name",
-                LEASE_GROUP_NAME,
+                self._identity.lease_group_name,
                 "--name",
-                LEASE_NAME,
+                self._identity.lease_name,
             ],
             check=False,
         )
@@ -4003,9 +5291,7 @@ shutil.rmtree(root_path)
             remaining_seconds = (t_deadline - self._clock.now()).total_seconds()
             self._clock.sleep(min(STACK_POLL_INTERVAL_SECONDS, remaining_seconds))
 
-    def _instance_stopped_wait(
-        self, *, instance_id: str, t_deadline: datetime
-    ) -> None:
+    def _instance_stopped_wait(self, *, instance_id: str, t_deadline: datetime) -> None:
         """Wait for the acceptance lease target to stop the exact instance."""
 
         while self._clock.now() < t_deadline:
@@ -4042,9 +5328,7 @@ shutil.rmtree(root_path)
         if state == "running":
             self._stop_lease_upsert()
             self._ssm_shell_run(
-                [
-                    "sudo systemctl start workflow-control-center-host-controller"
-                ]
+                ["sudo systemctl start workflow-control-center-host-controller"]
             )
             self._host_readiness_wait()
             return
@@ -4178,7 +5462,7 @@ class SshControlSession:
         config_path.write_text(
             "\n".join(
                 [
-                    f"Host {INSTANCE_NAME}",
+                    f"Host {self._environment._identity.instance_name}",
                     f"  HostName {instance_id}",
                     "  User ubuntu",
                     f"  IdentityFile {private_key_path}",
@@ -4203,7 +5487,7 @@ class SshControlSession:
                 f"ControlPath={control_path}",
                 "-o",
                 "ControlPersist=600",
-                INSTANCE_NAME,
+                self._environment._identity.instance_name,
             ]
         )
         return control_path
@@ -4221,7 +5505,14 @@ class SshControlSession:
             return
         control_path = Path(self._temporary_directory.name) / "control"
         self._environment._runner.run(
-            ["ssh", "-S", str(control_path), "-O", "exit", INSTANCE_NAME],
+            [
+                "ssh",
+                "-S",
+                str(control_path),
+                "-O",
+                "exit",
+                self._environment._identity.instance_name,
+            ],
             check=False,
         )
         self._temporary_directory.cleanup()

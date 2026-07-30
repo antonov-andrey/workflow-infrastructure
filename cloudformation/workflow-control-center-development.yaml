@@ -2,6 +2,12 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: Workflow Control Center development data plane in us-east-1.
 
 Parameters:
+  EnvironmentName:
+    Type: String
+    Default: primary
+    AllowedPattern: '[a-z][a-z0-9]{0,15}'
+    Description: Stable development environment identity.
+
   DeploymentPrincipalArn:
     Type: String
     Default: arn:aws:iam::463564115167:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_AdministratorAccess_96adc54d23890b23
@@ -18,7 +24,142 @@ Parameters:
     Default: http://localhost:8080
     Description: Browser origin allowed to use direct S3 credentials.
 
+Conditions:
+  IsPrimaryEnvironment: !Equals [!Ref EnvironmentName, primary]
+
 Resources:
+  AccountPublicAccessBlock:
+    Type: Custom::S3AccountPublicAccessBlock
+    DependsOn: AccountPublicAccessBlockFunctionLogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AccountId: !Ref AWS::AccountId
+      ServiceToken: !GetAtt AccountPublicAccessBlockFunction.Arn
+
+  AccountPublicAccessBlockFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Architectures:
+        - arm64
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+
+          _CONFIGURATION = {
+              "BlockPublicAcls": True,
+              "BlockPublicPolicy": True,
+              "IgnorePublicAcls": True,
+              "RestrictPublicBuckets": True,
+          }
+
+
+          def handler(event, context):
+              account_id = event["ResourceProperties"]["AccountId"]
+              physical_id = f"s3-account-public-access-block-{account_id}"
+              try:
+                  if event["RequestType"] != "Delete":
+                      client = boto3.client("s3control")
+                      client.put_public_access_block(
+                          AccountId=account_id,
+                          PublicAccessBlockConfiguration=_CONFIGURATION,
+                      )
+                      actual = client.get_public_access_block(AccountId=account_id)[
+                          "PublicAccessBlockConfiguration"
+                      ]
+                      if actual != _CONFIGURATION:
+                          raise RuntimeError("S3 account public-access block verification failed")
+                  cfnresponse.send(
+                      event,
+                      context,
+                      cfnresponse.SUCCESS,
+                      {},
+                      physicalResourceId=physical_id,
+                  )
+              except Exception as error:
+                  cfnresponse.send(
+                      event,
+                      context,
+                      cfnresponse.FAILED,
+                      {},
+                      physicalResourceId=physical_id,
+                      reason=type(error).__name__,
+                  )
+      Description: Enforce account-level S3 Block Public Access without removing it on stack deletion.
+      Handler: index.handler
+      MemorySize: 128
+      Role: !GetAtt AccountPublicAccessBlockFunctionRole.Arn
+      Runtime: python3.14
+      Timeout: 30
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-account-public-access-block
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  AccountPublicAccessBlockFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${AccountPublicAccessBlockFunction}
+      RetentionInDays: 30
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-account-public-access-block
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  AccountPublicAccessBlockFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: enforce-account-public-access-block
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetAccountPublicAccessBlock
+                  - s3:PutAccountPublicAccessBlock
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*:*
+      Tags:
+        - Key: Name
+          Value: workflow-control-center-account-public-access-block
+        - Key: Project
+          Value: !Ref NotificationTagValue
+        - Key: Environment
+          Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
+        - Key: ManagedBy
+          Value: CloudFormation
+
   VpnValidationRestApi:
     Type: AWS::ApiGateway::RestApi
     Properties:
@@ -27,7 +168,10 @@ Resources:
       EndpointConfiguration:
         Types:
           - REGIONAL
-      Name: workflow-control-center-vpn-validation
+      Name: !If
+        - IsPrimaryEnvironment
+        - workflow-control-center-vpn-validation
+        - !Sub workflow-control-center-vpn-validation-${EnvironmentName}
       Tags:
         - Key: Name
           Value: workflow-control-center-vpn-validation
@@ -35,6 +179,8 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
 
@@ -98,13 +244,18 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
 
   LakeFormationDataAccessRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: workflow-control-center-lake-formation-data-access
+      RoleName: !If
+        - IsPrimaryEnvironment
+        - workflow-control-center-lake-formation-data-access
+        - !Sub workflow-control-center-${EnvironmentName}-lf-data-access
       Description: Lake Formation access to encrypted Workflow Control Center development Data.
       MaxSessionDuration: 3600
       AssumeRolePolicyDocument:
@@ -122,13 +273,15 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
 
   StorageKmsKey:
     Type: AWS::KMS::Key
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       Description: Workflow Control Center development Data, Secret, and Result encryption.
       EnableKeyRotation: true
@@ -152,6 +305,13 @@ Resources:
               - kms:GenerateDataKey*
               - kms:ReEncrypt*
             Resource: '*'
+            Condition:
+              StringEquals:
+                kms:EncryptionContext:aws:s3:arn: !If
+                  - IsPrimaryEnvironment
+                  - !Sub arn:${AWS::Partition}:s3:::workflow-control-center-devel-${AWS::AccountId}-data
+                  - !Sub arn:${AWS::Partition}:s3:::workflow-control-center-${EnvironmentName}-${AWS::AccountId}-data
+                kms:ViaService: !Sub s3.${AWS::Region}.${AWS::URLSuffix}
       PendingWindowInDays: 7
       Tags:
         - Key: Name
@@ -160,21 +320,29 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
 
   StorageKmsAlias:
     Type: AWS::KMS::Alias
     Properties:
-      AliasName: alias/workflow-control-center-development
+      AliasName: !If
+        - IsPrimaryEnvironment
+        - alias/workflow-control-center-development
+        - !Sub alias/workflow-control-center-development-${EnvironmentName}
       TargetKeyId: !Ref StorageKmsKey
 
   DataBucket:
     Type: AWS::S3::Bucket
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub workflow-control-center-devel-${AWS::AccountId}-data
+      BucketName: !If
+        - IsPrimaryEnvironment
+        - !Sub workflow-control-center-devel-${AWS::AccountId}-data
+        - !Sub workflow-control-center-${EnvironmentName}-${AWS::AccountId}-data
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - BucketKeyEnabled: true
@@ -207,9 +375,6 @@ Resources:
             AbortIncompleteMultipartUpload:
               DaysAfterInitiation: 1
             Prefix: .platform/staging/
-            Status: Enabled
-          - Id: RetainNoncurrentVersionsForThirtyDays
-            NoncurrentVersionExpirationInDays: 30
             Status: Enabled
       OwnershipControls:
         Rules:
@@ -226,6 +391,8 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
       VersioningConfiguration:
@@ -233,10 +400,13 @@ Resources:
 
   SecretBucket:
     Type: AWS::S3::Bucket
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub workflow-control-center-devel-${AWS::AccountId}-secret
+      BucketName: !If
+        - IsPrimaryEnvironment
+        - !Sub workflow-control-center-devel-${AWS::AccountId}-secret
+        - !Sub workflow-control-center-${EnvironmentName}-${AWS::AccountId}-secret
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - BucketKeyEnabled: true
@@ -270,9 +440,6 @@ Resources:
               DaysAfterInitiation: 1
             Prefix: .platform/staging/
             Status: Enabled
-          - Id: RetainNoncurrentVersionsForThirtyDays
-            NoncurrentVersionExpirationInDays: 30
-            Status: Enabled
       OwnershipControls:
         Rules:
           - ObjectOwnership: BucketOwnerEnforced
@@ -288,6 +455,8 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
       VersioningConfiguration:
@@ -295,10 +464,13 @@ Resources:
 
   ResultBucket:
     Type: AWS::S3::Bucket
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub workflow-control-center-devel-${AWS::AccountId}-result
+      BucketName: !If
+        - IsPrimaryEnvironment
+        - !Sub workflow-control-center-devel-${AWS::AccountId}-result
+        - !Sub workflow-control-center-${EnvironmentName}-${AWS::AccountId}-result
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - BucketKeyEnabled: true
@@ -354,6 +526,8 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
       VersioningConfiguration:
@@ -361,10 +535,13 @@ Resources:
 
   ObservabilityBucket:
     Type: AWS::S3::Bucket
-    DeletionPolicy: Delete
-    UpdateReplacePolicy: Delete
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub workflow-control-center-devel-${AWS::AccountId}-observability
+      BucketName: !If
+        - IsPrimaryEnvironment
+        - !Sub workflow-control-center-devel-${AWS::AccountId}-observability
+        - !Sub workflow-control-center-${EnvironmentName}-${AWS::AccountId}-obs
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - BucketKeyEnabled: true
@@ -402,6 +579,8 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
       VersioningConfiguration:
@@ -410,7 +589,10 @@ Resources:
   PlatformRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: workflow-control-center-platform
+      RoleName: !If
+        - IsPrimaryEnvironment
+        - workflow-control-center-platform
+        - !Sub workflow-control-center-platform-${EnvironmentName}
       Description: Full Workflow Control Center control-plane access to its dedicated account.
       MaxSessionDuration: 3600
       ManagedPolicyArns:
@@ -438,13 +620,18 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
 
   DataCredentialRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: apwid-data-access
+      RoleName: !If
+        - IsPrimaryEnvironment
+        - apwid-data-access
+        - !Sub apwid-data-access-${EnvironmentName}
       Description: Tenant-tagged direct access to Workflow Control Center Data and Secret.
       MaxSessionDuration: 3600
       AssumeRolePolicyDocument:
@@ -470,16 +657,69 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Sid: DataAndSecretBucketRead
+              - Sid: StorageBucketLocations
                 Effect: Allow
-                Action:
-                  - s3:GetBucketLocation
-                  - s3:ListBucket
-                  - s3:ListBucketVersions
+                Action: s3:GetBucketLocation
                 Resource:
                   - !GetAtt DataBucket.Arn
                   - !GetAtt SecretBucket.Arn
-              - Sid: DataAndSecretObjects
+                  - !GetAtt ResultBucket.Arn
+              - Sid: DataBucketOwnerList
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:ListBucketVersions
+                Resource: !GetAtt DataBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - 'user_${aws:PrincipalTag/UserDataRootId}'
+                      - 'user_${aws:PrincipalTag/UserDataRootId}/*'
+                      - '.platform/staging/user_${aws:PrincipalTag/UserDataRootId}'
+                      - '.platform/staging/user_${aws:PrincipalTag/UserDataRootId}/*'
+              - Sid: SecretBucketOwnerList
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:ListBucketVersions
+                Resource: !GetAtt SecretBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - 'user_${aws:PrincipalTag/UserDataRootId}/.secret'
+                      - 'user_${aws:PrincipalTag/UserDataRootId}/.secret/*'
+                      - '.platform/staging/user_${aws:PrincipalTag/UserDataRootId}'
+                      - '.platform/staging/user_${aws:PrincipalTag/UserDataRootId}/*'
+              - Sid: ResultBucketOwnerList
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:ListBucketVersions
+                Resource: !GetAtt ResultBucket.Arn
+                Condition:
+                  StringLike:
+                    s3:prefix:
+                      - 'athena-result/user_${aws:PrincipalTag/UserDataRootId}'
+                      - 'athena-result/user_${aws:PrincipalTag/UserDataRootId}/*'
+                      - 'data-download/user_${aws:PrincipalTag/UserDataRootId}'
+                      - 'data-download/user_${aws:PrincipalTag/UserDataRootId}/*'
+              - Sid: CanonicalDataObjectsRead
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectAttributes
+                  - s3:GetObjectVersion
+                  - s3:GetObjectVersionAttributes
+                Resource: !Sub '${DataBucket.Arn}/user_${!aws:PrincipalTag/UserDataRootId}/*'
+              - Sid: CanonicalSecretObjectsRead
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectAttributes
+                  - s3:GetObjectVersion
+                  - s3:GetObjectVersionAttributes
+                Resource: !Sub '${SecretBucket.Arn}/user_${!aws:PrincipalTag/UserDataRootId}/.secret/*'
+              - Sid: OwnerStagingObjects
                 Effect: Allow
                 Action:
                   - s3:AbortMultipartUpload
@@ -487,23 +727,22 @@ Resources:
                   - s3:GetObject
                   - s3:GetObjectAttributes
                   - s3:GetObjectVersion
+                  - s3:GetObjectVersionAttributes
                   - s3:ListMultipartUploadParts
                   - s3:PutObject
                 Resource:
-                  - !Sub ${DataBucket.Arn}/*
-                  - !Sub ${SecretBucket.Arn}/*
-              - Sid: ResultBucketRead
-                Effect: Allow
-                Action:
-                  - s3:GetBucketLocation
-                  - s3:ListBucket
-                Resource: !GetAtt ResultBucket.Arn
-              - Sid: ResultObjectsRead
+                  - !Sub '${DataBucket.Arn}/.platform/staging/user_${!aws:PrincipalTag/UserDataRootId}/*'
+                  - !Sub '${SecretBucket.Arn}/.platform/staging/user_${!aws:PrincipalTag/UserDataRootId}/*'
+              - Sid: OwnerResultObjectsRead
                 Effect: Allow
                 Action:
                   - s3:GetObject
                   - s3:GetObjectAttributes
-                Resource: !Sub ${ResultBucket.Arn}/*
+                  - s3:GetObjectVersion
+                  - s3:GetObjectVersionAttributes
+                Resource:
+                  - !Sub '${ResultBucket.Arn}/athena-result/user_${!aws:PrincipalTag/UserDataRootId}/*'
+                  - !Sub '${ResultBucket.Arn}/data-download/user_${!aws:PrincipalTag/UserDataRootId}/*'
               - Sid: StorageKms
                 Effect: Allow
                 Action:
@@ -512,6 +751,13 @@ Resources:
                   - kms:Encrypt
                   - kms:GenerateDataKey
                 Resource: !GetAtt StorageKmsKey.Arn
+                Condition:
+                  StringEquals:
+                    kms:EncryptionContext:aws:s3:arn:
+                      - !GetAtt DataBucket.Arn
+                      - !GetAtt SecretBucket.Arn
+                      - !GetAtt ResultBucket.Arn
+                    kms:ViaService: !Sub s3.${AWS::Region}.${AWS::URLSuffix}
       Tags:
         - Key: Name
           Value: workflow-control-center-data-access
@@ -519,13 +765,18 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
 
   QueryRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: workflow-data-workflow_data_000
+      RoleName: !If
+        - IsPrimaryEnvironment
+        - workflow-data-workflow_data_000
+        - !Sub workflow-data-workflow_data_000_${EnvironmentName}
       Description: Tenant-tagged Athena access for workflow_data_000.
       MaxSessionDuration: 3600
       AssumeRolePolicyDocument:
@@ -560,7 +811,7 @@ Resources:
                   - athena:ListQueryExecutions
                   - athena:StartQueryExecution
                   - athena:StopQueryExecution
-                Resource: !Sub arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/workflow-data
+                Resource: !Sub arn:${AWS::Partition}:athena:${AWS::Region}:${AWS::AccountId}:workgroup/${AthenaWorkGroup}
               - Sid: GlueTenantMetadata
                 Effect: Allow
                 Action:
@@ -576,8 +827,8 @@ Resources:
                   - glue:SearchTables
                 Resource:
                   - !Sub arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:catalog
-                  - !Sub arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/workflow_data_000
-                  - !Sub arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/workflow_data_000/user_${!aws:PrincipalTag/UserDataRootId}__*
+                  - !Sub arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:database/${GlueDatabase}
+                  - !Sub arn:${AWS::Partition}:glue:${AWS::Region}:${AWS::AccountId}:table/${GlueDatabase}/user_${!aws:PrincipalTag/UserDataRootId}__*
               - Sid: LakeFormationDataAccess
                 Effect: Allow
                 Action: lakeformation:GetDataAccess
@@ -614,6 +865,7 @@ Resources:
                 Condition:
                   StringEquals:
                     kms:EncryptionContext:aws:s3:arn: !GetAtt ResultBucket.Arn
+                    kms:ViaService: !Sub s3.${AWS::Region}.${AWS::URLSuffix}
       Tags:
         - Key: Name
           Value: workflow-data-workflow_data_000
@@ -621,6 +873,8 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
         - Key: workflow-control-center
@@ -714,6 +968,10 @@ Resources:
               - kms:GenerateDataKey*
               - kms:ReEncrypt*
             Resource: !GetAtt StorageKmsKey.Arn
+            Condition:
+              StringEquals:
+                kms:EncryptionContext:aws:s3:arn: !GetAtt DataBucket.Arn
+                kms:ViaService: !Sub s3.${AWS::Region}.${AWS::URLSuffix}
 
   SecretBucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -885,10 +1143,11 @@ Resources:
 
   DataLakeSettings:
     Type: AWS::LakeFormation::DataLakeSettings
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       Admins:
         - DataLakePrincipalIdentifier: !Ref DeploymentPrincipalArn
-        - DataLakePrincipalIdentifier: !GetAtt PlatformRole.Arn
       AllowExternalDataFiltering: false
       AllowFullTableExternalDataAccess: false
       CreateDatabaseDefaultPermissions: []
@@ -912,6 +1171,32 @@ Resources:
       UseServiceLinkedRole: false
       WithFederation: false
 
+  PlatformRoleCatalogPermission:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    DependsOn: DataLakeSettings
+    Properties:
+      Permissions:
+        - CREATE_DATABASE
+      PermissionsWithGrantOption: []
+      Principal:
+        DataLakePrincipalIdentifier: !GetAtt PlatformRole.Arn
+      Resource:
+        Catalog: !Ref AWS::AccountId
+
+  PlatformRoleDataLocationPermission:
+    Type: AWS::LakeFormation::PrincipalPermissions
+    DependsOn: DataLakeLocation
+    Properties:
+      Permissions:
+        - DATA_LOCATION_ACCESS
+      PermissionsWithGrantOption: []
+      Principal:
+        DataLakePrincipalIdentifier: !GetAtt PlatformRole.Arn
+      Resource:
+        DataLocation:
+          CatalogId: !Ref AWS::AccountId
+          ResourceArn: !GetAtt DataBucket.Arn
+
   GlueDatabase:
     Type: AWS::Glue::Database
     DependsOn: DataLakeSettings
@@ -920,13 +1205,15 @@ Resources:
       DatabaseInput:
         CreateTableDefaultPermissions: []
         Description: Shared tenant-isolated workflow Data tables
-        Name: workflow_data_000
+        Name: !If
+          - IsPrimaryEnvironment
+          - workflow_data_000
+          - !Sub workflow_data_000_${EnvironmentName}
         Parameters:
           workflow-control-center: athena-data
 
   PlatformRoleDatabasePermission:
     Type: AWS::LakeFormation::PrincipalPermissions
-    DependsOn: GlueDatabase
     Properties:
       Permissions:
         - ALL
@@ -937,7 +1224,7 @@ Resources:
       Resource:
         Database:
           CatalogId: !Ref AWS::AccountId
-          Name: workflow_data_000
+          Name: !Ref GlueDatabase
 
   UserATable:
     Type: AWS::Glue::Table
@@ -1020,12 +1307,11 @@ Resources:
       Resource:
         Table:
           CatalogId: !Ref AWS::AccountId
-          DatabaseName: workflow_data_000
+          DatabaseName: !Ref GlueDatabase
           TableWildcard: {}
 
   QueryRoleDatabasePermission:
     Type: AWS::LakeFormation::PrincipalPermissions
-    DependsOn: GlueDatabase
     Properties:
       Permissions:
         - DESCRIBE
@@ -1035,7 +1321,7 @@ Resources:
       Resource:
         Database:
           CatalogId: !Ref AWS::AccountId
-          Name: workflow_data_000
+          Name: !Ref GlueDatabase
 
   QueryRoleTablePermission:
     Type: AWS::LakeFormation::PrincipalPermissions
@@ -1051,14 +1337,17 @@ Resources:
       Resource:
         Table:
           CatalogId: !Ref AWS::AccountId
-          DatabaseName: workflow_data_000
+          DatabaseName: !Ref GlueDatabase
           TableWildcard: {}
 
   AthenaWorkGroup:
     Type: AWS::Athena::WorkGroup
     Properties:
       Description: Workflow Control Center development tenant queries.
-      Name: workflow-data
+      Name: !If
+        - IsPrimaryEnvironment
+        - workflow-data
+        - !Sub workflow-data-${EnvironmentName}
       RecursiveDeleteOption: true
       State: ENABLED
       Tags:
@@ -1068,6 +1357,8 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
       WorkGroupConfiguration:
@@ -1082,7 +1373,10 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmDescription: Athena workgroup scanned at least 1 TiB during one day.
-      AlarmName: workflow-data-daily-scanned-byte-count
+      AlarmName: !If
+        - IsPrimaryEnvironment
+        - workflow-data-daily-scanned-byte-count
+        - !Sub workflow-data-${EnvironmentName}-daily-scanned-byte-count
       ComparisonOperator: GreaterThanOrEqualToThreshold
       DatapointsToAlarm: 1
       Dimensions:
@@ -1100,6 +1394,8 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
       Threshold: 1099511627776
@@ -1110,7 +1406,10 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmDescription: Athena workgroup produced at least one failed query during five minutes.
-      AlarmName: workflow-data-failed-query-count
+      AlarmName: !If
+        - IsPrimaryEnvironment
+        - workflow-data-failed-query-count
+        - !Sub workflow-data-${EnvironmentName}-failed-query-count
       ComparisonOperator: GreaterThanOrEqualToThreshold
       DatapointsToAlarm: 1
       Dimensions:
@@ -1130,6 +1429,8 @@ Resources:
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
+        - Key: EnvironmentName
+          Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
       Threshold: 1
@@ -1138,6 +1439,8 @@ Resources:
 Outputs:
   AccountId:
     Value: !Ref AWS::AccountId
+  EnvironmentName:
+    Value: !Ref EnvironmentName
   AthenaQueryRoleArn:
     Value: !GetAtt QueryRole.Arn
   AthenaWorkGroupName:
@@ -1154,6 +1457,8 @@ Outputs:
     Value: !Ref ObservabilityBucket
   PlatformRoleArn:
     Value: !GetAtt PlatformRole.Arn
+  PlatformRoleName:
+    Value: !Ref PlatformRole
   Region:
     Value: !Ref AWS::Region
   ResultBucketName:

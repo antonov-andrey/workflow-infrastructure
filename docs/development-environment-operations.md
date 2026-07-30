@@ -51,7 +51,7 @@ python tool/development_environment_manage.py status
 python tool/development_environment_manage.py lifecycle-acceptance
 ```
 
-Она допускается только при `WCC activity=idle`, не меняет production policy
+Она допускается только при `WCC activity=idle`, не меняет steady-state development policy
 `30 minutes / 2 hours`, временно останавливает обычный host controller и на том же
 EventBridge Scheduler target доказывает create, renewal после исходного deadline,
 fail-safe stop после прекращения renewal и `ActionAfterCompletion=DELETE`. Затем
@@ -93,9 +93,21 @@ python tool/development_environment_manage.py deploy
 7. сохраняет exact Helm charts и release-local ingress-nginx manifest с SHA-256 provenance;
 8. собирает platform images и source maps, публикует immutable digests в retained local registry;
 9. вызывает Product-owned secret restore, renewable credential refresh, render/apply/smoke path из переданного WCC source;
-10. после полной readiness/smoke атомарно переключает retained `release/current` и восстановимую root-volume ссылку `/opt/workflow-infrastructure/current`, затем переустанавливает host credential timer; при failure восстанавливает previous Helm revisions, ingress и exact render, не меняя current links.
+10. выполняет live registry gate: exact kubelet pull и read-only proxy reads проходят, private/mutation proxy paths и writer access из builder/постороннего namespace отклоняются, а trusted build-worker write path проходит;
+11. временно ротирует backend credential-process на действующую tenant-role STS session, подтверждает её и восстановленную platform session из того же Pod UID без вывода credential fields;
+12. после полной readiness/smoke атомарно переключает retained `release/current` и восстановимую root-volume ссылку `/opt/workflow-infrastructure/current`, затем переустанавливает host credential timer; при failure восстанавливает previous Helm revisions, ingress и exact render, не меняя current links.
 
 Команда не выполняет `git clone` на host и не сохраняет GitHub credentials. Dirty или unpublished source блокирует deployment. AWS credential-process JSON не входит в source/release manifest, retained secret export или operator output; его обновляет Product-owned systemd timer из exact current WCC release.
+
+При первом `apply` со старого compute-контракта orchestrator до compute change set
+штатно запускает существующий instance, публикует exact infrastructure control
+source и атомарно переносит runtime текущего accepted Product-tool с disposable
+root volume в retained `product-tool/<requirements-sha256>`, перепривязывая
+Python symlinks и `pyvenv.cfg` к exact host Python. Новый host сохраняет
+старый `/var/lib/workflow-control-center/product-tool` только как compatibility
+symlink на этот retained root. Отсутствие current release, exact requirements или
+работоспособного runtime останавливает `apply` до replacement; recovery ничего не
+скачивает.
 
 После deploy автоматические и ручные UI проверки выполняются через уже открытый SSM tunnel против exact current assets.
 
@@ -144,7 +156,9 @@ rollback volume. Перед следующим restore более старый r
 3. только после проверки восстанавливает `/opt/workflow-infrastructure/current`;
 4. запускает Product-owned `recover`, который использует сохранённые image digests, charts, ingress и render без image build, artifact download, нового release или переписывания manifest;
 5. переустанавливает Product credential-refresh service;
-6. запускает отдельный полный recovery acceptance.
+6. повторяет live registry gate для восстановленного exact image graph;
+7. повторяет same-Pod credential rotation и обязательное восстановление platform session;
+8. запускает отдельный полный recovery acceptance.
 
 Обычная проверка recovery выполняет:
 

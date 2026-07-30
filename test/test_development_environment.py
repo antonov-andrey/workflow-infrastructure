@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+import base64
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+import gzip
 import hashlib
-import io
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import tarfile
 
 from cfnlint.decode import decode
+from cfnlint.schema.manager import ProviderSchemaManager
 import pytest
+import yaml
+from yaml.nodes import MappingNode, ScalarNode, SequenceNode
 
 from tool import development_environment_manage
 from tool.lib import development_environment
@@ -22,6 +27,7 @@ from tool.lib.development_environment import (
     CommandRunner,
     DevelopmentEnvironment,
     DevelopmentEnvironmentError,
+    DevelopmentEnvironmentIdentity,
 )
 
 
@@ -63,18 +69,26 @@ class ClockFixed(Clock):
         self.t_now += timedelta(seconds=delay_seconds)
 
 
-def _environment_get(project_root_path: Path) -> DevelopmentEnvironment:
+def _environment_get(
+    project_root_path: Path,
+    *,
+    environment_name: str = "primary",
+) -> DevelopmentEnvironment:
     """Create one development environment with real commands and deterministic time.
 
     Args:
         project_root_path: Test project root.
+        environment_name: Stable environment selector.
 
     Returns:
         Development environment.
     """
 
     return DevelopmentEnvironment(
-        clock=ClockFixed(), project_root_path=project_root_path, runner=CommandRunner()
+        clock=ClockFixed(),
+        environment_name=environment_name,
+        project_root_path=project_root_path,
+        runner=CommandRunner(),
     )
 
 
@@ -113,6 +127,158 @@ def _template_get(project_root_path: Path, template_name: str) -> dict[str, obje
     return template
 
 
+def _yaml_mapping_keys_unique_assert(
+    node: yaml.Node,
+    *,
+    document_path: str,
+) -> None:
+    """Recursively reject duplicate YAML mapping keys before construction."""
+
+    if isinstance(node, MappingNode):
+        key_identity_set: set[tuple[str, str]] = set()
+        for key_node, value_node in node.value:
+            assert isinstance(
+                key_node, ScalarNode
+            ), f"{document_path} contains a non-scalar mapping key"
+            key_identity = (key_node.tag, key_node.value)
+            assert (
+                key_identity not in key_identity_set
+            ), f"{document_path} contains duplicate YAML key {key_node.value!r}"
+            key_identity_set.add(key_identity)
+            _yaml_mapping_keys_unique_assert(
+                value_node,
+                document_path=document_path,
+            )
+    elif isinstance(node, SequenceNode):
+        for item_node in node.value:
+            _yaml_mapping_keys_unique_assert(
+                item_node,
+                document_path=document_path,
+            )
+
+
+@pytest.mark.parametrize(
+    "template_name",
+    [
+        "workflow-control-center-development.yaml",
+        "workflow-control-center-development-compute.yaml",
+    ],
+)
+def test_cloudformation_templates_have_no_duplicate_yaml_keys(
+    template_name: str,
+) -> None:
+    """CloudFormation validation must not receive silently shadowed YAML keys."""
+
+    template_path = (
+        Path(__file__).resolve().parents[1] / "cloudformation" / template_name
+    )
+    root_node = yaml.compose(template_path.read_text(encoding="utf-8"))
+    assert root_node is not None
+    _yaml_mapping_keys_unique_assert(
+        root_node,
+        document_path=template_name,
+    )
+
+
+@pytest.mark.parametrize(
+    "template_name",
+    [
+        "workflow-control-center-development.yaml",
+        "workflow-control-center-development-compute.yaml",
+    ],
+)
+def test_every_taggable_cloudformation_resource_has_environment_identity(
+    template_name: str,
+) -> None:
+    """Every supported resource must carry the complete development identity."""
+
+    template = _template_get(Path(__file__).resolve().parents[1], template_name)
+    resource_by_name_map = template["Resources"]
+    assert isinstance(resource_by_name_map, dict)
+    provider_schema_manager = ProviderSchemaManager()
+    required_tag_key_set = {
+        "Project",
+        "Environment",
+        "EnvironmentName",
+        "ManagedBy",
+    }
+
+    for resource_name, resource in resource_by_name_map.items():
+        assert isinstance(resource, dict)
+        resource_type = resource["Type"]
+        assert isinstance(resource_type, str)
+        resource_schema = provider_schema_manager.get_resource_schema(
+            "us-east-1",
+            resource_type,
+        )
+        if "Tags" not in resource_schema.schema.get("properties", {}):
+            continue
+
+        resource_property_map = resource.get("Properties", {})
+        assert isinstance(resource_property_map, dict)
+        tag_list = resource_property_map.get("Tags")
+        if tag_list is None and resource_type == "AWS::EC2::Instance":
+            launch_template_reference = resource_property_map["LaunchTemplate"]
+            assert isinstance(launch_template_reference, dict)
+            launch_template_id = launch_template_reference["LaunchTemplateId"]
+            assert isinstance(launch_template_id, dict)
+            launch_template_name = launch_template_id["Ref"]
+            launch_template = resource_by_name_map[launch_template_name]
+            launch_template_property_map = launch_template["Properties"]
+            tag_specification_list = launch_template_property_map["LaunchTemplateData"][
+                "TagSpecifications"
+            ]
+            instance_tag_specification_list = [
+                tag_specification
+                for tag_specification in tag_specification_list
+                if tag_specification["ResourceType"] == "instance"
+            ]
+            assert len(instance_tag_specification_list) == 1
+            tag_list = instance_tag_specification_list[0]["Tags"]
+
+        assert isinstance(
+            tag_list, list
+        ), f"{template_name}:{resource_name} supports tags but declares none"
+        tag_key_list = [tag["Key"] for tag in tag_list]
+        assert len(tag_key_list) == len(
+            set(tag_key_list)
+        ), f"{template_name}:{resource_name} declares duplicate tag keys"
+        assert required_tag_key_set <= set(
+            tag_key_list
+        ), f"{template_name}:{resource_name} lacks the development identity tags"
+
+
+def test_compute_created_resources_preserve_environment_identity_tags() -> None:
+    """Launch-created instance, volume, and DLM snapshot tags must remain complete."""
+
+    template = _template_get(
+        Path(__file__).resolve().parents[1],
+        "workflow-control-center-development-compute.yaml",
+    )
+    resource_by_name_map = template["Resources"]
+    required_tag_key_set = {
+        "Project",
+        "Environment",
+        "EnvironmentName",
+        "ManagedBy",
+    }
+
+    launch_template_data = resource_by_name_map["DevelopmentLaunchTemplate"][
+        "Properties"
+    ]["LaunchTemplateData"]
+    for tag_specification in launch_template_data["TagSpecifications"]:
+        tag_key_list = [tag["Key"] for tag in tag_specification["Tags"]]
+        assert len(tag_key_list) == len(set(tag_key_list))
+        assert required_tag_key_set <= set(tag_key_list)
+
+    snapshot_schedule = resource_by_name_map["RetainedSnapshotLifecyclePolicy"][
+        "Properties"
+    ]["PolicyDetails"]["Schedules"][0]
+    snapshot_tag_key_list = [tag["Key"] for tag in snapshot_schedule["TagsToAdd"]]
+    assert len(snapshot_tag_key_list) == len(set(snapshot_tag_key_list))
+    assert required_tag_key_set <= set(snapshot_tag_key_list)
+
+
 def test_cli_keeps_standard_options_after_commands_and_only_forwards_ssh_arguments() -> (
     None
 ):
@@ -134,6 +300,15 @@ def test_cli_keeps_standard_options_after_commands_and_only_forwards_ssh_argumen
     host_status_args = development_environment_manage._args_parse(
         ["host-status", "--retained-volume-id", "vol-0123456789abcdef0"]
     )
+    deploy_args = development_environment_manage._args_parse(
+        [
+            "deploy",
+            "--environment-name",
+            "feature1",
+            "--workflow-container-contract-commit",
+            "a" * 40,
+        ]
+    )
 
     assert restore_args.snapshot_id == "snap-0123456789abcdef0"
     assert restore_args.ssh_argument_list == []
@@ -142,6 +317,376 @@ def test_cli_keeps_standard_options_after_commands_and_only_forwards_ssh_argumen
     assert ssh_args.ssh_argument_list == ["-L", "8080:localhost:8080"]
     assert host_status_args.retained_volume_id == "vol-0123456789abcdef0"
     assert host_status_args.ssh_argument_list == []
+    assert deploy_args.workflow_container_contract_commit == "a" * 40
+    assert deploy_args.environment_name == "feature1"
+    assert deploy_args.ssh_argument_list == []
+
+
+def test_environment_identity_preserves_primary_and_isolates_nonprimary() -> None:
+    """One safe selector must preserve primary and disjoint every owned identity."""
+
+    primary = DevelopmentEnvironmentIdentity()
+    alternate = DevelopmentEnvironmentIdentity("feature1")
+
+    assert (
+        primary.data_plane_stack_name == development_environment.DATA_PLANE_STACK_NAME
+    )
+    assert primary.compute_stack_name == development_environment.COMPUTE_STACK_NAME
+    assert primary.instance_name == development_environment.INSTANCE_NAME
+    assert primary.lease_group_name == development_environment.LEASE_GROUP_NAME
+    assert primary.lease_name == development_environment.LEASE_NAME
+    assert primary.host_control_current_source_path == (
+        development_environment.HOST_CONTROL_CURRENT_SOURCE_PATH
+    )
+    assert (
+        primary.host_release_root_path == development_environment.HOST_RELEASE_ROOT_PATH
+    )
+    assert (
+        primary.host_retained_root_path
+        == development_environment.HOST_RETAINED_ROOT_PATH
+    )
+
+    primary_identity_set = {
+        primary.compute_stack_name,
+        primary.data_plane_stack_name,
+        primary.instance_name,
+        primary.lease_group_name,
+        primary.lease_name,
+        primary.host_control_current_source_path.as_posix(),
+        primary.host_release_root_path.as_posix(),
+        primary.host_retained_root_path.as_posix(),
+        primary.host_state_root_path.as_posix(),
+        primary.qualified_credential_identity,
+        primary.qualified_product_database_identity,
+        primary.qualified_registry_identity,
+    }
+    alternate_identity_set = {
+        alternate.compute_stack_name,
+        alternate.data_plane_stack_name,
+        alternate.instance_name,
+        alternate.lease_group_name,
+        alternate.lease_name,
+        alternate.host_control_current_source_path.as_posix(),
+        alternate.host_release_root_path.as_posix(),
+        alternate.host_retained_root_path.as_posix(),
+        alternate.host_state_root_path.as_posix(),
+        alternate.qualified_credential_identity,
+        alternate.qualified_product_database_identity,
+        alternate.qualified_registry_identity,
+    }
+    assert primary_identity_set.isdisjoint(alternate_identity_set)
+    assert all("feature1" in identity for identity in alternate_identity_set)
+
+
+def test_current_product_tool_calls_preserve_nonprimary_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Every infrastructure-to-Product command must retain its environment identity."""
+
+    environment = _environment_get(tmp_path, environment_name="feature1")
+    product_tool_path = (
+        "/opt/workflow-infrastructure/environments/feature1/current/"
+        "sources/workflow-control-center/tool/development_kubernetes_manage.py"
+    )
+    local_command_list_list: list[list[str]] = []
+    ssm_command_batch_list: list[list[str]] = []
+
+    def run(
+        argument_list: list[str],
+        *,
+        check: bool = True,
+        input_text: str | None = None,
+        should_capture: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        del check, input_text, should_capture
+        local_command_list_list.append(argument_list)
+        stdout = (
+            '{"reason_key_list":[],"status":"idle","t_observed":"2026-07-30T00:00:00Z"}\n'
+            if argument_list[2:3] == ["activity"]
+            else ""
+        )
+        return subprocess.CompletedProcess(argument_list, 0, stdout, "")
+
+    monkeypatch.setattr(environment._runner, "run", run)
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda path: str(path) == product_tool_path,
+    )
+    monkeypatch.setattr(
+        environment,
+        "_ssm_shell_run",
+        lambda command_list: ssm_command_batch_list.append(command_list),
+    )
+    monkeypatch.setattr(environment, "_local_operator_context_validate", lambda: None)
+    monkeypatch.setattr(environment, "status", lambda: None)
+    monkeypatch.setattr(
+        environment,
+        "_instance_id_get",
+        lambda: "i-0123456789abcdef0",
+    )
+    monkeypatch.setattr(
+        environment,
+        "_instance_state_get",
+        lambda instance_id: "running",
+    )
+
+    assert environment._host_product_activity_get() == "idle"
+    environment.host_shutdown()
+    environment._product_recovery_apply_run()
+    environment._product_recovery_acceptance_run()
+    environment.diagnose()
+
+    product_local_command_list = [
+        command_list
+        for command_list in local_command_list_list
+        if product_tool_path in command_list
+    ]
+    assert product_local_command_list == [
+        [
+            "python3.14",
+            product_tool_path,
+            "activity",
+            "--environment-name",
+            "feature1",
+        ],
+        [
+            "python3.14",
+            product_tool_path,
+            "shutdown",
+            "--environment-name",
+            "feature1",
+        ],
+    ]
+    ssm_command_text = "\n".join(
+        command for command_list in ssm_command_batch_list for command in command_list
+    )
+    for command in ("diagnose", "host-install", "recover", "recovery-acceptance"):
+        assert (
+            f"{product_tool_path} {command} --environment-name feature1"
+            in ssm_command_text
+        )
+    assert "df -h / /srv/workflow-control-center-feature1" in ssm_command_text
+
+
+def test_current_primary_product_tool_calls_keep_legacy_cli_compatibility(
+    tmp_path: Path,
+) -> None:
+    """Primary lifecycle works before and after the environment selector was added."""
+
+    environment = _environment_get(tmp_path)
+
+    command_list = environment._current_product_tool_command_list_get("activity")
+
+    assert command_list[-1] == "activity"
+    assert "--environment-name" not in command_list
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "expected"),
+    [
+        (
+            0,
+            '{"reason_key_list":[],"status":"idle","t_observed":"2026-07-30T00:00:00Z"}',
+            "idle",
+        ),
+        (
+            0,
+            (
+                '{"reason_key_list":["persisted_work"],"status":"busy",'
+                '"t_observed":"2026-07-30T00:00:00Z"}'
+            ),
+            "busy",
+        ),
+        (0, "idle", "busy"),
+        (
+            0,
+            '{"reason_key_list":[],"status":"idle","t_observed":"2026-07-30T04:00:00+04:00"}',
+            "busy",
+        ),
+        (
+            0,
+            '{"reason_key_list":[],"status":"busy","t_observed":"2026-07-30T00:00:00Z"}',
+            "busy",
+        ),
+        (1, "", "busy"),
+    ],
+)
+def test_host_product_activity_accepts_only_safe_utc_observation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    returncode: int,
+    stdout: str,
+    expected: str,
+) -> None:
+    """Lifecycle treats every malformed or unverifiable Product observation as busy."""
+
+    environment = _environment_get(tmp_path)
+    monkeypatch.setattr(Path, "is_file", lambda path: True)
+    monkeypatch.setattr(
+        environment._runner,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            returncode,
+            stdout,
+            "",
+        ),
+    )
+
+    assert environment._host_product_activity_get() == expected
+
+
+def test_data_plane_template_derives_query_role_from_environment_local_database_name() -> (
+    None
+):
+    """Every non-primary Glue shard and IAM query role must share one exact namespace."""
+
+    template = _template_get(
+        Path(__file__).resolve().parents[1],
+        "workflow-control-center-development.yaml",
+    )
+    resource_by_name_map = template["Resources"]
+
+    assert resource_by_name_map["GlueDatabase"]["Properties"]["DatabaseInput"][
+        "Name"
+    ] == {
+        "Fn::If": [
+            "IsPrimaryEnvironment",
+            "workflow_data_000",
+            {"Fn::Sub": "workflow_data_000_${EnvironmentName}"},
+        ]
+    }
+    assert resource_by_name_map["QueryRole"]["Properties"]["RoleName"] == {
+        "Fn::If": [
+            "IsPrimaryEnvironment",
+            "workflow-data-workflow_data_000",
+            {"Fn::Sub": "workflow-data-workflow_data_000_${EnvironmentName}"},
+        ]
+    }
+
+
+def test_non_primary_environment_physical_names_fit_provider_limits() -> None:
+    """The longest valid environment selector must still render valid AWS names."""
+
+    project_root_path = Path(__file__).resolve().parents[1]
+    data_template = _template_get(
+        project_root_path,
+        "workflow-control-center-development.yaml",
+    )
+    compute_template = _template_get(
+        project_root_path,
+        "workflow-control-center-development-compute.yaml",
+    )
+    environment_name = "a" * 16
+    account_id = "1" * 12
+
+    data_resource_by_name_map = data_template["Resources"]
+    bucket_name_by_logical_id_map = {
+        logical_id: resource["Properties"]["BucketName"]["Fn::If"][2]["Fn::Sub"]
+        for logical_id, resource in data_resource_by_name_map.items()
+        if resource["Type"] == "AWS::S3::Bucket"
+    }
+    rendered_bucket_name_by_logical_id_map = {
+        logical_id: name_template.replace(
+            "${EnvironmentName}", environment_name
+        ).replace(
+            "${AWS::AccountId}",
+            account_id,
+        )
+        for logical_id, name_template in bucket_name_by_logical_id_map.items()
+    }
+    assert len(rendered_bucket_name_by_logical_id_map) == 4
+    assert len(set(rendered_bucket_name_by_logical_id_map.values())) == 4
+    assert all(
+        len(bucket_name) <= 63
+        for bucket_name in rendered_bucket_name_by_logical_id_map.values()
+    )
+
+    lake_formation_role_name = data_resource_by_name_map["LakeFormationDataAccessRole"][
+        "Properties"
+    ]["RoleName"]["Fn::If"][2]["Fn::Sub"].replace(
+        "${EnvironmentName}",
+        environment_name,
+    )
+    assert len(lake_formation_role_name) <= 64
+
+    compute_resource_by_name_map = compute_template["Resources"]
+    for logical_id, property_name, maximum_length in (
+        ("LeaseStopFunction", "FunctionName", 64),
+        ("LeaseStopFunctionExecutionRole", "RoleName", 64),
+        ("InstanceCreationGuardSchedule", "Name", 64),
+    ):
+        name_template = compute_resource_by_name_map[logical_id]["Properties"][
+            property_name
+        ]["Fn::If"][2]["Fn::Sub"]
+        rendered_name = name_template.replace(
+            "${EnvironmentName}",
+            environment_name,
+        )
+        assert len(rendered_name) <= maximum_length
+
+
+def test_data_plane_keeps_global_lake_settings_stable_and_scopes_platform_control() -> (
+    None
+):
+    """An environment update must not replace another environment's LF authority."""
+
+    template = _template_get(
+        Path(__file__).resolve().parents[1],
+        "workflow-control-center-development.yaml",
+    )
+    resource_by_name_map = template["Resources"]
+    data_lake_settings = resource_by_name_map["DataLakeSettings"]
+    assert data_lake_settings["DeletionPolicy"] == "Retain"
+    assert data_lake_settings["UpdateReplacePolicy"] == "Retain"
+    assert data_lake_settings["Properties"]["Admins"] == [
+        {"DataLakePrincipalIdentifier": {"Ref": "DeploymentPrincipalArn"}},
+    ]
+    assert data_lake_settings["Properties"]["MutationType"] == "REPLACE"
+
+    platform_principal = {
+        "DataLakePrincipalIdentifier": {
+            "Fn::GetAtt": ["PlatformRole", "Arn"],
+        }
+    }
+    assert resource_by_name_map["PlatformRoleCatalogPermission"] == {
+        "Type": "AWS::LakeFormation::PrincipalPermissions",
+        "DependsOn": "DataLakeSettings",
+        "Properties": {
+            "Permissions": ["CREATE_DATABASE"],
+            "PermissionsWithGrantOption": [],
+            "Principal": platform_principal,
+            "Resource": {"Catalog": {"Ref": "AWS::AccountId"}},
+        },
+    }
+    assert resource_by_name_map["PlatformRoleDataLocationPermission"] == {
+        "Type": "AWS::LakeFormation::PrincipalPermissions",
+        "DependsOn": "DataLakeLocation",
+        "Properties": {
+            "Permissions": ["DATA_LOCATION_ACCESS"],
+            "PermissionsWithGrantOption": [],
+            "Principal": platform_principal,
+            "Resource": {
+                "DataLocation": {
+                    "CatalogId": {"Ref": "AWS::AccountId"},
+                    "ResourceArn": {"Fn::GetAtt": ["DataBucket", "Arn"]},
+                }
+            },
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "environment_name",
+    ["", "Primary", "feature-1", "feature_1", "a" * 17, "../primary"],
+)
+def test_environment_identity_rejects_unsafe_name(environment_name: str) -> None:
+    """Unsafe environment names cannot enter AWS resources or host paths."""
+
+    with pytest.raises(DevelopmentEnvironmentError):
+        DevelopmentEnvironmentIdentity(environment_name)
 
 
 def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
@@ -239,7 +784,9 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
     assert retained_volume_by_name_map["RetainedVolume"]["Condition"] == (
         "UseRetainedVolumeBase"
     )
-    assert "SnapshotId" not in retained_volume_by_name_map["RetainedVolume"]["Properties"]
+    assert (
+        "SnapshotId" not in retained_volume_by_name_map["RetainedVolume"]["Properties"]
+    )
     assert retained_volume_by_name_map["RetainedVolumeRestoreA"]["Condition"] == (
         "UseRetainedVolumeRestoreA"
     )
@@ -266,8 +813,15 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
         },
         {"Key": "Project", "Value": {"Ref": "NotificationTagValue"}},
         {"Key": "Environment", "Value": "development"},
+        {"Key": "EnvironmentName", "Value": {"Ref": "EnvironmentName"}},
         {"Key": "ManagedBy", "Value": "DLM"},
     ]
+    snapshot_role_statement_list = resource_by_name_map["RetainedSnapshotRole"][
+        "Properties"
+    ]["Policies"][0]["PolicyDocument"]["Statement"]
+    assert snapshot_role_statement_list[1]["Resource"] == {
+        "Fn::Sub": "arn:${AWS::Partition}:ec2:*::snapshot/*"
+    }
 
     launch_template_data = resource_by_name_map["DevelopmentLaunchTemplate"][
         "Properties"
@@ -279,21 +833,58 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
         "InstanceMetadataTags": "disabled",
     }
     user_data = launch_template_data["UserData"]["Fn::Base64"]["Fn::Sub"][0]
+    parameter_by_name_map = template["Parameters"]
+    assert "Default" not in parameter_by_name_map["K3sVersion"]
+    assert "Default" not in parameter_by_name_map["K3sInstallScriptSha256"]
     assert "apt upgrade" not in user_data
-    assert "--disable traefik --secrets-encryption" in user_data
-    assert "https://get.k3s.io" not in user_data
     assert (
-        "https://raw.githubusercontent.com/k3s-io/k3s/${K3sVersion}/install.sh"
+        "--cluster-cidr 10.42.0.0/16 --service-cidr 10.43.0.0/16 "
+        "--disable traefik --secrets-encryption"
+    ) in user_data
+    assert "https://get.k3s.io" not in user_data
+    assert "raw.githubusercontent.com/k3s-io/k3s" not in user_data
+    assert "https://astral.sh/uv/install.sh" not in user_data
+    assert "curl | sh" not in user_data
+    assert "apt-get install --no-install-recommends -y docker-ce" not in user_data
+    assert "${K3sInstallScriptUrl}" in user_data
+    assert "${K3sBinaryUrl}" in user_data
+    assert "K3sInstallScriptSha256" in user_data
+    assert "K3sBinarySha256" in user_data
+    assert "sha256sum --check --strict" in user_data
+    assert "${PythonVersion}" in user_data
+    assert "${PythonSha256}" in user_data
+    assert "${UvVersion}" in user_data
+    assert "${HelmVersion}" in user_data
+    assert "HostArtifactManifestGzipBase64" in user_data
+    assert "manifest_input" in user_data
+    assert "direct_input" in user_data
+    assert 'test "$docker_primary_key_count" = 1' in user_data
+    assert '"$retained_root/product-tool"' in user_data
+    assert '"$retained_root/release"' in user_data
+    assert (
+        'ln -s "$retained_root/product-tool" "$compatibility_root/product-tool"'
         in user_data
     )
-    assert "K3sInstallScriptSha256" in user_data
-    assert "sha256sum --check --strict" in user_data
-    assert "uv python install 3.14" in user_data
-    assert "/srv/workflow-control-center/release" in user_data
+    assert 'blockdev --getsize64 "$retained_device"' in user_data
+    assert 'cmp --silent --bytes="$retained_device_size"' in user_data
+    assert "has data but no recognized filesystem" in user_data
+    assert "mkfs.xfs -f" not in user_data
+    retained_root_identity = launch_template_data["UserData"]["Fn::Base64"]["Fn::Sub"][
+        1
+    ]["RetainedRootPath"]
+    assert retained_root_identity == {
+        "Fn::If": [
+            "IsPrimaryEnvironment",
+            "/srv/workflow-control-center",
+            {
+                "Fn::Sub": "/srv/workflow-control-center-${EnvironmentName}",
+            },
+        ]
+    }
 
     launch_template_reference = {
         "LaunchTemplateId": {"Ref": "DevelopmentLaunchTemplate"},
-        "Version": {"Fn::GetAtt": ["DevelopmentLaunchTemplate", "LatestVersionNumber"]},
+        "Version": {"Ref": "InstanceLaunchTemplateVersion"},
     }
     assert (
         resource_by_name_map["DevelopmentInstance"]["Properties"]["LaunchTemplate"]
@@ -317,9 +908,10 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
         "InstanceId": {"Ref": "DevelopmentInstance"},
         "VolumeId": retained_volume_reference,
     }
-    assert launch_template_data["UserData"]["Fn::Base64"]["Fn::Sub"][1][
-        "RetainedVolumeId"
-    ] == retained_volume_reference
+    assert (
+        launch_template_data["UserData"]["Fn::Base64"]["Fn::Sub"][1]["RetainedVolumeId"]
+        == retained_volume_reference
+    )
     assert template["Outputs"]["RetainedVolumeId"]["Value"] == retained_volume_reference
     assert template["Outputs"]["RetainedVolumeSlot"]["Value"] == {
         "Ref": "RetainedVolumeSlot"
@@ -329,6 +921,9 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
     }
     assert template["Outputs"]["LatestLaunchTemplateVersion"]["Value"] == {
         "Fn::GetAtt": ["DevelopmentLaunchTemplate", "LatestVersionNumber"]
+    }
+    assert template["Outputs"]["InstanceLaunchTemplateVersion"]["Value"] == {
+        "Ref": "InstanceLaunchTemplateVersion"
     }
     lease_stop_function = resource_by_name_map["LeaseStopFunction"]["Properties"]
     assert lease_stop_function["Runtime"] == "python3.14"
@@ -360,6 +955,74 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
         "DevelopmentRoute",
         "InstanceCreationGuardSchedule",
     ]
+
+
+def test_compute_bootstrap_is_syntactically_valid_and_fits_ec2_user_data() -> None:
+    """Max-bounded exact launch inputs must fit the EC2 raw UserData limit."""
+
+    project_root_path = Path(__file__).resolve().parents[1]
+    template = _template_get(
+        project_root_path,
+        "workflow-control-center-development-compute.yaml",
+    )
+    user_data = template["Resources"]["DevelopmentLaunchTemplate"]["Properties"][
+        "LaunchTemplateData"
+    ]["UserData"]["Fn::Base64"]["Fn::Sub"][0]
+    parameter_by_name_map = {
+        "AwsCliSha256": "a" * 64,
+        "AwsCliUrl": "https://example.invalid/aws-cli",
+        "AwsCliVersion": "2.36.11",
+        "ComputeArchitecture": "arm64",
+        "DockerBuildxPackageSha256": "a" * 64,
+        "DockerBuildxPackageUrl": "https://example.invalid/buildx.deb",
+        "DockerBuildxPackageVersion": "0.36.0-1~ubuntu.24.04~noble",
+        "DockerCeCliPackageSha256": "a" * 64,
+        "DockerCeCliPackageUrl": "https://example.invalid/docker-cli.deb",
+        "DockerCeCliPackageVersion": "5:29.6.2-1~ubuntu.24.04~noble",
+        "DockerCePackageSha256": "a" * 64,
+        "DockerCePackageUrl": "https://example.invalid/docker-ce.deb",
+        "DockerCePackageVersion": "5:29.6.2-1~ubuntu.24.04~noble",
+        "DockerContainerdPackageSha256": "a" * 64,
+        "DockerContainerdPackageUrl": "https://example.invalid/containerd.deb",
+        "DockerContainerdPackageVersion": "2.2.6-1~ubuntu.24.04~noble",
+        "DockerSigningKeyFingerprint": "A" * 40,
+        "DockerSigningKeySha256": "a" * 64,
+        "DockerSigningKeyUrl": "https://example.invalid/docker.gpg",
+        "HelmSha256": "a" * 64,
+        "HelmUrl": "https://example.invalid/helm.tar.gz",
+        "HelmVersion": "v4.2.3",
+        "HostArtifactManifestGzipBase64": "A" * 3072,
+        "HostArtifactManifestSha256": "a" * 64,
+        "K3sBinarySha256": "a" * 64,
+        "K3sBinaryUrl": "https://example.invalid/k3s",
+        "K3sInstallScriptSha256": "a" * 64,
+        "K3sInstallScriptUrl": "https://example.invalid/k3s-install",
+        "K3sVersion": "v1.36.2+k3s1",
+        "PythonBuild": "20260728",
+        "PythonSha256": "a" * 64,
+        "PythonUrl": "https://example.invalid/python.tar.gz",
+        "PythonVersion": "3.14.6",
+        "RetainedRootPath": "/srv/workflow-control-center",
+        "RetainedVolumeId": "vol-0123456789abcdef0",
+        "UvSha256": "a" * 64,
+        "UvUrl": "https://example.invalid/uv.tar.gz",
+        "UvVersion": "0.12.0",
+    }
+    rendered_user_data = user_data.replace("${!Version}", "${Version}")
+    for parameter_name, value in parameter_by_name_map.items():
+        rendered_user_data = rendered_user_data.replace(
+            f"${{{parameter_name}}}",
+            value,
+        )
+    assert "${" not in rendered_user_data.replace("${Version}", "")
+    assert len(rendered_user_data.encode()) <= 16 * 1024
+    result = subprocess.run(
+        ["bash", "-n"],
+        input=rendered_user_data,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_retained_snapshot_policy_requires_provider_enabled_state(
@@ -432,7 +1095,9 @@ def test_data_plane_template_adds_compute_trust_without_narrowing_platform_permi
     assert template["Parameters"]["UiOrigin"]["Default"] == "http://localhost:8080"
 
 
-def test_data_plane_buckets_expose_ranges_and_reject_explicit_wrong_encryption() -> None:
+def test_data_plane_buckets_expose_ranges_and_reject_explicit_wrong_encryption() -> (
+    None
+):
     """Direct S3 may use bucket defaults, but explicit encryption must use the exact stack key."""
 
     project_root_path = Path(__file__).resolve().parents[1]
@@ -463,35 +1128,208 @@ def test_data_plane_buckets_expose_ranges_and_reject_explicit_wrong_encryption()
     ):
         statement_by_sid_map = {
             statement["Sid"]: statement
-            for statement in resource_by_name_map[f"{bucket_name}Policy"][
-                "Properties"
-            ]["PolicyDocument"]["Statement"]
+            for statement in resource_by_name_map[f"{bucket_name}Policy"]["Properties"][
+                "PolicyDocument"
+            ]["Statement"]
         }
-        assert statement_by_sid_map["DenyExplicitNonKmsEncryption"][
-            "Condition"
-        ] == {
+        assert statement_by_sid_map["DenyExplicitNonKmsEncryption"]["Condition"] == {
             "Null": {"s3:x-amz-server-side-encryption": "false"},
-            "StringNotEquals": {
-                "s3:x-amz-server-side-encryption": "aws:kms"
-            },
+            "StringNotEquals": {"s3:x-amz-server-side-encryption": "aws:kms"},
         }
         assert statement_by_sid_map["DenyUnexpectedKmsKey"]["Condition"] == {
-            "Null": {
-                "s3:x-amz-server-side-encryption-aws-kms-key-id": "false"
-            },
+            "Null": {"s3:x-amz-server-side-encryption-aws-kms-key-id": "false"},
             "StringNotEquals": {
                 "s3:x-amz-server-side-encryption-aws-kms-key-id": {
                     "Fn::GetAtt": ["StorageKmsKey", "Arn"]
                 }
             },
         }
-        assert statement_by_sid_map["DenyCustomerProvidedEncryption"][
-            "Condition"
-        ] == {
-            "Null": {
-                "s3:x-amz-server-side-encryption-customer-algorithm": "false"
-            }
+        assert statement_by_sid_map["DenyCustomerProvidedEncryption"]["Condition"] == {
+            "Null": {"s3:x-amz-server-side-encryption-customer-algorithm": "false"}
         }
+
+
+def test_data_plane_retains_state_and_delegates_history_cleanup_to_product() -> None:
+    """Stack lifecycle cannot delete customer state or blanket-expire Data and Secret history."""
+
+    project_root_path = Path(__file__).resolve().parents[1]
+    template = _template_get(
+        project_root_path, "workflow-control-center-development.yaml"
+    )
+    resource_by_name_map = template["Resources"]
+    for resource_name in (
+        "StorageKmsKey",
+        "DataBucket",
+        "SecretBucket",
+        "ResultBucket",
+        "ObservabilityBucket",
+    ):
+        resource = resource_by_name_map[resource_name]
+        assert resource["DeletionPolicy"] == "Retain"
+        assert resource["UpdateReplacePolicy"] == "Retain"
+
+    for bucket_name in ("DataBucket", "SecretBucket"):
+        lifecycle_rule_list = resource_by_name_map[bucket_name]["Properties"][
+            "LifecycleConfiguration"
+        ]["Rules"]
+        assert lifecycle_rule_list == [
+            {
+                "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 1},
+                "Id": "AbortIncompleteMultipartUploads",
+                "Prefix": ".platform/staging/",
+                "Status": "Enabled",
+            }
+        ]
+        assert "NoncurrentVersionExpirationInDays" not in json.dumps(
+            lifecycle_rule_list
+        )
+
+    result_lifecycle_text = json.dumps(
+        resource_by_name_map["ResultBucket"]["Properties"]["LifecycleConfiguration"][
+            "Rules"
+        ]
+    )
+    observability_lifecycle_text = json.dumps(
+        resource_by_name_map["ObservabilityBucket"]["Properties"][
+            "LifecycleConfiguration"
+        ]["Rules"]
+    )
+    assert "data-download/" in result_lifecycle_text
+    assert "athena-result/" in result_lifecycle_text
+    assert "source-map/" in observability_lifecycle_text
+
+
+def test_data_plane_enforces_account_public_block_and_tag_derived_tenant_paths() -> (
+    None
+):
+    """Permanent tenant authority is tag-scoped for every bucket and never bucket-wide."""
+
+    project_root_path = Path(__file__).resolve().parents[1]
+    template = _template_get(
+        project_root_path, "workflow-control-center-development.yaml"
+    )
+    resource_by_name_map = template["Resources"]
+    account_block = resource_by_name_map["AccountPublicAccessBlock"]
+    assert account_block["Type"] == "Custom::S3AccountPublicAccessBlock"
+    assert account_block["DeletionPolicy"] == "Retain"
+    assert account_block["UpdateReplacePolicy"] == "Retain"
+    assert account_block["Properties"] == {
+        "AccountId": {"Ref": "AWS::AccountId"},
+        "ServiceToken": {"Fn::GetAtt": ["AccountPublicAccessBlockFunction", "Arn"]},
+    }
+    function = resource_by_name_map["AccountPublicAccessBlockFunction"]["Properties"]
+    assert function["Runtime"] == "python3.14"
+    assert function["Architectures"] == ["arm64"]
+    assert "put_public_access_block" in function["Code"]["ZipFile"]
+    assert 'event["RequestType"] != "Delete"' in function["Code"]["ZipFile"]
+    function_policy_text = json.dumps(
+        resource_by_name_map["AccountPublicAccessBlockFunctionRole"]["Properties"][
+            "Policies"
+        ]
+    )
+    assert "s3:PutAccountPublicAccessBlock" in function_policy_text
+    assert "s3:GetAccountPublicAccessBlock" in function_policy_text
+
+    statement_list = resource_by_name_map["DataCredentialRole"]["Properties"][
+        "Policies"
+    ][0]["PolicyDocument"]["Statement"]
+    for role_name in ("DataCredentialRole", "QueryRole"):
+        trust_statement = resource_by_name_map[role_name]["Properties"][
+            "AssumeRolePolicyDocument"
+        ]["Statement"][0]
+        assert trust_statement["Condition"]["StringLike"] == {
+            "aws:RequestTag/UserDataRootId": "?" * 32
+        }
+        assert "StringNotLike" not in trust_statement["Condition"]
+    statement_by_sid_map = {statement["Sid"]: statement for statement in statement_list}
+    for sid in (
+        "DataBucketOwnerList",
+        "SecretBucketOwnerList",
+        "ResultBucketOwnerList",
+    ):
+        condition_text = json.dumps(statement_by_sid_map[sid]["Condition"])
+        assert "${aws:PrincipalTag/UserDataRootId}" in condition_text
+    object_statement_name_set = {
+        "CanonicalDataObjectsRead",
+        "CanonicalSecretObjectsRead",
+        "OwnerStagingObjects",
+        "OwnerResultObjectsRead",
+    }
+    for sid in object_statement_name_set:
+        resource_text = json.dumps(statement_by_sid_map[sid]["Resource"])
+        assert "PrincipalTag/UserDataRootId" in resource_text
+        assert resource_text not in {
+            json.dumps({"Fn::Sub": "${DataBucket.Arn}/*"}),
+            json.dumps({"Fn::Sub": "${SecretBucket.Arn}/*"}),
+            json.dumps({"Fn::Sub": "${ResultBucket.Arn}/*"}),
+        }
+    serialized_policy = json.dumps(statement_list)
+    assert '"Fn::Sub": "${DataBucket.Arn}/*"' not in serialized_policy
+    assert '"Fn::Sub": "${SecretBucket.Arn}/*"' not in serialized_policy
+    assert '"Fn::Sub": "${ResultBucket.Arn}/*"' not in serialized_policy
+    assert statement_by_sid_map["StorageKms"]["Condition"] == {
+        "StringEquals": {
+            "kms:EncryptionContext:aws:s3:arn": [
+                {"Fn::GetAtt": ["DataBucket", "Arn"]},
+                {"Fn::GetAtt": ["SecretBucket", "Arn"]},
+                {"Fn::GetAtt": ["ResultBucket", "Arn"]},
+            ],
+            "kms:ViaService": {"Fn::Sub": "s3.${AWS::Region}.${AWS::URLSuffix}"},
+        }
+    }
+
+    query_statement_by_sid_map = {
+        statement["Sid"]: statement
+        for statement in resource_by_name_map["QueryRole"]["Properties"]["Policies"][0][
+            "PolicyDocument"
+        ]["Statement"]
+    }
+    assert query_statement_by_sid_map["ResultKms"]["Condition"]["StringEquals"][
+        "kms:ViaService"
+    ] == {"Fn::Sub": "s3.${AWS::Region}.${AWS::URLSuffix}"}
+
+    lake_formation_statement_by_sid_map = {
+        statement["Sid"]: statement
+        for statement in resource_by_name_map["LakeFormationDataAccessPolicy"][
+            "Properties"
+        ]["PolicyDocument"]["Statement"]
+    }
+    assert lake_formation_statement_by_sid_map["StorageKms"]["Condition"] == {
+        "StringEquals": {
+            "kms:EncryptionContext:aws:s3:arn": {"Fn::GetAtt": ["DataBucket", "Arn"]},
+            "kms:ViaService": {"Fn::Sub": "s3.${AWS::Region}.${AWS::URLSuffix}"},
+        }
+    }
+    storage_key_statement_by_sid_map = {
+        statement["Sid"]: statement
+        for statement in resource_by_name_map["StorageKmsKey"]["Properties"][
+            "KeyPolicy"
+        ]["Statement"]
+    }
+    assert storage_key_statement_by_sid_map["AllowLakeFormationDataAccess"][
+        "Condition"
+    ] == {
+        "StringEquals": {
+            "kms:EncryptionContext:aws:s3:arn": {
+                "Fn::If": [
+                    "IsPrimaryEnvironment",
+                    {
+                        "Fn::Sub": (
+                            "arn:${AWS::Partition}:s3:::workflow-control-center-devel-"
+                            "${AWS::AccountId}-data"
+                        )
+                    },
+                    {
+                        "Fn::Sub": (
+                            "arn:${AWS::Partition}:s3:::workflow-control-center-"
+                            "${EnvironmentName}-${AWS::AccountId}-data"
+                        )
+                    },
+                ]
+            },
+            "kms:ViaService": {"Fn::Sub": "s3.${AWS::Region}.${AWS::URLSuffix}"},
+        }
+    }
 
 
 def test_runtime_platform_accepts_one_linux_arm64_platform(
@@ -666,10 +1504,7 @@ def test_price_dimension_lookup_preserves_every_tier_and_service(
             "AmazonS3",
             "--max-results",
         ]
-        assert (
-            "Type=TERM_MATCH,Field=regionCode,Value=us-east-1"
-            in aws_argument_list
-        )
+        assert "Type=TERM_MATCH,Field=regionCode,Value=us-east-1" in aws_argument_list
         return {"PriceList": [json.dumps(product_payload)]}
 
     monkeypatch.setattr(environment, "_aws_json_get", aws_json_get)
@@ -739,11 +1574,7 @@ def test_cost_review_includes_one_bounded_retained_rollback_volume(
                     if usage_type == "us-east-1-KMS-Keys"
                     else "0.0100000000"
                 ),
-                "unit": (
-                    "Keys"
-                    if usage_type == "us-east-1-KMS-Keys"
-                    else "Requests"
-                ),
+                "unit": ("Keys" if usage_type == "us-east-1-KMS-Keys" else "Requests"),
             }
         ]
 
@@ -785,9 +1616,9 @@ def test_cost_review_includes_one_bounded_retained_rollback_volume(
         "kms",
         "s3",
     }
-    assert payload["usage_based_service_by_name_map"]["kms"][
-        "price_meter_by_name_map"
-    ]["customer_managed_key"]["price_dimension_list"][0] == {
+    assert payload["usage_based_service_by_name_map"]["kms"]["price_meter_by_name_map"][
+        "customer_managed_key"
+    ]["price_dimension_list"][0] == {
         "begin_range": "0",
         "end_range": "Inf",
         "price_per_unit_usd": "1.0000000000",
@@ -807,9 +1638,7 @@ def test_drift_preflight_requires_complete_stack_parameters_and_outputs(
     monkeypatch.setattr(
         environment,
         "_stack_payload_get",
-        lambda stack_name, is_required: {
-            "StackStatus": "UPDATE_COMPLETE"
-        },
+        lambda stack_name, is_required: {"StackStatus": "UPDATE_COMPLETE"},
     )
     monkeypatch.setattr(
         environment,
@@ -882,6 +1711,245 @@ def test_source_archive_is_deterministic_and_excludes_untracked_files(
     assert manifest_a["file_sha256_by_path_map"] == {
         "tracked.txt": "e544535ca87c45bbcf3495423e0781d4fba16276f78a5e07a1049447cdc1e63e"
     }
+    assert manifest_a["source_kind"] == "exact_checkout"
+
+
+def test_source_archive_transfer_refuses_to_replace_immutable_release(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A reused release/source identity must fail instead of deleting accepted bytes."""
+
+    repository_path = tmp_path / "repository"
+    repository_path.mkdir()
+    _git_run(repository_path, ["init", "--initial-branch=main"])
+    _git_run(repository_path, ["config", "user.email", "test@example.com"])
+    _git_run(repository_path, ["config", "user.name", "Test"])
+    (repository_path / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+    _git_run(repository_path, ["add", "tracked.txt"])
+    _git_run(repository_path, ["commit", "-m", "fixture"])
+
+    environment = _environment_get(tmp_path)
+    archive_path = tmp_path / "source.tar"
+    manifest_path = tmp_path / "source.json"
+    manifest = environment._source_archive_create(
+        archive_path=archive_path,
+        manifest_path=manifest_path,
+        repository_name="workflow-infrastructure",
+        repository_path=repository_path,
+    )
+    release_name = f"transfer{tmp_path.name}"
+    staging_path = Path(f"/tmp/workflow-source-{release_name}-workflow-infrastructure")
+    remote_release_root_path = tmp_path / "remote-release"
+    real_run = environment._runner.run
+
+    def run(
+        command_list: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        """Materialize the rsync payload locally and delegate ordinary commands."""
+
+        if command_list[0] != "rsync":
+            return real_run(command_list, **kwargs)
+        destination_path = Path(command_list[-1].split(":", maxsplit=1)[1])
+        destination_path.mkdir(parents=True)
+        for source_path_text in command_list[-3:-1]:
+            shutil.copy2(source_path_text, destination_path)
+        return subprocess.CompletedProcess(command_list, 0, "", "")
+
+    def ssh_run(
+        command_list: list[str],
+        *,
+        ssh_control_path: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        """Execute the generated remote verification command on the test host."""
+
+        assert ssh_control_path == tmp_path / "control"
+        assert command_list[0] == "sudo"
+        return subprocess.run(
+            command_list[1:],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    monkeypatch.setattr(environment._runner, "run", run)
+    monkeypatch.setattr(environment, "_ssh_run", ssh_run)
+    try:
+        environment._source_archive_transfer(
+            archive_path=archive_path,
+            manifest=manifest,
+            manifest_path=manifest_path,
+            release_name=release_name,
+            remote_release_root_path=remote_release_root_path,
+            repository_name="workflow-infrastructure",
+            ssh_control_path=tmp_path / "control",
+        )
+        accepted_path = (
+            remote_release_root_path
+            / release_name
+            / "sources"
+            / "workflow-infrastructure"
+            / "tracked.txt"
+        )
+        assert accepted_path.read_text(encoding="utf-8") == "tracked\n"
+
+        with pytest.raises(subprocess.CalledProcessError):
+            environment._source_archive_transfer(
+                archive_path=archive_path,
+                manifest=manifest,
+                manifest_path=manifest_path,
+                release_name=release_name,
+                remote_release_root_path=remote_release_root_path,
+                repository_name="workflow-infrastructure",
+                ssh_control_path=tmp_path / "control",
+            )
+        assert accepted_path.read_text(encoding="utf-8") == "tracked\n"
+    finally:
+        shutil.rmtree(staging_path, ignore_errors=True)
+
+
+def test_moving_source_resolution_retries_race_and_supports_one_exact_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Resolve remote default HEAD once, retry a race, and keep override provenance explicit."""
+
+    remote_path = tmp_path / "contract.git"
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=trunk", str(remote_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    repository_path = tmp_path / "contract"
+    subprocess.run(
+        ["git", "clone", str(remote_path), str(repository_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    _git_run(repository_path, ["config", "user.email", "test@example.com"])
+    _git_run(repository_path, ["config", "user.name", "Test"])
+    (repository_path / "pyproject.toml").write_text(
+        '[project]\nname = "workflow-container-contract"\nversion = "0.6.0"\n',
+        encoding="utf-8",
+    )
+    (repository_path / "workflow_container_contract").mkdir()
+    (repository_path / "workflow_container_contract/__init__.py").write_text(
+        'VERSION = "first"\n',
+        encoding="utf-8",
+    )
+    _git_run(repository_path, ["add", "."])
+    _git_run(repository_path, ["commit", "-m", "first"])
+    first_commit_sha = subprocess.run(
+        ["git", "-C", str(repository_path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _git_run(repository_path, ["push", "-u", "origin", "trunk"])
+    (repository_path / "pyproject.toml").write_text(
+        '[project]\nname = "workflow-container-contract"\nversion = "0.7.0"\n',
+        encoding="utf-8",
+    )
+    (repository_path / "workflow_container_contract/__init__.py").write_text(
+        'VERSION = "second"\n',
+        encoding="utf-8",
+    )
+    _git_run(repository_path, ["add", "."])
+    _git_run(repository_path, ["commit", "-m", "second"])
+    second_commit_sha = subprocess.run(
+        ["git", "-C", str(repository_path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    _git_run(repository_path, ["push", "origin", "trunk"])
+    (repository_path / "untracked.txt").write_text("not exported\n", encoding="utf-8")
+
+    monkeypatch.setitem(
+        development_environment.REPOSITORY_URL_BY_NAME_MAP,
+        "workflow-container-contract",
+        str(remote_path),
+    )
+    environment = _environment_get(tmp_path)
+    remote_head_by_field_map_list = [
+        {"commit_sha": first_commit_sha, "resolved_ref": "refs/heads/trunk"},
+        {"commit_sha": second_commit_sha, "resolved_ref": "refs/heads/trunk"},
+        {"commit_sha": second_commit_sha, "resolved_ref": "refs/heads/trunk"},
+    ]
+
+    def moving_source_head_by_field_map_get(*, repository_url: str) -> dict[str, str]:
+        """Return one controlled remote HEAD observation.
+
+        Args:
+            repository_url: Expected fixture repository URL.
+
+        Returns:
+            Next controlled remote HEAD identity.
+        """
+
+        assert repository_url == str(remote_path)
+        return remote_head_by_field_map_list.pop(0)
+
+    real_head_get = environment._moving_source_head_by_field_map_get
+    monkeypatch.setattr(
+        environment,
+        "_moving_source_head_by_field_map_get",
+        moving_source_head_by_field_map_get,
+    )
+    latest_archive_path = tmp_path / "latest.tar"
+    latest_manifest = environment._moving_source_archive_create(
+        archive_path=latest_archive_path,
+        exact_override_commit="",
+        manifest_path=tmp_path / "latest.json",
+        repository_name="workflow-container-contract",
+    )
+
+    assert remote_head_by_field_map_list == []
+    assert latest_manifest["source_kind"] == "resolved_moving_source"
+    assert latest_manifest["requested_selector"] == "HEAD"
+    assert latest_manifest["resolved_ref"] == "refs/heads/trunk"
+    assert latest_manifest["commit_sha"] == second_commit_sha
+    assert latest_manifest["package_version"] == "0.7.0"
+    assert "override_identity" not in latest_manifest
+    with tarfile.open(latest_archive_path) as archive:
+        assert set(archive.getnames()) == {
+            "pyproject.toml",
+            "workflow_container_contract",
+            "workflow_container_contract/__init__.py",
+        }
+
+    monkeypatch.setattr(
+        environment,
+        "_moving_source_head_by_field_map_get",
+        real_head_get,
+    )
+    override_manifest = environment._moving_source_archive_create(
+        archive_path=tmp_path / "override.tar",
+        exact_override_commit=first_commit_sha,
+        manifest_path=tmp_path / "override.json",
+        repository_name="workflow-container-contract",
+    )
+
+    assert override_manifest["commit_sha"] == first_commit_sha
+    assert override_manifest["package_version"] == "0.6.0"
+    assert override_manifest["override_identity"] == first_commit_sha
+    assert override_manifest["override_reason"] == "explicit operator deploy argument"
+
+    tree_sha = subprocess.run(
+        ["git", "-C", str(repository_path), "rev-parse", f"{first_commit_sha}^{{tree}}"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    with pytest.raises(DevelopmentEnvironmentError, match="is not a commit"):
+        environment._moving_source_archive_create(
+            archive_path=tmp_path / "tree-override.tar",
+            exact_override_commit=tree_sha,
+            manifest_path=tmp_path / "tree-override.json",
+            repository_name="workflow-container-contract",
+        )
 
 
 def test_source_repository_requires_clean_exact_published_head(
@@ -1054,6 +2122,42 @@ def test_ordinary_compute_apply_rejects_every_possible_stable_identity_replaceme
     ]
 
 
+def test_existing_stack_resource_identity_validation_allows_only_additions(
+    tmp_path: Path,
+) -> None:
+    """A guarded update may add resources but cannot remove or replace an existing identity."""
+
+    environment = _environment_get(tmp_path)
+    previous_identity_by_logical_id_map = {
+        "DataBucket": "workflow-control-center-data",
+        "StorageKey": "key-0123456789abcdef0",
+    }
+
+    environment._existing_stack_resource_identity_validate(
+        current_resource_id_by_logical_name_map={
+            **previous_identity_by_logical_id_map,
+            "AccountPublicAccessBlock": "workflow-control-center-account-bpa",
+        },
+        previous_resource_id_by_logical_name_map=previous_identity_by_logical_id_map,
+    )
+
+    for current_identity_by_logical_id_map in (
+        {"DataBucket": "workflow-control-center-data"},
+        {
+            "DataBucket": "workflow-control-center-data-replacement",
+            "StorageKey": "key-0123456789abcdef0",
+        },
+    ):
+        with pytest.raises(
+            DevelopmentEnvironmentError,
+            match="Stable data-plane physical resource identity changed",
+        ):
+            environment._existing_stack_resource_identity_validate(
+                current_resource_id_by_logical_name_map=current_identity_by_logical_id_map,
+                previous_resource_id_by_logical_name_map=previous_identity_by_logical_id_map,
+            )
+
+
 def test_replacement_parameters_select_next_slot_and_enable_creation_guard(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -1064,11 +2168,15 @@ def test_replacement_parameters_select_next_slot_and_enable_creation_guard(
     monkeypatch.setattr(
         environment,
         "_stack_output_by_name_map_get",
-        lambda stack_name: {"InstanceSlot": "a"},
+        lambda stack_name: {
+            "InstanceSlot": "a",
+            "LatestLaunchTemplateVersion": "7",
+        },
     )
 
     assert environment._replacement_parameter_by_name_map_get() == {
         "InstanceSlot": "b",
+        "InstanceLaunchTemplateVersion": "7",
         "ReplacementGuardScheduleExpression": "at(2026-07-28T14:00:00)",
         "ReplacementGuardScheduleState": "ENABLED",
     }
@@ -1316,6 +2424,7 @@ def test_restore_cleanup_keeps_current_and_deletes_only_owned_stale_rollback(
     retired_volume_id = "vol-0fedcba9876543210"
     common_tag_list = [
         {"Key": "Environment", "Value": "development"},
+        {"Key": "EnvironmentName", "Value": "primary"},
         {"Key": "ManagedBy", "Value": "CloudFormation"},
         {
             "Key": "Name",
@@ -1360,9 +2469,7 @@ def test_restore_cleanup_keeps_current_and_deletes_only_owned_stale_rollback(
     monkeypatch.setattr(
         environment,
         "_aws_json_get",
-        lambda arguments: {
-            "Volumes": [current_volume_payload, retired_volume_payload]
-        },
+        lambda arguments: {"Volumes": [current_volume_payload, retired_volume_payload]},
     )
 
     def aws_run(
@@ -1378,9 +2485,7 @@ def test_restore_cleanup_keeps_current_and_deletes_only_owned_stale_rollback(
 
     monkeypatch.setattr(environment, "_aws_run", aws_run)
 
-    environment._retired_retained_volume_cleanup(
-        current_volume_id=current_volume_id
-    )
+    environment._retired_retained_volume_cleanup(current_volume_id=current_volume_id)
 
     assert aws_argument_list_list == [
         ["ec2", "delete-volume", "--volume-id", retired_volume_id],
@@ -1406,6 +2511,7 @@ def test_instance_launch_template_version_must_match_stack_latest_output(
         "_stack_output_by_name_map_get",
         lambda stack_name: {
             "InstanceId": "i-current",
+            "InstanceLaunchTemplateVersion": "7",
             "LatestLaunchTemplateVersion": "7",
         },
     )
@@ -1512,7 +2618,9 @@ def test_first_replacement_relies_on_cloudformation_guard_before_target_exists(
     monkeypatch.setattr(
         environment,
         "_stack_apply",
-        lambda **kwargs: operation_list.append("apply"),
+        lambda **kwargs: operation_list.append(
+            ("apply", kwargs["protected_identity_logical_id_set"])
+        ),
     )
     monkeypatch.setattr(
         environment,
@@ -1533,7 +2641,15 @@ def test_first_replacement_relies_on_cloudformation_guard_before_target_exists(
         }
     )
 
-    assert operation_list == ["detach", "apply", "attachment", "version"]
+    assert operation_list == [
+        "detach",
+        (
+            "apply",
+            development_environment.COMPUTE_RETAINED_VOLUME_LOGICAL_ID_SET,
+        ),
+        "attachment",
+        "version",
+    ]
 
 
 def test_replace_uses_controlled_detach_and_creation_guard(
@@ -1574,7 +2690,12 @@ def test_replace_uses_controlled_detach_and_creation_guard(
     monkeypatch.setattr(
         environment,
         "_replacement_stack_apply",
-        lambda **kwargs: operation_list.append(kwargs["parameter_by_name_map"]),
+        lambda **kwargs: operation_list.append(
+            (
+                kwargs["parameter_by_name_map"],
+                kwargs.get("allow_retained_volume_transition", False),
+            )
+        ),
     )
     monkeypatch.setattr(
         environment,
@@ -1609,11 +2730,14 @@ def test_replace_uses_controlled_detach_and_creation_guard(
     assert operation_list == [
         "drift",
         ("stop", False),
-        {
-            "InstanceSlot": "b",
-            "ReplacementGuardScheduleExpression": "at(2026-07-28T14:00:00)",
-            "ReplacementGuardScheduleState": "ENABLED",
-        },
+        (
+            {
+                "InstanceSlot": "b",
+                "ReplacementGuardScheduleExpression": "at(2026-07-28T14:00:00)",
+                "ReplacementGuardScheduleState": "ENABLED",
+            },
+            False,
+        ),
         ("start", True),
         "disable-guard",
         "link",
@@ -1671,7 +2795,12 @@ def test_restore_combines_snapshot_and_creation_guard_in_controlled_replacement(
     monkeypatch.setattr(
         environment,
         "_replacement_stack_apply",
-        lambda **kwargs: operation_list.append(kwargs["parameter_by_name_map"]),
+        lambda **kwargs: operation_list.append(
+            (
+                kwargs["parameter_by_name_map"],
+                kwargs["allow_retained_volume_transition"],
+            )
+        ),
     )
     monkeypatch.setattr(
         environment,
@@ -1683,9 +2812,7 @@ def test_restore_combines_snapshot_and_creation_guard_in_controlled_replacement(
     monkeypatch.setattr(
         environment,
         "_retained_volume_backup_disable",
-        lambda **kwargs: operation_list.append(
-            ("disable-backup", kwargs["volume_id"])
-        ),
+        lambda **kwargs: operation_list.append(("disable-backup", kwargs["volume_id"])),
     )
     monkeypatch.setattr(
         environment,
@@ -1728,13 +2855,16 @@ def test_restore_combines_snapshot_and_creation_guard_in_controlled_replacement(
         "drift",
         ("cleanup-retired", "vol-source"),
         ("stop", False),
-        {
-            "InstanceSlot": "b",
-            "ReplacementGuardScheduleExpression": "at(2026-07-28T14:00:00)",
-            "ReplacementGuardScheduleState": "ENABLED",
-            "RetainedVolumeSlot": "a",
-            "RetainedVolumeSnapshotId": "snap-0123456789abcdef0",
-        },
+        (
+            {
+                "InstanceSlot": "b",
+                "ReplacementGuardScheduleExpression": "at(2026-07-28T14:00:00)",
+                "ReplacementGuardScheduleState": "ENABLED",
+                "RetainedVolumeSlot": "a",
+                "RetainedVolumeSnapshotId": "snap-0123456789abcdef0",
+            },
+            True,
+        ),
         (
             "validate-volume",
             "snap-0123456789abcdef0",
@@ -2014,14 +3144,10 @@ def test_host_status_probe_normalizes_only_safe_fields(
             "Status": "Success",
         }
 
-    monkeypatch.setattr(
-        environment, "_ssm_shell_result_get", ssm_shell_result_get
-    )
+    monkeypatch.setattr(environment, "_ssm_shell_result_get", ssm_shell_result_get)
 
     assert (
-        environment._host_status_payload_get(
-            retained_volume_id="vol-0123456789abcdef0"
-        )
+        environment._host_status_payload_get(retained_volume_id="vol-0123456789abcdef0")
         == expected_payload
     )
     assert len(command_list_list) == 1
@@ -2029,7 +3155,7 @@ def test_host_status_probe_normalizes_only_safe_fields(
         "python3.14 /opt/workflow-infrastructure/control/current/"
     )
     assert (
-        "host-status --retained-volume-id vol-0123456789abcdef0"
+        "host-status --environment-name primary --retained-volume-id vol-0123456789abcdef0"
         in command_list_list[0][0]
     )
 
@@ -2101,9 +3227,7 @@ def test_host_status_collects_exact_mount_node_release_and_activity(
                     "items": [
                         {
                             "status": {
-                                "conditions": [
-                                    {"status": "True", "type": "Ready"}
-                                ]
+                                "conditions": [{"status": "True", "type": "Ready"}]
                             }
                         }
                     ]
@@ -2116,9 +3240,7 @@ def test_host_status_collects_exact_mount_node_release_and_activity(
         return subprocess.CompletedProcess(argument_list, 0, output, "")
 
     monkeypatch.setattr(environment._runner, "run", run)
-    monkeypatch.setattr(
-        environment, "_host_product_activity_get", lambda: "idle"
-    )
+    monkeypatch.setattr(environment, "_host_product_activity_get", lambda: "idle")
 
     assert environment._host_status_local_payload_get(
         retained_volume_id="vol-0123456789abcdef0"
@@ -2178,9 +3300,7 @@ def test_status_includes_remote_host_readiness_and_activity(
         "_instance_ssm_ping_status_get",
         lambda instance_id: "Online",
     )
-    monkeypatch.setattr(
-        environment, "_active_session_count_get", lambda instance_id: 1
-    )
+    monkeypatch.setattr(environment, "_active_session_count_get", lambda instance_id: 1)
     monkeypatch.setattr(
         environment,
         "_latest_snapshot_id_get",
@@ -2340,6 +3460,7 @@ def _retained_product_release_prepare(
     release_root_path: Path,
     *,
     release_name: str,
+    source_manifest_version: int | None = None,
 ) -> None:
     """Create one internally consistent retained Product release fixture."""
 
@@ -2349,6 +3470,7 @@ def _retained_product_release_prepare(
         [
             "workflow-infrastructure",
             *development_environment.PRODUCT_SOURCE_REPOSITORY_NAME_LIST,
+            "workflow-container-contract",
         ],
         start=1,
     ):
@@ -2363,18 +3485,42 @@ def _retained_product_release_prepare(
                 repository_name
             ],
         }
-        source_identity_by_name_map[repository_name] = source_identity
-        repository_by_name_map[repository_name] = {
+        repository_payload: dict[str, object] = {
             **source_identity,
             "file_sha256_by_path_map": {
                 "tracked.txt": hashlib.sha256(source_payload).hexdigest()
             },
             "submodule_by_path_map": {},
         }
+        if source_manifest_version is not None:
+            source_kind = (
+                "resolved_moving_source"
+                if repository_name == "workflow-container-contract"
+                else "exact_checkout"
+            )
+            source_identity["source_kind"] = source_kind
+            repository_payload["source_kind"] = source_kind
+            if repository_name == "workflow-container-contract":
+                moving_identity = {
+                    "package_version": "0.7.0",
+                    "requested_selector": "HEAD",
+                    "resolved_ref": "refs/heads/main",
+                }
+                source_identity.update(moving_identity)
+                repository_payload.update(moving_identity)
+        source_identity_by_name_map[repository_name] = source_identity
+        repository_by_name_map[repository_name] = repository_payload
     source_manifest = {
         "release": release_name,
         "repository_by_name_map": repository_by_name_map,
     }
+    if source_manifest_version is not None:
+        source_manifest.update(
+            {
+                "environment_name": "primary",
+                "source_manifest_version": source_manifest_version,
+            }
+        )
     source_manifest_bytes = (
         json.dumps(source_manifest, indent=2, sort_keys=True) + "\n"
     ).encode()
@@ -2384,6 +3530,14 @@ def _retained_product_release_prepare(
     (release_root_path / "release-manifest.json").write_text(
         json.dumps(
             {
+                **(
+                    {
+                        "environment_name": "primary",
+                        "product_release_manifest_version": 2,
+                    }
+                    if source_manifest_version is not None
+                    else {}
+                ),
                 "release": release_name,
                 "render_sha256": hashlib.sha256(render_bytes).hexdigest(),
                 "source_by_name_map": source_identity_by_name_map,
@@ -2447,6 +3601,303 @@ def test_host_product_release_activation_is_verified_retained_and_atomic(
     assert current_source_path.resolve(strict=True) == release_root_path
 
 
+def test_legacy_product_tool_runtime_is_resolved_before_atomic_retention(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The first replacement must retain a portable runtime while the old root exists."""
+
+    control_release_root_path = tmp_path / "control/releases"
+    current_source_path = tmp_path / "product/current"
+    legacy_runtime_root_path = tmp_path / "root/product-tool"
+    retained_root_path = tmp_path / "retained"
+    host_python_path = Path("/opt/exact-python/bin/python3.14")
+    requirement_path = (
+        current_source_path
+        / "sources/workflow-control-center/tool/requirements-development-kubernetes.txt"
+    )
+    product_tool_path = (
+        current_source_path
+        / "sources/workflow-control-center/tool/development_kubernetes_manage.py"
+    )
+    requirement_path.parent.mkdir(parents=True)
+    requirement_path.write_text("pydantic==2.13.4\nPyYAML==6.0.3\n", encoding="utf-8")
+    product_tool_path.write_text("# exact retained Product tool\n", encoding="utf-8")
+    requirement_digest = hashlib.sha256(requirement_path.read_bytes()).hexdigest()
+    legacy_runtime_path = legacy_runtime_root_path / requirement_digest
+    command_list_list: list[list[str]] = []
+
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_CONTROL_RELEASE_ROOT_PATH",
+        control_release_root_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_CURRENT_SOURCE_PATH",
+        current_source_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_LEGACY_PRODUCT_TOOL_RUNTIME_ROOT_PATH",
+        legacy_runtime_root_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_PYTHON_PATH",
+        host_python_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_ROOT_PATH",
+        retained_root_path,
+    )
+    environment = _environment_get(
+        control_release_root_path
+        / "20260730120000000000/sources/workflow-infrastructure"
+    )
+
+    def run(
+        argument_list: list[str],
+        *,
+        check: bool = True,
+        input_text: str | None = None,
+        should_capture: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        del check, input_text, should_capture
+        command_list_list.append(argument_list)
+        if argument_list == ["python3.14", str(product_tool_path), "--help"]:
+            (legacy_runtime_path / "bin").mkdir(parents=True)
+            (legacy_runtime_path / "pyvenv.cfg").write_text(
+                (
+                    "home = /old-root/python\n"
+                    "implementation = CPython\n"
+                    "executable = /old-root/python3.14\n"
+                ),
+                encoding="utf-8",
+            )
+            (legacy_runtime_path / "bin/python").symlink_to("/old-root/python3.14")
+        return subprocess.CompletedProcess(argument_list, 0, "", "")
+
+    monkeypatch.setattr(environment._runner, "run", run)
+
+    environment.host_product_runtime_retain()
+    environment.host_product_runtime_retain()
+
+    retained_runtime_path = retained_root_path / "product-tool" / requirement_digest
+    assert retained_runtime_path.is_dir()
+    retained_pyvenv_text = (retained_runtime_path / "pyvenv.cfg").read_text(
+        encoding="utf-8"
+    )
+    assert f"home = {host_python_path.parent}\n" in retained_pyvenv_text
+    assert f"executable = {host_python_path}\n" in retained_pyvenv_text
+    assert (
+        f"command = {host_python_path} -m venv {retained_runtime_path}\n"
+        in retained_pyvenv_text
+    )
+    assert "implementation = CPython\n" in retained_pyvenv_text
+    assert "/old-root" not in retained_pyvenv_text
+    for python_name in ("python", "python3", "python3.14"):
+        assert (retained_runtime_path / "bin" / python_name).readlink() == (
+            host_python_path
+        )
+    assert (
+        command_list_list.count(["python3.14", str(product_tool_path), "--help"]) == 1
+    )
+    assert [
+        str(retained_runtime_path / "bin/python"),
+        "-c",
+        "import pydantic; import yaml",
+    ] in command_list_list
+    assert ["sync", "-f", str(retained_root_path / "product-tool")] in (
+        command_list_list
+    )
+
+
+def test_legacy_runtime_transition_publishes_control_before_host_retention(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The old root is touched only after exact new control source readiness."""
+
+    environment = _environment_get(tmp_path)
+    event_list: list[object] = []
+    monkeypatch.setattr(
+        environment,
+        "_host_start_foundation",
+        lambda *, should_validate_source: event_list.append(
+            ("start-foundation", should_validate_source)
+        ),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_infrastructure_source_publish",
+        lambda *, should_install_host_controller=True: event_list.append(
+            ("publish-source", should_install_host_controller)
+        ),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_host_readiness_wait",
+        lambda: event_list.append("ready"),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_ssh_control_session",
+        lambda: nullcontext(Path("/tmp/test-ssh-control")),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_ssh_run",
+        lambda command_list, *, ssh_control_path, should_capture=True: (
+            event_list.append(
+                (
+                    "ssh",
+                    command_list,
+                    ssh_control_path,
+                    should_capture,
+                )
+            )
+            or subprocess.CompletedProcess(command_list, 0, "", "")
+        ),
+    )
+
+    environment._legacy_product_tool_runtime_transition_prepare()
+
+    assert event_list[:3] == [
+        ("start-foundation", True),
+        ("publish-source", False),
+        "ready",
+    ]
+    assert event_list[3] == (
+        "ssh",
+        [
+            "sudo",
+            "python3.14",
+            (
+                "/opt/workflow-infrastructure/control/current/sources/"
+                "workflow-infrastructure/tool/development_environment_manage.py"
+            ),
+            "host-product-runtime-retain",
+            "--environment-name",
+            "primary",
+        ],
+        Path("/tmp/test-ssh-control"),
+        True,
+    )
+
+
+def test_legacy_runtime_transition_is_required_only_for_pre_manifest_stack() -> None:
+    """Only a pre-hardening compute stack needs the one-time root-volume bridge."""
+
+    assert DevelopmentEnvironment._legacy_product_tool_runtime_transition_is_required(
+        {"InstanceType": "m7g.xlarge"}
+    )
+    assert not (
+        DevelopmentEnvironment._legacy_product_tool_runtime_transition_is_required(
+            {
+                "HostArtifactManifestSha256": "a" * 64,
+                "InstanceType": "m7g.xlarge",
+            }
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "source_manifest_version",
+    [2, development_environment.SOURCE_MANIFEST_VERSION],
+)
+def test_host_product_release_activation_accepts_supported_typed_source_graph(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    source_manifest_version: int,
+) -> None:
+    """Activation accepts both the previous and current typed source graph."""
+
+    retained_release_root_path = tmp_path / "retained/release"
+    release_root_path = retained_release_root_path / "releases/20260730120000000000"
+    current_release_path = retained_release_root_path / "current"
+    current_source_path = tmp_path / "root/current"
+    _retained_product_release_prepare(
+        release_root_path,
+        release_name=release_root_path.name,
+        source_manifest_version=source_manifest_version,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_RELEASE_ROOT_PATH",
+        retained_release_root_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_CURRENT_RELEASE_PATH",
+        current_release_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RELEASE_ROOT_PATH",
+        retained_release_root_path / "releases",
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_CURRENT_SOURCE_PATH",
+        current_source_path,
+    )
+    environment = _environment_get(
+        tmp_path / "control/current/sources/workflow-infrastructure"
+    )
+    environment._is_host = True
+
+    environment.host_product_release_activate(release_root_path.name)
+
+    assert current_release_path.resolve(strict=True) == release_root_path
+    assert current_source_path.resolve(strict=True) == release_root_path
+
+
+def test_legacy_runtime_source_publish_skips_new_host_install(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The transition publishes exact control bytes without using new host artifacts."""
+
+    environment = _environment_get(tmp_path)
+    command_list_list: list[list[str]] = []
+    monkeypatch.setattr(
+        environment,
+        "_source_archive_publish",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        environment,
+        "_ssh_control_session",
+        lambda: nullcontext(tmp_path / "control"),
+    )
+
+    def ssh_run(
+        command_list: list[str],
+        *,
+        ssh_control_path: Path,
+        should_capture: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        del ssh_control_path, should_capture
+        command_list_list.append(command_list)
+        return subprocess.CompletedProcess(command_list, 0, "", "")
+
+    monkeypatch.setattr(environment, "_ssh_run", ssh_run)
+
+    environment._infrastructure_source_publish(
+        should_install_host_controller=False,
+    )
+
+    assert any(
+        command_list[1:3] == ["install", "-d"] for command_list in command_list_list
+    )
+    assert any(
+        command_list[1:3] == ["ln", "-sfn"] for command_list in command_list_list
+    )
+    assert not any("host-install" in command_list for command_list in command_list_list)
+
+
 def test_host_product_release_restore_rejects_changed_tracked_source(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2493,7 +3944,61 @@ def test_host_product_release_restore_rejects_changed_tracked_source(
 
     with pytest.raises(
         DevelopmentEnvironmentError,
-        match="source file digest differs",
+        match="source file graph differs",
+    ):
+        environment.host_product_release_restore()
+
+    assert not current_source_path.exists()
+
+
+def test_host_product_release_restore_rejects_unmanifested_source_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Recovery must reject added source bytes before executing retained Product code."""
+
+    retained_release_root_path = tmp_path / "retained/release"
+    release_root_path = retained_release_root_path / "releases/20260730120000000000"
+    current_release_path = retained_release_root_path / "current"
+    current_source_path = tmp_path / "root/current"
+    _retained_product_release_prepare(
+        release_root_path,
+        release_name=release_root_path.name,
+        source_manifest_version=development_environment.SOURCE_MANIFEST_VERSION,
+    )
+    current_release_path.parent.mkdir(parents=True, exist_ok=True)
+    current_release_path.symlink_to(release_root_path)
+    (
+        release_root_path / "sources" / "workflow-control-center" / "unmanifested.py"
+    ).write_text("raise RuntimeError('must never execute')\n", encoding="utf-8")
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_RELEASE_ROOT_PATH",
+        retained_release_root_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_CURRENT_RELEASE_PATH",
+        current_release_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RELEASE_ROOT_PATH",
+        retained_release_root_path / "releases",
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_CURRENT_SOURCE_PATH",
+        current_source_path,
+    )
+    environment = _environment_get(
+        tmp_path / "control/current/sources/workflow-infrastructure"
+    )
+    environment._is_host = True
+
+    with pytest.raises(
+        DevelopmentEnvironmentError,
+        match="source file graph differs",
     ):
         environment.host_product_release_restore()
 
@@ -2522,6 +4027,19 @@ def test_deploy_activates_release_before_installing_product_and_host_services(
         lambda repository_path, repository_name: None,
     )
     monkeypatch.setattr(environment, "_instance_online_wait", lambda: None)
+    monkeypatch.setattr(
+        environment,
+        "_instance_launch_template_version_validate",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        environment,
+        "_host_artifact_manifest_payload_get",
+        lambda: {
+            "architecture": "arm64",
+            "artifact_by_name_map": {},
+        },
+    )
 
     def source_archive_publish(**kwargs: object) -> dict[str, object]:
         remote_release_root_path = kwargs["remote_release_root_path"]
@@ -2543,6 +4061,41 @@ def test_deploy_activates_release_before_installing_product_and_host_services(
         environment,
         "_source_archive_publish",
         source_archive_publish,
+    )
+
+    def moving_source_archive_publish(**kwargs: object) -> dict[str, object]:
+        """Return one exact resolved moving-source entry.
+
+        Args:
+            kwargs: Moving-source publication arguments.
+
+        Returns:
+            Resolved moving-source manifest.
+        """
+
+        remote_release_root_path = kwargs["remote_release_root_path"]
+        assert isinstance(remote_release_root_path, Path)
+        remote_release_root_path_list.append(remote_release_root_path)
+        assert kwargs["repository_name"] == "workflow-container-contract"
+        assert kwargs["exact_override_commit"] == ""
+        return {
+            "archive_sha256": "c" * 64,
+            "commit_sha": "d" * 40,
+            "file_sha256_by_path_map": {},
+            "package_version": "0.7.0",
+            "repository_url": development_environment.REPOSITORY_URL_BY_NAME_MAP[
+                "workflow-container-contract"
+            ],
+            "requested_selector": "HEAD",
+            "resolved_ref": "refs/heads/main",
+            "source_kind": "resolved_moving_source",
+            "submodule_by_path_map": {},
+        }
+
+    monkeypatch.setattr(
+        environment,
+        "_moving_source_archive_publish",
+        moving_source_archive_publish,
     )
     monkeypatch.setattr(
         environment,
@@ -2577,13 +4130,13 @@ def test_deploy_activates_release_before_installing_product_and_host_services(
     host_prepare_index = next(
         index
         for index, command_list in enumerate(remote_command_list_list)
-        if command_list[-1] == "host-prepare"
+        if "host-prepare" in command_list
         and "/sources/workflow-infrastructure/" in " ".join(command_list)
     )
     product_deploy_index = next(
         index
         for index, command_list in enumerate(remote_command_list_list)
-        if command_list[-1] == "linux/arm64"
+        if "linux/arm64" in command_list
         and "development_kubernetes_manage.py" in " ".join(command_list)
     )
     current_activation_index = next(
@@ -2594,14 +4147,14 @@ def test_deploy_activates_release_before_installing_product_and_host_services(
     product_host_install_index = next(
         index
         for index, command_list in enumerate(remote_command_list_list)
-        if command_list[-1] == "host-install"
+        if "host-install" in command_list
         and str(development_environment.HOST_CURRENT_SOURCE_PATH)
         in " ".join(command_list)
     )
     controller_host_install_index = next(
         index
         for index, command_list in enumerate(remote_command_list_list)
-        if command_list[-1] == "host-install"
+        if "host-install" in command_list
         and str(development_environment.HOST_CONTROL_CURRENT_SOURCE_PATH)
         in " ".join(command_list)
     )
@@ -2706,36 +4259,58 @@ def test_ssm_shell_run_timeout_preserves_remote_command_for_diagnosis(
     assert environment._clock.monotonic() == 10
 
 
-def test_host_prepare_installs_checksum_pinned_helm_atomically(
+def test_host_prepare_validates_preinstalled_helm_against_launch_manifest(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Host preparation verifies and installs the exact native Helm binary."""
+    """Host preparation never downloads and accepts only launch-bound Helm."""
 
-    binary_payload = b"\x7fELFtest-helm-binary"
-    archive_buffer = io.BytesIO()
-    with tarfile.open(fileobj=archive_buffer, mode="w:gz") as archive:
-        member = tarfile.TarInfo("linux-arm64/helm")
-        member.size = len(binary_payload)
-        archive.addfile(member, io.BytesIO(binary_payload))
-    archive_payload = archive_buffer.getvalue()
+    helm_version = "v4.2.3"
     helm_path = tmp_path / "bin/helm"
     helm_path.parent.mkdir()
+    helm_path.write_bytes(b"\x7fELFtest-helm-binary")
+    manifest_payload = {
+        "architecture": "arm64",
+        "artifact_by_name_map": {
+            "helm": {
+                "name": "helm",
+                "selector": "4",
+                "sha256": "a" * 64,
+                "size": 1,
+                "url": "https://get.helm.sh/helm-v4.2.3-linux-arm64.tar.gz",
+                "version": helm_version,
+            }
+        },
+    }
+    manifest_bytes = json.dumps(
+        manifest_payload,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    manifest_path = tmp_path / "host-artifact-manifest.json.gz.b64"
+    manifest_digest_path = tmp_path / "host-artifact-manifest.sha256"
+    manifest_path.write_text(
+        base64.b64encode(gzip.compress(manifest_bytes, mtime=0)).decode(),
+        encoding="utf-8",
+    )
+    manifest_digest_path.write_text(
+        hashlib.sha256(manifest_bytes).hexdigest(),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(development_environment, "HELM_BINARY_PATH", helm_path)
-    monkeypatch.setattr(development_environment.platform, "machine", lambda: "aarch64")
     monkeypatch.setattr(
         development_environment,
-        "HELM_RELEASE_BY_MACHINE_MAP",
-        {
-            "aarch64": (
-                "arm64",
-                hashlib.sha256(archive_payload).hexdigest(),
-            )
-        },
+        "HOST_ARTIFACT_MANIFEST_PATH",
+        manifest_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_ARTIFACT_MANIFEST_SHA256_PATH",
+        manifest_digest_path,
     )
 
     class HelmRunner:
-        """Provide the pinned archive and report the installed binary version."""
+        """Report only the already installed exact binary version."""
 
         def run(
             self,
@@ -2746,16 +4321,11 @@ def test_host_prepare_installs_checksum_pinned_helm_atomically(
             should_capture: bool = True,
         ) -> subprocess.CompletedProcess[str]:
             del check, input_text, should_capture
-            if command_list[0] == "curl":
-                output_path = Path(command_list[command_list.index("-o") + 1])
-                output_path.write_bytes(archive_payload)
-                return subprocess.CompletedProcess(command_list, 0, "", "")
             assert command_list[0] == str(helm_path)
-            assert helm_path.read_bytes() == binary_payload
             return subprocess.CompletedProcess(
                 command_list,
                 0,
-                development_environment.HELM_VERSION + "\n",
+                helm_version + "\n",
                 "",
             )
 
@@ -2768,8 +4338,50 @@ def test_host_prepare_installs_checksum_pinned_helm_atomically(
 
     environment.host_prepare()
 
-    assert helm_path.read_bytes() == binary_payload
-    assert helm_path.stat().st_mode & 0o777 == 0o755
+    assert helm_path.read_bytes() == b"\x7fELFtest-helm-binary"
+
+
+def test_host_prepare_rejects_product_release_built_for_another_host_input(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Product release provenance must equal the launch input installed on its host."""
+
+    host_release_root_path = tmp_path / "retained/release/releases"
+    project_root_path = (
+        host_release_root_path
+        / "20260730120000000000"
+        / "sources"
+        / "workflow-infrastructure"
+    )
+    project_root_path.mkdir(parents=True)
+    source_manifest_path = project_root_path.parent.parent / "source-manifest.json"
+    source_manifest_path.write_text(
+        json.dumps(
+            {
+                "environment_name": "primary",
+                "host_artifact_manifest": {"architecture": "amd64"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RELEASE_ROOT_PATH",
+        host_release_root_path,
+    )
+    environment = _environment_get(project_root_path)
+    monkeypatch.setattr(
+        environment,
+        "_host_artifact_manifest_get",
+        lambda: {"architecture": "arm64"},
+    )
+
+    with pytest.raises(
+        DevelopmentEnvironmentError,
+        match="active host artifact identities differ",
+    ):
+        environment.host_prepare()
 
 
 def test_host_controller_renews_beyond_two_hours_then_stops_after_proven_idle(
@@ -2896,6 +4508,69 @@ def test_host_controller_discards_stale_idle_proof_on_restart(
     assert shutdown_time_list == [datetime(2026, 7, 28, 12, 30, tzinfo=UTC)]
 
 
+def test_host_controller_treats_unknown_session_state_as_busy(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An SSM API failure must renew the lease and restart the idle proof."""
+
+    clock = ClockFixed()
+    environment = DevelopmentEnvironment(
+        clock=clock,
+        project_root_path=tmp_path,
+        runner=CommandRunner(),
+    )
+    session_probe_count = 0
+    lease_time_list: list[datetime] = []
+    shutdown_time_list: list[datetime] = []
+
+    def session_count_get(instance_id: str) -> int:
+        nonlocal session_probe_count
+        del instance_id
+        session_probe_count += 1
+        if session_probe_count == 1:
+            raise DevelopmentEnvironmentError("Session Manager is unavailable")
+        return 0
+
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_STATE_ROOT_PATH",
+        tmp_path / "state",
+    )
+    monkeypatch.setattr(
+        environment._runner,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "", ""),
+    )
+    monkeypatch.setattr(
+        environment,
+        "_instance_metadata_get",
+        lambda path: "i-0123456789abcdef0",
+    )
+    monkeypatch.setattr(environment, "_host_node_name_get", lambda: "node-a")
+    monkeypatch.setattr(
+        environment,
+        "_host_active_session_count_get",
+        session_count_get,
+    )
+    monkeypatch.setattr(environment, "_host_product_activity_get", lambda: "idle")
+    monkeypatch.setattr(
+        environment,
+        "_stop_lease_upsert",
+        lambda: lease_time_list.append(clock.t_now),
+    )
+    monkeypatch.setattr(
+        environment,
+        "host_shutdown",
+        lambda: shutdown_time_list.append(clock.t_now),
+    )
+
+    environment.host_controller()
+
+    assert lease_time_list == [datetime(2026, 7, 28, 12, 0, tzinfo=UTC)]
+    assert shutdown_time_list == [datetime(2026, 7, 28, 12, 31, tzinfo=UTC)]
+
+
 def test_lifecycle_acceptance_uses_short_real_lease_then_restores_production(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -2912,7 +4587,9 @@ def test_lifecycle_acceptance_uses_short_real_lease_then_restores_production(
     lease_duration_list: list[timedelta] = []
 
     monkeypatch.setattr(
-        environment, "_local_operator_context_validate", lambda: event_list.append("context")
+        environment,
+        "_local_operator_context_validate",
+        lambda: event_list.append("context"),
     )
     monkeypatch.setattr(
         environment,
@@ -2924,9 +4601,7 @@ def test_lifecycle_acceptance_uses_short_real_lease_then_restores_production(
         "_stack_drift_validate",
         lambda stack_name: event_list.append(("drift", stack_name)),
     )
-    monkeypatch.setattr(
-        environment, "_instance_id_get", lambda: "i-0123456789abcdef0"
-    )
+    monkeypatch.setattr(environment, "_instance_id_get", lambda: "i-0123456789abcdef0")
     monkeypatch.setattr(
         environment,
         "_stack_output_by_name_map_get",
@@ -2961,9 +4636,7 @@ def test_lifecycle_acceptance_uses_short_real_lease_then_restores_production(
             "state": "ENABLED",
         }
 
-    monkeypatch.setattr(
-        environment, "_stop_lease_payload_get", stop_lease_payload_get
-    )
+    monkeypatch.setattr(environment, "_stop_lease_payload_get", stop_lease_payload_get)
 
     def instance_state_get(instance_id: str) -> str:
         assert instance_id == "i-0123456789abcdef0"
@@ -3002,13 +4675,9 @@ def test_lifecycle_acceptance_failure_restores_controller_and_production_lease(
     lease_call_count = 0
 
     monkeypatch.setattr(environment, "_local_operator_context_validate", lambda: None)
-    monkeypatch.setattr(
-        environment, "_source_repository_validate", lambda *args: None
-    )
+    monkeypatch.setattr(environment, "_source_repository_validate", lambda *args: None)
     monkeypatch.setattr(environment, "_stack_drift_validate", lambda stack_name: None)
-    monkeypatch.setattr(
-        environment, "_instance_id_get", lambda: "i-0123456789abcdef0"
-    )
+    monkeypatch.setattr(environment, "_instance_id_get", lambda: "i-0123456789abcdef0")
     monkeypatch.setattr(
         environment, "_instance_state_get", lambda instance_id: "running"
     )
