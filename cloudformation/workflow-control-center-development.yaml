@@ -1173,6 +1173,13 @@ Resources:
 
   PlatformRoleCatalogPermission:
     Type: AWS::LakeFormation::PrincipalPermissions
+    # AWS EarlyValidation requires the Lake Formation Catalog union member to
+    # be an object. cfn-lint 1.53.3 still carries the older string schema.
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            - E3012
     DependsOn: DataLakeSettings
     Properties:
       Permissions:
@@ -1181,7 +1188,7 @@ Resources:
       Principal:
         DataLakePrincipalIdentifier: !GetAtt PlatformRole.Arn
       Resource:
-        Catalog: !Ref AWS::AccountId
+        Catalog: {}
 
   PlatformRoleDataLocationPermission:
     Type: AWS::LakeFormation::PrincipalPermissions

@@ -653,12 +653,19 @@ def test_data_plane_keeps_global_lake_settings_stable_and_scopes_platform_contro
     }
     assert resource_by_name_map["PlatformRoleCatalogPermission"] == {
         "Type": "AWS::LakeFormation::PrincipalPermissions",
+        "Metadata": {
+            "cfn-lint": {
+                "config": {
+                    "ignore_checks": ["E3012"],
+                }
+            }
+        },
         "DependsOn": "DataLakeSettings",
         "Properties": {
             "Permissions": ["CREATE_DATABASE"],
             "PermissionsWithGrantOption": [],
             "Principal": platform_principal,
-            "Resource": {"Catalog": {"Ref": "AWS::AccountId"}},
+            "Resource": {"Catalog": {}},
         },
     }
     assert resource_by_name_map["PlatformRoleDataLocationPermission"] == {
