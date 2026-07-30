@@ -396,6 +396,7 @@ class DevelopmentEnvironment:
         )
         legacy_runtime_transition_is_required = False
         replacement_recovery_is_pending = False
+        failed_bootstrap_replacement_is_pending = False
         if compute_stack_exists:
             self._stack_drift_validate(
                 self._identity.compute_stack_name,
@@ -461,9 +462,13 @@ class DevelopmentEnvironment:
                 "Data-plane platform role output is malformed"
             )
         if replacement_recovery_is_pending:
-            self._replacement_recovery_finish(
-                should_allow_instance_launch_template_tag_drift=True
+            failed_bootstrap_replacement_is_pending = (
+                self._failed_replacement_host_bootstrap_is_proven()
             )
+            if not failed_bootstrap_replacement_is_pending:
+                self._replacement_recovery_finish(
+                    should_allow_instance_launch_template_tag_drift=True
+                )
         if legacy_runtime_transition_is_required:
             self._legacy_product_tool_runtime_transition_prepare()
         compute_parameter_by_name_map: dict[str, str] = {
@@ -511,6 +516,11 @@ class DevelopmentEnvironment:
                     )
                 )
                 self._replacement_recovery_finish()
+            elif failed_bootstrap_replacement_is_pending:
+                raise DevelopmentEnvironmentError(
+                    "Failed bootstrap host has no newer launch-template version "
+                    "available for replacement"
+                )
             else:
                 self.start(should_publish_infrastructure_source=True)
                 self._replacement_guard_disable()
@@ -541,6 +551,108 @@ class DevelopmentEnvironment:
         self._retained_product_release_link_restore()
         self._product_recovery_apply_run()
         self._product_recovery_acceptance_run()
+
+    def _failed_replacement_host_bootstrap_is_proven(self) -> bool:
+        """Return whether an unmounted disposable replacement host failed bootstrap."""
+
+        diagnostic_code = "\n".join(
+            [
+                "import json",
+                "import subprocess",
+                "cloud_init = subprocess.run(",
+                "    ['cloud-init', 'status', '--long'],",
+                "    capture_output=True,",
+                "    check=False,",
+                "    text=True,",
+                ")",
+                "retained_mount = subprocess.run(",
+                "    [",
+                "        'findmnt',",
+                "        '--noheadings',",
+                "        '--output',",
+                "        'TARGET',",
+                "        '--target',",
+                f"        {str(self._identity.host_retained_root_path)!r},",
+                "    ],",
+                "    capture_output=True,",
+                "    check=False,",
+                "    text=True,",
+                ")",
+                "k3s = subprocess.run(",
+                "    ['systemctl', 'is-active', 'k3s'],",
+                "    capture_output=True,",
+                "    check=False,",
+                "    text=True,",
+                ")",
+                "print(",
+                "    json.dumps(",
+                "        {",
+                "            'cloud_init_returncode': cloud_init.returncode,",
+                "            'cloud_init_status': cloud_init.stdout,",
+                "            'k3s_status': k3s.stdout.strip(),",
+                "            'retained_mount_target': retained_mount.stdout.strip(),",
+                "        },",
+                "        sort_keys=True,",
+                "    )",
+                ")",
+            ]
+        )
+        payload = self._ssm_shell_result_get(
+            [shlex.join(["python3", "-c", diagnostic_code])],
+            timeout_seconds=HOST_STATUS_COMMAND_TIMEOUT_SECONDS,
+        )
+        output_text = payload.get("StandardOutputContent")
+        if not isinstance(output_text, str):
+            raise DevelopmentEnvironmentError(
+                "Replacement bootstrap diagnostic output is malformed"
+            )
+        try:
+            diagnostic = json.loads(output_text)
+        except json.JSONDecodeError as error:
+            raise DevelopmentEnvironmentError(
+                "Replacement bootstrap diagnostic output is not JSON"
+            ) from error
+        if not isinstance(diagnostic, dict):
+            raise DevelopmentEnvironmentError(
+                "Replacement bootstrap diagnostic payload is malformed"
+            )
+        cloud_init_returncode = diagnostic.get("cloud_init_returncode")
+        cloud_init_status = diagnostic.get("cloud_init_status")
+        k3s_status = diagnostic.get("k3s_status")
+        retained_mount_target = diagnostic.get("retained_mount_target")
+        if (
+            not isinstance(cloud_init_returncode, int)
+            or not isinstance(cloud_init_status, str)
+            or not isinstance(k3s_status, str)
+            or not isinstance(retained_mount_target, str)
+        ):
+            raise DevelopmentEnvironmentError(
+                "Replacement bootstrap diagnostic fields are malformed"
+            )
+        if cloud_init_returncode == 0:
+            return False
+        if (
+            cloud_init_returncode != 1
+            or "status: error" not in cloud_init_status
+            or "extended_status: error - done" not in cloud_init_status
+        ):
+            raise DevelopmentEnvironmentError(
+                "Replacement host cloud-init state is neither success nor a "
+                "proven terminal bootstrap failure"
+            )
+        if (
+            retained_mount_target == str(self._identity.host_retained_root_path)
+            or k3s_status == "active"
+        ):
+            raise DevelopmentEnvironmentError(
+                "Failed replacement bootstrap reached retained state or active k3s; "
+                "automatic host replacement is unsafe"
+            )
+        print(
+            "OK: replacement host bootstrap failure is terminal and retained state "
+            "is unmounted"
+        )
+        return True
 
     def _legacy_product_tool_runtime_transition_prepare(self) -> None:
         """Retain the current Product-tool runtime before the first root replacement.

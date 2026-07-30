@@ -34,6 +34,8 @@ python tool/development_environment_manage.py apply
 
 Если процесс прерван после успешного создания replacement instance, повторный `apply` распознаёт оставшийся `ReplacementGuardScheduleState=ENABLED`, сначала устанавливает exact control source на уже созданный host и завершает retained Product recovery, затем отключает guard и продолжает с последнего безопасного состояния. Произвольный drift при этом не принимается: одноразово допускаются только две точные legacy launch-template tags, которые следующий template reconcile переносит под прямое владение `DevelopmentInstance`.
 
+Если cloud-init созданного host завершился terminal error до mount retained root и до запуска k3s, `apply` не пытается объявить такой host восстановленным: сохраняет guard, применяет исправленную более новую launch-template version и заменяет disposable host тем же controlled replacement workflow. Mounted retained root, active k3s, неоднозначный cloud-init status или отсутствие новой version требуют остановки и диагностики вместо автоматической замены.
+
 Data-plane template может превышать inline limit CloudFormation. В этом случае `apply` автоматически публикует exact content-addressed template в retained Observability bucket, проверяет S3 checksum/metadata и использует private `TemplateURL`; вручную загружать template либо делать bucket публичным не требуется. Artifact lifecycle равен 30 дням.
 
 ## Запуск И Остановка

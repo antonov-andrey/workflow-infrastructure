@@ -4335,6 +4335,69 @@ def test_replacement_recovery_finish_resumes_exact_interrupted_cutover(
     ]
 
 
+def test_failed_replacement_bootstrap_is_replaced_only_before_retained_mount(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Terminal cloud-init failure is replaceable only before stateful startup."""
+
+    environment = _environment_get(tmp_path)
+    shell_command_list_list: list[list[str]] = []
+    diagnostic = {
+        "cloud_init_returncode": 1,
+        "cloud_init_status": (
+            "status: error\n"
+            "extended_status: error - done\n"
+            "detail: DataSourceEc2Local\n"
+        ),
+        "k3s_status": "inactive",
+        "retained_mount_target": "/",
+    }
+
+    def ssm_shell_result_get(
+        shell_command_list: list[str],
+        *,
+        timeout_seconds: int,
+    ) -> dict[str, object]:
+        shell_command_list_list.append(shell_command_list)
+        assert (
+            timeout_seconds
+            == development_environment.HOST_STATUS_COMMAND_TIMEOUT_SECONDS
+        )
+        return {
+            "StandardOutputContent": json.dumps(diagnostic),
+            "Status": "Success",
+        }
+
+    monkeypatch.setattr(
+        environment,
+        "_ssm_shell_result_get",
+        ssm_shell_result_get,
+    )
+
+    assert environment._failed_replacement_host_bootstrap_is_proven()
+    assert shell_command_list_list[0][0].startswith("python3 -c ")
+    assert "python3.14" not in shell_command_list_list[0][0]
+    assert "retained state is unmounted" in capsys.readouterr().out
+
+    diagnostic["retained_mount_target"] = "/srv/workflow-control-center"
+    with pytest.raises(
+        DevelopmentEnvironmentError,
+        match="automatic host replacement is unsafe",
+    ):
+        environment._failed_replacement_host_bootstrap_is_proven()
+
+    diagnostic.update(
+        {
+            "cloud_init_returncode": 0,
+            "cloud_init_status": "status: done\n",
+            "retained_mount_target": "/srv/workflow-control-center",
+        }
+    )
+    assert not environment._failed_replacement_host_bootstrap_is_proven()
+
+
 @pytest.mark.parametrize(
     "source_manifest_version",
     [2, development_environment.SOURCE_MANIFEST_VERSION],
