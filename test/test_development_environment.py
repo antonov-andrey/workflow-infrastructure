@@ -458,6 +458,13 @@ def test_cli_keeps_standard_options_after_commands_and_only_forwards_ssh_argumen
             "20260728120000000000",
         ]
     )
+    host_reset_args = development_environment_manage._args_parse(
+        [
+            "host-product-release-reset",
+            "--release",
+            "20260728120000000000",
+        ]
+    )
     ssh_args = development_environment_manage._args_parse(["ssh", "--", "-L", "8080:localhost:8080"])
     host_status_args = development_environment_manage._args_parse(
         ["host-status", "--retained-volume-id", "vol-0123456789abcdef0"]
@@ -473,7 +480,8 @@ def test_cli_keeps_standard_options_after_commands_and_only_forwards_ssh_argumen
     )
     product_reset_args = development_environment_manage._args_parse(
         [
-            "product-reset",
+            "deploy",
+            "--reset-product-state",
             "--user-email",
             "owner@example.test",
             "--expected-role-key",
@@ -485,6 +493,8 @@ def test_cli_keeps_standard_options_after_commands_and_only_forwards_ssh_argumen
     assert restore_args.ssh_argument_list == []
     assert activation_args.release == "20260728120000000000"
     assert activation_args.ssh_argument_list == []
+    assert host_reset_args.release == "20260728120000000000"
+    assert host_reset_args.ssh_argument_list == []
     assert ssh_args.ssh_argument_list == ["-L", "8080:localhost:8080"]
     assert host_status_args.retained_volume_id == "vol-0123456789abcdef0"
     assert host_status_args.ssh_argument_list == []
@@ -493,6 +503,7 @@ def test_cli_keeps_standard_options_after_commands_and_only_forwards_ssh_argumen
     assert deploy_args.ssh_argument_list == []
     assert product_reset_args.user_email == "owner@example.test"
     assert product_reset_args.expected_role_key == ["user"]
+    assert product_reset_args.reset_product_state is True
 
 
 def test_product_reset_sequences_preservation_before_retained_release_removal(
@@ -502,62 +513,33 @@ def test_product_reset_sequences_preservation_before_retained_release_removal(
     """The explicit cutover removes release state only after Product preservation."""
 
     environment = _environment_get(tmp_path)
-    event_list: list[object] = []
-    status_iterator = iter(["pending", "absent"])
-    monkeypatch.setattr(
-        environment.lifecycle,
-        "start",
-        lambda **keyword_argument_by_name_map: event_list.append(("start", keyword_argument_by_name_map)),
-    )
-    monkeypatch.setattr(
-        environment.product_recovery,
-        "status_get",
-        lambda: event_list.append("status") or next(status_iterator),
-    )
-    monkeypatch.setattr(
-        environment._transport,
-        "ssm_shell_run",
-        lambda command_list: event_list.append(("ssm", command_list)),
-    )
-
-    environment.product_reset.reset("owner@example.test", ["admin", "user"])
-
-    assert event_list[0:2] == [
-        ("start", {"should_publish_infrastructure_source": True}),
-        "status",
-    ]
-    product_reset_command = event_list[2]
-    retained_reset_command = event_list[3]
-    assert isinstance(product_reset_command, tuple)
-    assert isinstance(retained_reset_command, tuple)
-    assert "product-state-reset" in product_reset_command[1][0]
-    assert "--user-email owner@example.test" in product_reset_command[1][0]
-    assert "--expected-role-key admin --expected-role-key user" in product_reset_command[1][0]
-    assert "host-product-release-reset" in retained_reset_command[1][0]
-    assert event_list[4] == "status"
-
-
-def test_product_reset_is_idempotent_after_retained_graph_removal(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    """A completed destructive reset does not require the removed Product tool."""
-
-    environment = _environment_get(tmp_path)
     command_list_list: list[list[str]] = []
-    monkeypatch.setattr(environment.lifecycle, "start", lambda **kwargs: None)
-    monkeypatch.setattr(environment.product_recovery, "status_get", lambda: "absent")
     monkeypatch.setattr(
         environment._transport,
-        "ssm_shell_run",
-        lambda command_list: command_list_list.append(command_list),
+        "ssh_run",
+        lambda command_list, **kwargs: command_list_list.append(command_list),
+    )
+    release_root_path = tmp_path / "retained/release/releases/20260728120000000000"
+    ssh_control_path = tmp_path / "control"
+
+    environment.product_reset.reset(
+        expected_role_key_list=["admin", "user"],
+        release_name=release_root_path.name,
+        release_root_path=release_root_path,
+        ssh_control_path=ssh_control_path,
+        target_platform="linux/arm64",
+        user_email="owner@example.test",
     )
 
-    environment.product_reset.reset("owner@example.test", [])
-
-    assert len(command_list_list) == 1
-    assert "host-product-release-reset" in command_list_list[0][0]
-    assert "product-state-reset" not in command_list_list[0][0]
+    assert len(command_list_list) == 2
+    product_reset_command_list = command_list_list[0]
+    retained_reset_command_list = command_list_list[1]
+    assert "product-state-reset" in product_reset_command_list
+    assert product_reset_command_list[product_reset_command_list.index("--user-email") + 1] == "owner@example.test"
+    assert product_reset_command_list.count("--expected-role-key") == 2
+    assert "linux/arm64" in product_reset_command_list
+    assert "host-product-release-reset" in retained_reset_command_list
+    assert retained_reset_command_list[-2:] == ["--release", release_root_path.name]
 
 
 def test_environment_identity_preserves_primary_and_isolates_nonprimary() -> None:
@@ -4223,11 +4205,14 @@ def test_host_product_release_reset_removes_only_exact_product_graph(
 
     retained_root_path = tmp_path / "retained"
     retained_release_root_path = retained_root_path / "release"
+    old_release_root_path = retained_release_root_path / "releases/20260729120000000000"
     release_root_path = retained_release_root_path / "releases/20260730120000000000"
     current_release_path = retained_release_root_path / "current"
     rollback_release_path = retained_release_root_path / "rollback"
     current_source_path = tmp_path / "root/current"
     product_tool_root_path = retained_root_path / "product-tool"
+    old_release_root_path.mkdir(parents=True)
+    (old_release_root_path / "manifest.json").write_text("{}\n", encoding="utf-8")
     release_root_path.mkdir(parents=True)
     (release_root_path / "manifest.json").write_text("{}\n", encoding="utf-8")
     current_release_path.symlink_to(release_root_path)
@@ -4269,11 +4254,13 @@ def test_host_product_release_reset_removes_only_exact_product_graph(
     environment = _environment_get(tmp_path)
     environment._is_host = True
 
-    environment.product_release.reset()
+    environment.product_release.reset(release_root_path.name)
 
     assert not current_source_path.exists()
     assert not current_source_path.is_symlink()
-    assert list(retained_release_root_path.iterdir()) == []
+    assert list(retained_release_root_path.iterdir()) == [release_root_path.parent]
+    assert list(release_root_path.parent.iterdir()) == [release_root_path]
+    assert (release_root_path / "manifest.json").is_file()
     assert not product_tool_root_path.exists()
     assert (preserved_path / "identity.txt").read_text(encoding="utf-8") == "preserved\n"
 
@@ -4327,7 +4314,7 @@ def test_host_product_release_reset_rejects_unowned_retained_entry(
         DevelopmentEnvironmentError,
         match="unexpected entry",
     ):
-        environment.product_release.reset()
+        environment.product_release.reset(release_root_path.name)
 
     assert current_release_path.is_symlink()
     assert current_source_path.is_symlink()
@@ -4817,11 +4804,11 @@ def test_host_controller_cannot_write_control_release_bytecode(
     assert "/.venv/" not in service_text
 
 
-def test_deploy_activates_release_before_installing_product_and_host_services(
+def test_reset_deploy_is_one_candidate_cutover_before_activation_and_host_services(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Accepted source becomes current before either current-path systemd owner is installed."""
+    """One candidate resets disposable state, deploys, activates, and installs services."""
 
     environment = _environment_get(tmp_path / "workflow-infrastructure")
     remote_command_list_list: list[list[str]] = []
@@ -4848,7 +4835,7 @@ def test_deploy_activates_release_before_installing_product_and_host_services(
     monkeypatch.setattr(
         environment.product_recovery,
         "status_get",
-        lambda: "ready",
+        lambda: "pending",
     )
     monkeypatch.setattr(
         environment.host_artifact,
@@ -4945,18 +4932,34 @@ def test_deploy_activates_release_before_installing_product_and_host_services(
         return subprocess.CompletedProcess(remote_command_list, 0, "", "")
 
     monkeypatch.setattr(environment._transport, "ssh_run", ssh_run)
+    reset_keyword_argument_by_name_map_list: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        environment.product_reset,
+        "reset",
+        lambda **keyword_argument_by_name_map: (
+            reset_keyword_argument_by_name_map_list.append(keyword_argument_by_name_map)
+            or remote_command_list_list.append(["candidate-product-reset"])
+        ),
+    )
 
-    environment.product_deployment.deploy()
+    environment.product_deployment.deploy(
+        expected_role_key_list=["admin"],
+        should_reset_product_state=True,
+        user_email="owner@example.test",
+    )
 
     host_prepare_index = next(
         index
         for index, command_list in enumerate(remote_command_list_list)
         if "host-prepare" in command_list and "/sources/workflow-infrastructure/" in " ".join(command_list)
     )
+    reset_index = remote_command_list_list.index(["candidate-product-reset"])
     product_deploy_index = next(
         index
         for index, command_list in enumerate(remote_command_list_list)
-        if "linux/arm64" in command_list and "development_kubernetes_manage.py" in " ".join(command_list)
+        if "deploy" in command_list
+        and "linux/arm64" in command_list
+        and "development_kubernetes_manage.py" in " ".join(command_list)
     )
     current_activation_index = next(
         index
@@ -4977,11 +4980,20 @@ def test_deploy_activates_release_before_installing_product_and_host_services(
     )
     assert (
         host_prepare_index
+        < reset_index
         < product_deploy_index
         < current_activation_index
         < product_host_install_index
         < controller_host_install_index
     )
+    assert len(reset_keyword_argument_by_name_map_list) == 1
+    reset_keyword_argument_by_name_map = reset_keyword_argument_by_name_map_list[0]
+    assert reset_keyword_argument_by_name_map["expected_role_key_list"] == ["admin"]
+    assert reset_keyword_argument_by_name_map["release_name"] == (
+        reset_keyword_argument_by_name_map["release_root_path"].name
+    )
+    assert reset_keyword_argument_by_name_map["target_platform"] == "linux/arm64"
+    assert reset_keyword_argument_by_name_map["user_email"] == "owner@example.test"
     for command_list in remote_command_list_list:
         if "python3.14" in command_list:
             python_index = command_list.index("python3.14")
@@ -4990,6 +5002,25 @@ def test_deploy_activates_release_before_installing_product_and_host_services(
     assert len(source_manifest_payload_list) == 1
     assert source_manifest_payload_list[0]["source_manifest_version"] == (SOURCE_MANIFEST_VERSION)
     assert source_manifest_payload_list[0]["python_bytecode_write_disabled"] is True
+
+
+def test_deploy_rejects_product_identity_inputs_outside_destructive_reset(
+    tmp_path: Path,
+) -> None:
+    """Destructive identity assertions cannot silently change an ordinary deploy."""
+
+    environment = _environment_get(tmp_path)
+
+    with pytest.raises(
+        DevelopmentEnvironmentError,
+        match="requires one preserved ZITADEL user",
+    ):
+        environment.product_deployment.deploy(should_reset_product_state=True)
+    with pytest.raises(
+        DevelopmentEnvironmentError,
+        match="require destructive Product reset",
+    ):
+        environment.product_deployment.deploy(user_email="owner@example.test")
 
 
 def test_ssm_shell_run_waits_for_real_operation_and_registration_delay(

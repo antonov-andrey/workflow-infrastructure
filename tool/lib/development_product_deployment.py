@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from contextlib import AbstractContextManager
 from datetime import datetime
 from pathlib import Path
@@ -82,6 +83,22 @@ class ProductRecoveryProtocol(Protocol):
         """Return current retained recovery state."""
 
 
+class ProductResetProtocol(Protocol):
+    """Destructive candidate-reset boundary."""
+
+    def reset(
+        self,
+        *,
+        expected_role_key_list: Sequence[str],
+        release_name: str,
+        release_root_path: Path,
+        ssh_control_path: Path,
+        target_platform: str,
+        user_email: str,
+    ) -> None:
+        """Reset disposable Product state before deploying one candidate."""
+
+
 class SourcePublisherProtocol(Protocol):
     """Exact source publication boundary."""
 
@@ -150,6 +167,7 @@ class DevelopmentProductDeploymentManager:
         host_artifact: HostArtifactProtocol,
         identity: EnvironmentIdentityProtocol,
         product_recovery: ProductRecoveryProtocol,
+        product_reset: ProductResetProtocol,
         project_root_path: Path,
         source_publisher: SourcePublisherProtocol,
         stack: StackManagerProtocol,
@@ -164,16 +182,35 @@ class DevelopmentProductDeploymentManager:
         self._host_artifact = host_artifact
         self._identity = identity
         self._product_recovery = product_recovery
+        self._product_reset = product_reset
         self._project_root_path = project_root_path
         self._source_publisher = source_publisher
         self._stack = stack
         self._transport = transport
         self._workspace_root_path = workspace_root_path
 
-    def deploy(self, *, workflow_container_contract_commit: str = "") -> None:
-        """Publish, deploy, activate, and install one exact Product release."""
+    def deploy(
+        self,
+        *,
+        expected_role_key_list: Sequence[str] = (),
+        should_reset_product_state: bool = False,
+        user_email: str = "",
+        workflow_container_contract_commit: str = "",
+    ) -> None:
+        """Publish, deploy, activate, and install one exact Product release.
 
-        self._precondition_validate()
+        Args:
+            expected_role_key_list: Exact preserved Product roles for destructive reset.
+            should_reset_product_state: Whether to run the approved pre-production reset.
+            user_email: Preserved ZITADEL user for destructive reset.
+            workflow_container_contract_commit: Optional exact one-deploy contract override.
+        """
+
+        if should_reset_product_state and not user_email:
+            raise DevelopmentEnvironmentError("Destructive Product reset requires one preserved ZITADEL user")
+        if not should_reset_product_state and (user_email or expected_role_key_list):
+            raise DevelopmentEnvironmentError("Preserved Product identity inputs require destructive Product reset")
+        self._precondition_validate(should_reset_product_state=should_reset_product_state)
         release_name = self._clock.now().strftime("%Y%m%d%H%M%S%f")
         source_manifest_by_repository_name_map: dict[str, dict[str, object]] = {}
         with self._transport.ssh_control_session() as ssh_control_path:
@@ -195,6 +232,15 @@ class DevelopmentProductDeploymentManager:
                 ssh_control_path=ssh_control_path,
             )
             platform = self._compute.runtime_platform_get(ssh_control_path)
+            if should_reset_product_state:
+                self._product_reset.reset(
+                    expected_role_key_list=expected_role_key_list,
+                    release_name=release_name,
+                    release_root_path=release_root_path,
+                    ssh_control_path=ssh_control_path,
+                    target_platform=platform,
+                    user_email=user_email,
+                )
             self._product_deploy(
                 platform=platform,
                 release_name=release_name,
@@ -209,8 +255,12 @@ class DevelopmentProductDeploymentManager:
             self._host_service_install(ssh_control_path=ssh_control_path)
         print(f"OK: exact Product release {release_name} is deployed for {platform}")
 
-    def _precondition_validate(self) -> None:
-        """Validate operator, source, stack, host, and recovery preconditions."""
+    def _precondition_validate(self, *, should_reset_product_state: bool) -> None:
+        """Validate operator, source, stack, host, and recovery preconditions.
+
+        Args:
+            should_reset_product_state: Whether pending legacy recovery will be destroyed.
+        """
 
         self._account.local_operator_context_validate()
         self._source_publisher.validate_repository(
@@ -226,7 +276,7 @@ class DevelopmentProductDeploymentManager:
         self._stack.drift_validate(self._identity.compute_stack_name)
         self._compute.online_wait()
         self._compute.launch_template_version_validate(require_latest=True)
-        if self._product_recovery.status_get() == "pending":
+        if self._product_recovery.status_get() == "pending" and not should_reset_product_state:
             raise DevelopmentEnvironmentError("Pending retained Product recovery must complete before a new deploy")
 
     def _source_publish(

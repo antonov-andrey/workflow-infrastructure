@@ -58,7 +58,6 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
             "host-shutdown",
             "host-status",
             "lifecycle-acceptance",
-            "product-reset",
             "replace",
             "restore",
             "ssh",
@@ -72,7 +71,10 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
         default="primary",
         help="Stable development environment selector (default: primary).",
     )
-    parser.add_argument("--release", help="Exact retained Product release to activate on the host.")
+    parser.add_argument(
+        "--release",
+        help="Exact retained Product release used by one host-local operation.",
+    )
     parser.add_argument("--snapshot-id", help="Exact retained-volume snapshot used by restore.")
     parser.add_argument(
         "--retained-volume-id",
@@ -90,26 +92,37 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
         default=[],
         help="Exact Product role expected for the preserved user; repeat for multiple roles.",
     )
+    parser.add_argument(
+        "--reset-product-state",
+        action="store_true",
+        help="Run the approved destructive Product reset inside this exact deploy.",
+    )
     args, remaining_argument_list = parser.parse_known_args(argv_list)
     args.ssh_argument_list = remaining_argument_list
     if args.command == "restore" and not args.snapshot_id:
         parser.error("--snapshot-id is required for restore")
     if args.snapshot_id and args.command != "restore":
         parser.error("--snapshot-id is supported only for restore")
-    if args.command == "host-product-release-activate" and not args.release:
-        parser.error("--release is required for host-product-release-activate")
-    if args.release and args.command != "host-product-release-activate":
-        parser.error("--release is supported only for host-product-release-activate")
+    release_command_set = {
+        "host-product-release-activate",
+        "host-product-release-reset",
+    }
+    if args.command in release_command_set and not args.release:
+        parser.error(f"--release is required for {args.command}")
+    if args.release and args.command not in release_command_set:
+        parser.error("--release is supported only for host Product release operations")
     if args.command == "host-status" and not args.retained_volume_id:
         parser.error("--retained-volume-id is required for host-status")
     if args.retained_volume_id and args.command != "host-status":
         parser.error("--retained-volume-id is supported only for host-status")
     if args.workflow_container_contract_commit and args.command != "deploy":
         parser.error("--workflow-container-contract-commit is supported only for deploy")
-    if args.command == "product-reset" and not args.user_email:
-        parser.error("--user-email is required for product-reset")
-    if args.command != "product-reset" and (args.user_email or args.expected_role_key):
-        parser.error("--user-email and --expected-role-key are supported only for product-reset")
+    if args.reset_product_state and args.command != "deploy":
+        parser.error("--reset-product-state is supported only for deploy")
+    if args.command == "deploy" and args.reset_product_state and not args.user_email:
+        parser.error("--user-email is required with --reset-product-state")
+    if (args.user_email or args.expected_role_key) and (args.command != "deploy" or not args.reset_product_state):
+        parser.error("--user-email and --expected-role-key require deploy --reset-product-state")
     if args.ssh_argument_list and args.command != "ssh":
         parser.error("arguments after the command are supported only for ssh")
     if args.ssh_argument_list[:1] == ["--"]:
@@ -144,7 +157,10 @@ def main(argv_list: list[str]) -> int:
             return environment.access.console()
         elif args.command == "deploy":
             environment.product_deployment.deploy(
-                workflow_container_contract_commit=args.workflow_container_contract_commit
+                expected_role_key_list=args.expected_role_key,
+                should_reset_product_state=args.reset_product_state,
+                user_email=args.user_email or "",
+                workflow_container_contract_commit=args.workflow_container_contract_commit,
             )
         elif args.command == "diagnose":
             environment.diagnostics.diagnose()
@@ -161,7 +177,7 @@ def main(argv_list: list[str]) -> int:
         elif args.command == "host-product-release-activate":
             environment.product_release.activate(args.release)
         elif args.command == "host-product-release-reset":
-            environment.product_release.reset()
+            environment.product_release.reset(args.release)
         elif args.command == "host-product-release-restore":
             environment.product_release.restore()
         elif args.command == "host-prepare":
@@ -172,8 +188,6 @@ def main(argv_list: list[str]) -> int:
             environment.host_status.print_local_status(args.retained_volume_id)
         elif args.command == "lifecycle-acceptance":
             environment.lifecycle.acceptance_run()
-        elif args.command == "product-reset":
-            environment.product_reset.reset(args.user_email, args.expected_role_key)
         elif args.command == "replace":
             environment.replacement.replace()
         elif args.command == "restore":

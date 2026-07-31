@@ -110,11 +110,12 @@ python tool/development_environment_manage.py deploy
 Pre-hardening compute/source/runtime contracts не поддерживаются. До первого `current-format` deploy оператор выполняет утверждённый destructive Product cutover:
 
 ```bash
-python tool/development_environment_manage.py product-reset \
+python tool/development_environment_manage.py deploy \
+  --reset-product-state \
   --user-email antonov.andrey@gmail.com
 ```
 
-Команда публикует exact current infrastructure control source, через действующий Product adapter проверяет и сохраняет ZITADEL и GlitchTip, удаляет disposable Product state, а затем из infrastructure control source удаляет retained Product release/runtime graph. Операция идемпотентно принимает уже отсутствующий Product graph. Она не читает и не преобразует прежний manifest, не создаёт compatibility symlink и не выполняет migration прежнего Product state. После успешного reset оператор немедленно запускает canonical `deploy`.
+Команда публикует exact candidate source, через его Product adapter поднимает только retained PostgreSQL, ZITADEL и GlitchTip, проверяет сохранённые identity/observability boundaries и удаляет disposable Product state. Затем candidate infrastructure source удаляет прежний retained Product release/runtime graph, сохраняя candidate, и тот же deploy немедленно продолжает clean build и activation. Отдельного промежуточного состояния между reset и deploy нет. Операция не читает и не преобразует прежний manifest, не создаёт compatibility symlink и не выполняет migration прежнего Product state.
 
 После deploy автоматические и ручные UI проверки выполняются через уже открытый SSM tunnel против exact current assets.
 

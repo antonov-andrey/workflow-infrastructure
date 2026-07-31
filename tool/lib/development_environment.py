@@ -463,6 +463,10 @@ class DevelopmentEnvironment:
             product_release=self.product_release,
             transport=self._transport,
         )
+        self.product_reset = DevelopmentProductResetManager(
+            identity=self._identity,
+            transport=self._transport,
+        )
         self.access = DevelopmentAccessManager(
             account=self._account,
             aws_profile=AWS_PROFILE,
@@ -480,6 +484,7 @@ class DevelopmentEnvironment:
             host_artifact=self.host_artifact,
             identity=self._identity,
             product_recovery=self.product_recovery,
+            product_reset=self.product_reset,
             project_root_path=project_root_path,
             source_publisher=self._source_publisher,
             stack=self._stack,
@@ -498,13 +503,6 @@ class DevelopmentEnvironment:
             source_publisher=self._source_publisher,
             stack=self._stack,
             stop_lease=self._stop_lease,
-            transport=self._transport,
-        )
-        self.product_reset = DevelopmentProductResetManager(
-            identity=self._identity,
-            lifecycle=self.lifecycle,
-            product_recovery=self.product_recovery,
-            product_release=self.product_release,
             transport=self._transport,
         )
         self.replacement = DevelopmentReplacementManager(

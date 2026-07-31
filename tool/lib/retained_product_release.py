@@ -719,8 +719,12 @@ class DevelopmentRetainedProductReleaseManager:
         )
         print(f"OK: retained Product release {release_name} root-volume link is " "restored")
 
-    def reset(self) -> None:
-        """Remove only the retained Product release and management-runtime graph."""
+    def reset(self, preserved_release_name: str) -> None:
+        """Remove old retained Product state while preserving one exact candidate.
+
+        Args:
+            preserved_release_name: Exact candidate release that continues deployment.
+        """
 
         self._host_only_validate("host-product-release-reset")
         release_owner_root_path = self._identity.host_retained_release_root_path
@@ -767,14 +771,26 @@ class DevelopmentRetainedProductReleaseManager:
             not release_root_path.is_dir() or release_root_path.is_symlink()
         ):
             raise DevelopmentEnvironmentError("Retained Product release collection is malformed")
+        preserved_release_root_path = release_root_path / preserved_release_name
+        if (
+            not preserved_release_name.isdigit()
+            or len(preserved_release_name) != 20
+            or not preserved_release_root_path.is_dir()
+            or preserved_release_root_path.is_symlink()
+        ):
+            raise DevelopmentEnvironmentError("Retained Product reset candidate is malformed")
 
         current_source_path.unlink(missing_ok=True)
         self._identity.host_retained_current_release_path.unlink(missing_ok=True)
         self._identity.host_retained_rollback_release_path.unlink(missing_ok=True)
         self._identity.host_product_recovery_marker_path.unlink(missing_ok=True)
         (release_owner_root_path / ".operation.lock").unlink(missing_ok=True)
-        if release_root_path.exists():
-            shutil.rmtree(release_root_path)
+        for old_release_root_path in release_root_path.iterdir():
+            if old_release_root_path == preserved_release_root_path:
+                continue
+            if not old_release_root_path.is_dir() or old_release_root_path.is_symlink():
+                raise DevelopmentEnvironmentError("Retained Product release collection contains a malformed entry")
+            shutil.rmtree(old_release_root_path)
         if product_tool_root_path.exists():
             shutil.rmtree(product_tool_root_path)
         self._runner.run(["sync", "-f", str(release_owner_root_path)])
