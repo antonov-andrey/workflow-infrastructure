@@ -9,3 +9,5 @@ __pycache__/
 *.py[cod]
 change-set*.json
 drift*.json
+/.spec
+/.worktree/

@@ -50,6 +50,8 @@
 
 ```text
 project/
+  .spec/
+  .worktree/
   AGENTS.md
   cloudformation/
     workflow-control-center-development-compute.yaml
@@ -64,8 +66,11 @@ project/
     development_environment_manage.py
     venv_create.py
     lib/
+  worktree-bootstrap.toml
 ```
 
+- `.spec/`: harness-neutral task-artifact root whose reusable semantics are owned by `agent-workflows:goal-brainstorm`.
+- `.worktree/`: task-worktree container whose reusable semantics are owned by `agent-workflows:goal-brainstorm`.
 - `AGENTS.md`: repository-root canonical instruction owner.
 - `cloudformation/`: declarative AWS stack templates for Workflow Control Center environments.
 - `cloudformation/workflow-control-center-development-compute.yaml`: compute, network, retained-volume, snapshot, instance-profile, and lifecycle stack for the development environment.
@@ -80,6 +85,7 @@ project/
 - `tool/development_environment_manage.py`: canonical local orchestration entrypoint.
 - `tool/venv_create.py`: direct Python 3.14 virtual-environment recreation utility.
 - `tool/lib/`: shared implementation used by project-local tools.
+- `worktree-bootstrap.toml`: repository bootstrap-resource binding for the reusable manifest contract owned by `agent-workflows:goal-brainstorm`.
 
 ## AWS Execution Boundary
 
