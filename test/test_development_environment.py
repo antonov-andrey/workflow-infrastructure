@@ -4937,10 +4937,10 @@ def test_host_prepare_validates_preinstalled_helm_against_launch_manifest(
         separators=(",", ":"),
         sort_keys=True,
     ).encode()
-    manifest_path = tmp_path / "host-artifact-manifest.json.gz.b64"
+    manifest_path = tmp_path / "host-artifact-manifest.json"
     manifest_digest_path = tmp_path / "host-artifact-manifest.sha256"
     manifest_path.write_text(
-        base64.b64encode(gzip.compress(manifest_bytes, mtime=0)).decode(),
+        manifest_bytes.decode(),
         encoding="utf-8",
     )
     manifest_digest_path.write_text(

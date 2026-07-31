@@ -1272,6 +1272,25 @@ class HostArtifactResolutionError(RuntimeError):
     """Raised when a bootstrap artifact cannot become an immutable input."""
 
 
+def _host_artifact_manifest_digest_validate(
+    payload: object,
+    *,
+    expected_sha256: str,
+) -> dict[str, object]:
+    """Validate one decoded manifest against its canonical digest and shape."""
+
+    if re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
+        raise HostArtifactResolutionError("host artifact manifest digest is invalid")
+    canonical_bytes = json.dumps(
+        payload,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    if hashlib.sha256(canonical_bytes).hexdigest() != expected_sha256:
+        raise HostArtifactResolutionError("host artifact manifest differs from its digest")
+    return host_artifact_manifest_validate(payload)
+
+
 def host_artifact_manifest_validate(payload: object) -> dict[str, object]:
     """Validate the one exact current host-artifact manifest shape."""
 
@@ -1352,18 +1371,29 @@ def host_artifact_manifest_decode(
         Decoded manifest payload.
     """
 
-    if re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
-        raise HostArtifactResolutionError("host artifact manifest digest is invalid")
     try:
         payload_bytes = gzip.decompress(base64.b64decode(encoded_manifest, validate=True))
         payload = json.loads(payload_bytes)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         raise HostArtifactResolutionError("host artifact manifest parameter is malformed") from error
-    canonical_bytes = json.dumps(
+    return _host_artifact_manifest_digest_validate(
         payload,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode()
-    if hashlib.sha256(canonical_bytes).hexdigest() != expected_sha256:
-        raise HostArtifactResolutionError("host artifact manifest parameter differs from its digest")
-    return host_artifact_manifest_validate(payload)
+        expected_sha256=expected_sha256,
+    )
+
+
+def host_artifact_manifest_json_decode(
+    *,
+    manifest_json: str,
+    expected_sha256: str,
+) -> dict[str, object]:
+    """Decode and validate the canonical JSON installed on one host."""
+
+    try:
+        payload = json.loads(manifest_json)
+    except json.JSONDecodeError as error:
+        raise HostArtifactResolutionError("host artifact manifest JSON is malformed") from error
+    return _host_artifact_manifest_digest_validate(
+        payload,
+        expected_sha256=expected_sha256,
+    )

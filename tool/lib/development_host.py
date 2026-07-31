@@ -14,11 +14,11 @@ from tool.lib.development_environment_error import DevelopmentEnvironmentError
 from tool.lib.development_storage import DevelopmentHostLifecycle
 from tool.lib.host_artifact import (
     HostArtifactResolutionError,
-    host_artifact_manifest_decode,
+    host_artifact_manifest_json_decode,
 )
 
 HELM_BINARY_PATH = Path("/usr/local/bin/helm")
-HOST_ARTIFACT_MANIFEST_PATH = Path("/etc/workflow-control-center/host-artifact-manifest.json.gz.b64")
+HOST_ARTIFACT_MANIFEST_PATH = Path("/etc/workflow-control-center/host-artifact-manifest.json")
 HOST_ARTIFACT_MANIFEST_SHA256_PATH = Path("/etc/workflow-control-center/host-artifact-manifest.sha256")
 HOST_PYTHON_PATH = Path("/usr/local/bin/python3.14")
 PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT = "PYTHONDONTWRITEBYTECODE=1"
@@ -234,10 +234,10 @@ class DevelopmentHostManager:
         """Return the immutable launch manifest installed on this exact host."""
 
         try:
-            encoded_manifest = HOST_ARTIFACT_MANIFEST_PATH.read_text(encoding="utf-8")
+            manifest_json = HOST_ARTIFACT_MANIFEST_PATH.read_text(encoding="utf-8")
             expected_sha256 = HOST_ARTIFACT_MANIFEST_SHA256_PATH.read_text(encoding="utf-8").strip()
-            manifest = host_artifact_manifest_decode(
-                encoded_manifest=encoded_manifest,
+            manifest = host_artifact_manifest_json_decode(
+                manifest_json=manifest_json,
                 expected_sha256=expected_sha256,
             )
         except OSError as error:

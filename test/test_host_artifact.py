@@ -23,6 +23,7 @@ from tool.lib.host_artifact import (
     HostArtifactResolutionError,
     HostArtifactResolver,
     host_artifact_manifest_decode,
+    host_artifact_manifest_json_decode,
 )
 
 
@@ -251,13 +252,40 @@ def test_manifest_round_trip_is_canonical_and_tamper_evident() -> None:
         )
         == resolution.manifest_payload_get()
     )
+    assert (
+        host_artifact_manifest_json_decode(
+            manifest_json=json.dumps(
+                resolution.manifest_payload_get(),
+                separators=(",", ":"),
+                sort_keys=True,
+            ),
+            expected_sha256=resolution.manifest_sha256_get(),
+        )
+        == resolution.manifest_payload_get()
+    )
     with pytest.raises(
         HostArtifactResolutionError,
-        match="differs from its digest",
+        match="manifest differs from its digest",
     ):
         host_artifact_manifest_decode(
             encoded_manifest=resolution.manifest_gzip_base64_get(),
             expected_sha256="f" * 64,
+        )
+    with pytest.raises(
+        HostArtifactResolutionError,
+        match="manifest JSON is malformed",
+    ):
+        host_artifact_manifest_json_decode(
+            manifest_json="{",
+            expected_sha256=resolution.manifest_sha256_get(),
+        )
+    with pytest.raises(
+        HostArtifactResolutionError,
+        match="manifest differs from its digest",
+    ):
+        host_artifact_manifest_json_decode(
+            manifest_json="{}",
+            expected_sha256=resolution.manifest_sha256_get(),
         )
 
 
