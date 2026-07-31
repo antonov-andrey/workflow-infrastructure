@@ -471,6 +471,15 @@ def test_cli_keeps_standard_options_after_commands_and_only_forwards_ssh_argumen
             "a" * 40,
         ]
     )
+    product_reset_args = development_environment_manage._args_parse(
+        [
+            "product-reset",
+            "--user-email",
+            "owner@example.test",
+            "--expected-role-key",
+            "user",
+        ]
+    )
 
     assert restore_args.snapshot_id == "snap-0123456789abcdef0"
     assert restore_args.ssh_argument_list == []
@@ -482,6 +491,73 @@ def test_cli_keeps_standard_options_after_commands_and_only_forwards_ssh_argumen
     assert deploy_args.workflow_container_contract_commit == "a" * 40
     assert deploy_args.environment_name == "feature1"
     assert deploy_args.ssh_argument_list == []
+    assert product_reset_args.user_email == "owner@example.test"
+    assert product_reset_args.expected_role_key == ["user"]
+
+
+def test_product_reset_sequences_preservation_before_retained_release_removal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The explicit cutover removes release state only after Product preservation."""
+
+    environment = _environment_get(tmp_path)
+    event_list: list[object] = []
+    status_iterator = iter(["pending", "absent"])
+    monkeypatch.setattr(
+        environment.lifecycle,
+        "start",
+        lambda **keyword_argument_by_name_map: event_list.append(("start", keyword_argument_by_name_map)),
+    )
+    monkeypatch.setattr(
+        environment.product_recovery,
+        "status_get",
+        lambda: event_list.append("status") or next(status_iterator),
+    )
+    monkeypatch.setattr(
+        environment._transport,
+        "ssm_shell_run",
+        lambda command_list: event_list.append(("ssm", command_list)),
+    )
+
+    environment.product_reset.reset("owner@example.test", ["admin", "user"])
+
+    assert event_list[0:2] == [
+        ("start", {"should_publish_infrastructure_source": True}),
+        "status",
+    ]
+    product_reset_command = event_list[2]
+    retained_reset_command = event_list[3]
+    assert isinstance(product_reset_command, tuple)
+    assert isinstance(retained_reset_command, tuple)
+    assert "product-state-reset" in product_reset_command[1][0]
+    assert "--user-email owner@example.test" in product_reset_command[1][0]
+    assert "--expected-role-key admin --expected-role-key user" in product_reset_command[1][0]
+    assert "host-product-release-reset" in retained_reset_command[1][0]
+    assert event_list[4] == "status"
+
+
+def test_product_reset_is_idempotent_after_retained_graph_removal(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A completed destructive reset does not require the removed Product tool."""
+
+    environment = _environment_get(tmp_path)
+    command_list_list: list[list[str]] = []
+    monkeypatch.setattr(environment.lifecycle, "start", lambda **kwargs: None)
+    monkeypatch.setattr(environment.product_recovery, "status_get", lambda: "absent")
+    monkeypatch.setattr(
+        environment._transport,
+        "ssm_shell_run",
+        lambda command_list: command_list_list.append(command_list),
+    )
+
+    environment.product_reset.reset("owner@example.test", [])
+
+    assert len(command_list_list) == 1
+    assert "host-product-release-reset" in command_list_list[0][0]
+    assert "product-state-reset" not in command_list_list[0][0]
 
 
 def test_environment_identity_preserves_primary_and_isolates_nonprimary() -> None:
@@ -4137,6 +4213,125 @@ def test_host_product_release_requires_byte_exact_host_artifact_manifest(
         match="another exact host artifact identity",
     ):
         environment.product_release.release_host_identity_validate(release_root_path=release_root_path)
+
+
+def test_host_product_release_reset_removes_only_exact_product_graph(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Host reset removes releases and tool runtime without touching sibling state."""
+
+    retained_root_path = tmp_path / "retained"
+    retained_release_root_path = retained_root_path / "release"
+    release_root_path = retained_release_root_path / "releases/20260730120000000000"
+    current_release_path = retained_release_root_path / "current"
+    rollback_release_path = retained_release_root_path / "rollback"
+    current_source_path = tmp_path / "root/current"
+    product_tool_root_path = retained_root_path / "product-tool"
+    release_root_path.mkdir(parents=True)
+    (release_root_path / "manifest.json").write_text("{}\n", encoding="utf-8")
+    current_release_path.symlink_to(release_root_path)
+    rollback_release_path.symlink_to(release_root_path)
+    (retained_release_root_path / "recovery-pending.json").write_text("{}\n", encoding="utf-8")
+    (retained_release_root_path / ".operation.lock").write_text("", encoding="utf-8")
+    product_tool_root_path.mkdir()
+    (product_tool_root_path / "runtime.txt").write_text("runtime\n", encoding="utf-8")
+    current_source_path.parent.mkdir(parents=True)
+    current_source_path.symlink_to(current_release_path)
+    preserved_path = retained_root_path / "postgres"
+    preserved_path.mkdir()
+    (preserved_path / "identity.txt").write_text("preserved\n", encoding="utf-8")
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_CURRENT_SOURCE_PATH",
+        current_source_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RELEASE_ROOT_PATH",
+        retained_release_root_path / "releases",
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_CURRENT_RELEASE_PATH",
+        current_release_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_RELEASE_ROOT_PATH",
+        retained_release_root_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_ROOT_PATH",
+        retained_root_path,
+    )
+    environment = _environment_get(tmp_path)
+    environment._is_host = True
+
+    environment.product_release.reset()
+
+    assert not current_source_path.exists()
+    assert not current_source_path.is_symlink()
+    assert list(retained_release_root_path.iterdir()) == []
+    assert not product_tool_root_path.exists()
+    assert (preserved_path / "identity.txt").read_text(encoding="utf-8") == "preserved\n"
+
+
+def test_host_product_release_reset_rejects_unowned_retained_entry(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An unexpected retained release entry blocks every destructive mutation."""
+
+    retained_root_path = tmp_path / "retained"
+    retained_release_root_path = retained_root_path / "release"
+    release_root_path = retained_release_root_path / "releases/20260730120000000000"
+    current_release_path = retained_release_root_path / "current"
+    current_source_path = tmp_path / "root/current"
+    release_root_path.mkdir(parents=True)
+    current_release_path.symlink_to(release_root_path)
+    current_source_path.parent.mkdir(parents=True)
+    current_source_path.symlink_to(current_release_path)
+    unexpected_path = retained_release_root_path / "unowned"
+    unexpected_path.write_text("preserve\n", encoding="utf-8")
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_CURRENT_SOURCE_PATH",
+        current_source_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RELEASE_ROOT_PATH",
+        retained_release_root_path / "releases",
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_CURRENT_RELEASE_PATH",
+        current_release_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_RELEASE_ROOT_PATH",
+        retained_release_root_path,
+    )
+    monkeypatch.setattr(
+        development_environment,
+        "HOST_RETAINED_ROOT_PATH",
+        retained_root_path,
+    )
+    environment = _environment_get(tmp_path)
+    environment._is_host = True
+
+    with pytest.raises(
+        DevelopmentEnvironmentError,
+        match="unexpected entry",
+    ):
+        environment.product_release.reset()
+
+    assert current_release_path.is_symlink()
+    assert current_source_path.is_symlink()
+    assert unexpected_path.read_text(encoding="utf-8") == "preserve\n"
 
 
 def test_replacement_recovery_finish_resumes_exact_interrupted_cutover(

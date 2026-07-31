@@ -52,11 +52,13 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
             "host-product-recovery-complete",
             "host-product-recovery-status",
             "host-product-release-activate",
+            "host-product-release-reset",
             "host-product-release-restore",
             "host-prepare",
             "host-shutdown",
             "host-status",
             "lifecycle-acceptance",
+            "product-reset",
             "replace",
             "restore",
             "ssh",
@@ -81,6 +83,13 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
         default="",
         help="Exact one-deploy workflow-container-contract commit override.",
     )
+    parser.add_argument("--user-email", help="Preserved ZITADEL user to verify around Product reset.")
+    parser.add_argument(
+        "--expected-role-key",
+        action="append",
+        default=[],
+        help="Exact Product role expected for the preserved user; repeat for multiple roles.",
+    )
     args, remaining_argument_list = parser.parse_known_args(argv_list)
     args.ssh_argument_list = remaining_argument_list
     if args.command == "restore" and not args.snapshot_id:
@@ -97,6 +106,10 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
         parser.error("--retained-volume-id is supported only for host-status")
     if args.workflow_container_contract_commit and args.command != "deploy":
         parser.error("--workflow-container-contract-commit is supported only for deploy")
+    if args.command == "product-reset" and not args.user_email:
+        parser.error("--user-email is required for product-reset")
+    if args.command != "product-reset" and (args.user_email or args.expected_role_key):
+        parser.error("--user-email and --expected-role-key are supported only for product-reset")
     if args.ssh_argument_list and args.command != "ssh":
         parser.error("arguments after the command are supported only for ssh")
     if args.ssh_argument_list[:1] == ["--"]:
@@ -147,6 +160,8 @@ def main(argv_list: list[str]) -> int:
             environment.product_release.recovery_status_print()
         elif args.command == "host-product-release-activate":
             environment.product_release.activate(args.release)
+        elif args.command == "host-product-release-reset":
+            environment.product_release.reset()
         elif args.command == "host-product-release-restore":
             environment.product_release.restore()
         elif args.command == "host-prepare":
@@ -157,6 +172,8 @@ def main(argv_list: list[str]) -> int:
             environment.host_status.print_local_status(args.retained_volume_id)
         elif args.command == "lifecycle-acceptance":
             environment.lifecycle.acceptance_run()
+        elif args.command == "product-reset":
+            environment.product_reset.reset(args.user_email, args.expected_role_key)
         elif args.command == "replace":
             environment.replacement.replace()
         elif args.command == "restore":

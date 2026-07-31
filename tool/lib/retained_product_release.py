@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
@@ -497,6 +498,8 @@ class RetainedProductReleaseHostIdentity(Protocol):
     host_product_recovery_marker_path: Path
     host_release_root_path: Path
     host_retained_current_release_path: Path
+    host_retained_product_tool_path: Path
+    host_retained_release_root_path: Path
     host_retained_rollback_release_path: Path
 
 
@@ -552,8 +555,20 @@ class DevelopmentRetainedProductReleaseManager:
             / "development_kubernetes_manage.py"
         )
 
-    def current_product_tool_command_list_get(self, command: str) -> list[str]:
-        """Return one environment-bound command for the current Product tool."""
+    def current_product_tool_command_list_get(
+        self,
+        command: str,
+        *argument_list: str,
+    ) -> list[str]:
+        """Return one environment-bound command for the current Product tool.
+
+        Args:
+            command: Product management command.
+            argument_list: Exact command-specific arguments.
+
+        Returns:
+            Complete environment-bound command.
+        """
 
         return [
             "env",
@@ -564,6 +579,7 @@ class DevelopmentRetainedProductReleaseManager:
             command,
             "--environment-name",
             self._identity.environment_name,
+            *argument_list,
         ]
 
     def release_validate(self, release_root_path: Path) -> str:
@@ -702,6 +718,70 @@ class DevelopmentRetainedProductReleaseManager:
             target_path=self._identity.host_retained_current_release_path,
         )
         print(f"OK: retained Product release {release_name} root-volume link is " "restored")
+
+    def reset(self) -> None:
+        """Remove only the retained Product release and management-runtime graph."""
+
+        self._host_only_validate("host-product-release-reset")
+        release_owner_root_path = self._identity.host_retained_release_root_path
+        product_tool_root_path = self._identity.host_retained_product_tool_path
+        current_source_path = self._identity.host_current_source_path
+        if (
+            not release_owner_root_path.is_dir()
+            or release_owner_root_path.is_symlink()
+            or (
+                product_tool_root_path.exists()
+                and (not product_tool_root_path.is_dir() or product_tool_root_path.is_symlink())
+            )
+            or (
+                (current_source_path.exists() or current_source_path.is_symlink())
+                and not current_source_path.is_symlink()
+            )
+        ):
+            raise DevelopmentEnvironmentError("Retained Product reset roots are malformed")
+
+        allowed_entry_name_set = {
+            ".operation.lock",
+            "current",
+            "recovery-pending.json",
+            "releases",
+            "rollback",
+        }
+        actual_entry_name_set = {path.name for path in release_owner_root_path.iterdir()}
+        if not actual_entry_name_set <= allowed_entry_name_set:
+            raise DevelopmentEnvironmentError("Retained Product release root contains an unexpected entry")
+        for link_path in (
+            self._identity.host_retained_current_release_path,
+            self._identity.host_retained_rollback_release_path,
+        ):
+            if (link_path.exists() or link_path.is_symlink()) and not link_path.is_symlink():
+                raise DevelopmentEnvironmentError("Retained Product release pointer is malformed")
+        for file_path in (
+            self._identity.host_product_recovery_marker_path,
+            release_owner_root_path / ".operation.lock",
+        ):
+            if (file_path.exists() or file_path.is_symlink()) and (not file_path.is_file() or file_path.is_symlink()):
+                raise DevelopmentEnvironmentError("Retained Product release state file is malformed")
+        release_root_path = self._identity.host_release_root_path
+        if (release_root_path.exists() or release_root_path.is_symlink()) and (
+            not release_root_path.is_dir() or release_root_path.is_symlink()
+        ):
+            raise DevelopmentEnvironmentError("Retained Product release collection is malformed")
+
+        current_source_path.unlink(missing_ok=True)
+        self._identity.host_retained_current_release_path.unlink(missing_ok=True)
+        self._identity.host_retained_rollback_release_path.unlink(missing_ok=True)
+        self._identity.host_product_recovery_marker_path.unlink(missing_ok=True)
+        (release_owner_root_path / ".operation.lock").unlink(missing_ok=True)
+        if release_root_path.exists():
+            shutil.rmtree(release_root_path)
+        if product_tool_root_path.exists():
+            shutil.rmtree(product_tool_root_path)
+        self._runner.run(["sync", "-f", str(release_owner_root_path)])
+        self._runner.run(["sync", "-f", str(current_source_path.parent)])
+        if self.recovery_status_get() != "absent":
+            raise DevelopmentEnvironmentError("Retained Product release reset did not reach absent state")
+        print("OK: retained Product release and management runtime were reset")
 
     def release_host_identity_validate(self, *, release_root_path: Path) -> None:
         """Require the active host to match one byte-validated retained release."""

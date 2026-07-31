@@ -39,6 +39,7 @@ from tool.lib.development_product_deployment import (
 from tool.lib.development_product_recovery import (
     DevelopmentProductRecoveryManager,
 )
+from tool.lib.development_product_reset import DevelopmentProductResetManager
 from tool.lib.development_provisioning import DevelopmentProvisioningManager
 from tool.lib.development_replacement import (
     COMPUTE_RETAINED_VOLUME_LOGICAL_ID_SET,
@@ -186,6 +187,12 @@ class DevelopmentEnvironmentIdentity:
         if self.is_primary:
             return HOST_RETAINED_RELEASE_ROOT_PATH
         return self.host_retained_root_path / "release"
+
+    @property
+    def host_retained_product_tool_path(self) -> Path:
+        """Return the retained Product management runtime root."""
+
+        return self.host_retained_root_path / "product-tool"
 
     @property
     def host_release_root_path(self) -> Path:
@@ -491,6 +498,13 @@ class DevelopmentEnvironment:
             source_publisher=self._source_publisher,
             stack=self._stack,
             stop_lease=self._stop_lease,
+            transport=self._transport,
+        )
+        self.product_reset = DevelopmentProductResetManager(
+            identity=self._identity,
+            lifecycle=self.lifecycle,
+            product_recovery=self.product_recovery,
+            product_release=self.product_release,
             transport=self._transport,
         )
         self.replacement = DevelopmentReplacementManager(

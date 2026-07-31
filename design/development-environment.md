@@ -309,7 +309,7 @@ REST API Gateway requests и Internet data transfer. Для tiered meters сох
 
 ## Разрушающий Cutover
 
-До первого current-format deploy Product-owned reset сохраняет существующие retained ZITADEL и GlitchTip databases/files на месте и доказывает их identities до/после операции. БД `apwid` и `apwid_test`, workflow registry, WorkflowRun storage, все development Data/Secret/Result object versions, dynamic Glue/Athena catalog, retained Product release/current/recovery-marker, Product-tool runtime contents и concrete-workflow migration artifacts удаляются и создаются заново.
+До первого current-format deploy infrastructure-owned destructive reset оркестрирует два явных владельца. Product-owned reset сохраняет существующие retained ZITADEL и GlitchTip databases/files на месте, доказывает их identities до/после операции и удаляет БД `apwid` и `apwid_test`, workflow registry, WorkflowRun storage, все development Data/Secret/Result object versions и dynamic Glue/Athena catalog. После успешной Product-проверки host-local retained-release owner удаляет retained Product releases, pointers, recovery marker и Product-tool runtime contents. Операция не интерпретирует прежний manifest и оставляет Product выключенным до немедленного exact-source deploy.
 
 Конкретные Product database migration cases и workflow input migration edges удалённого pre-cutover state отсутствуют. Reusable database migration verifier и workflow input migration graph/loader остаются частью current Product source. Schema/data compatibility bridge, dual Product deployment, old/new data-state synchronization, завершённый one-time logical dump/import contour, Local Kubernetes branch и перенос прежнего registry отсутствуют.
 
