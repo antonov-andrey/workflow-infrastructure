@@ -46,7 +46,37 @@ Development environment имеет stable name. Default name `primary` сохр�
 - региональным API Gateway endpoint контролируемой проверки VPN;
 - исходными outputs для Product runtime и real AWS acceptance.
 
-Новый stack `workflow-control-center-development-compute` владеет VPC, subnet, routing, security group, instance profile, EC2 instance, retained EBS volume, snapshot automation, Session Manager lifecycle и внешним stop lease. Compute replacement не изменяет data-plane resources.
+Новый stack `workflow-control-center-development-compute` владеет VPC, subnet, routing, security group, instance profile, EC2 instance, retained EBS volume, primary-only AWS Backup automation, Session Manager lifecycle и внешним stop lease. Compute replacement не изменяет data-plane resources.
+
+### Границы Operator-Модулей
+
+`tool/lib/development_environment.py` является только composition root: он создаёт и связывает capability owners, а CLI обращается к соответствующему owner напрямую. Provisioning, lifecycle, replacement, release и diagnostics не образуют второй скрытый orchestration слой внутри composition root. Конкретные границы имеют единственных владельцев:
+
+| Владелец | Ответственность |
+| --- | --- |
+| `development_account.py` | caller/account identity и проверка единственного primary account-global guard |
+| `development_access.py` | интерактивные Session Manager tunnel, console и SSH-over-SSM process lifecycles |
+| `development_aws.py` | единый AWS CLI transport |
+| `development_compute.py` | EC2 identity/state, launch-template proof, SSM readiness и runtime platform facts |
+| `development_cost.py` | cost checkpoint и pricing review |
+| `development_diagnostics.py` | безопасная агрегация operator status и bounded diagnostic commands |
+| `development_lifecycle.py` | EC2 start/graceful stop и real stop-lease acceptance |
+| `development_provisioning.py` | полный apply двух CloudFormation stacks и post-apply acceptance |
+| `development_replacement.py` | replacement/restore cutover, alternating slots и fail-safe guard |
+| `development_stack.py` | CloudFormation template transport, change sets, apply и drift |
+| `development_retained_volume.py` | retained EBS, restore slots, temporary snapshots и primary-only AWS Backup proof |
+| `development_source.py` | exact source resolution, archive и delivery |
+| `development_transport.py` | SSM Run Command и SSH-over-SSM |
+| `development_host.py` | host-local controller port, activity proof, dependency validation, service install и shutdown |
+| `development_host_artifact.py` | architecture-specific host-artifact resolution и compute-stack provenance |
+| `development_host_status.py` | локальный и SSM-сбор нормализованного safe host status |
+| `development_product_deployment.py` | immutable Product source publication, deploy, activation и service install |
+| `development_product_recovery.py` | durable Product recovery transitions и acceptance |
+| `development_storage.py` | idle lifecycle, maintenance cadence и volume-pressure warnings |
+| `host_artifact.py` | exact third-party host artifact resolution and verification |
+| `retained_product_release.py` | current/rollback pointers, release validation и durable Product recovery marker |
+
+Новая независимая provider-, storage-, security-, artifact- или persisted-state семья добавляется отдельным collaborator в той же change, где она появляется. Перенос методов в mixin, pass-through facade либо файл без переноса state и инвариантов не считается разделением ответственности.
 
 CloudFormation связывает EC2 instance с конкретным числовым `InstanceLaunchTemplateVersion`, а запущенный EC2 instance всегда фиксирует использованную concrete immutable version в AWS launch-template metadata. Ordinary compute phase создаёт новую immutable version, сохраняя текущий instance на его active version; обнаруженное различие `active != latest` переводит тот же `apply` в controlled replacement. Explicit `replace`/`restore` используют тот же replacement primitive как самостоятельные operator recovery commands. Каждая replacement operation переключает alternating slot, включает replacement guard, доказывает остановку старого instance, отсоединяет retained EBS и только после этого разрешает CloudFormation заменить instance. После update orchestrator доказывает, что version в EC2 metadata точно равна stack output `LatestLaunchTemplateVersion`.
 
@@ -62,7 +92,7 @@ CloudFormation связывает EC2 instance с конкретным числ�
 
 ## Физический Data Plane
 
-Buckets используют stack-owned transparent names с account ID, bucket-level Block Public Access, bucket-owner-enforced ownership, TLS-only policy, versioning, default SSE-KMS общим development key и S3 Bucket Keys. Делегированные Data, query и Lake Formation роли могут использовать этот key только через regional S3 service и только с encryption context точного разрешённого bucket; пользовательская сессия не получает самостоятельный raw KMS decrypt boundary. Account-level S3 Block Public Access обязателен и проверяется отдельно. State-bearing Data, Secret и Result buckets и customer-managed KMS key используют `DeletionPolicy: Retain` и `UpdateReplacePolicy: Retain`; stack deletion не становится Product purge.
+Buckets используют stack-owned transparent names с account ID, bucket-level Block Public Access, bucket-owner-enforced ownership, TLS-only policy, versioning, default SSE-KMS общим development key и S3 Bucket Keys. Делегированные Data, query и Lake Formation роли могут использовать этот key только через regional S3 service и только с encryption context точного разрешённого bucket; пользовательская сессия не получает самостоятельный raw KMS decrypt boundary. Account-level S3 Block Public Access обязателен, принадлежит только data-plane stack `primary` и проверяется после apply любой environment. Stack другой environment не создаёт конкурирующие custom resource, Lambda, log group или IAM role. State-bearing Data, Secret и Result buckets и customer-managed KMS key используют `DeletionPolicy: Retain` и `UpdateReplacePolicy: Retain`; stack deletion не становится Product purge.
 
 Data и Secret не имеют blanket `NoncurrentVersionExpiration`: reference-aware Product reconciler удаляет unreferenced versions через 24 часа и historical versions через 30 дней только после proof отсутствия retained reference. Lifecycle остаётся только у точных classes, где время является authoritative Product contract: incomplete multipart через один день, completed `data-download` через два дня, abandoned Athena result через 30 дней и Observability source maps через 30 дней.
 
@@ -96,6 +126,8 @@ Compute stack создаёт отдельную VPC, одну public subnet, Int
 
 Security group не имеет входящих правил для `22`, `80` или `443`. Обычная консоль работает через Session Manager, SSH/SCP/rsync/Remote SSH — через SSH-over-SSM, а Product HTTP — через один SSM port-forwarding session. Локальный вход Product использует `http://localhost:8080`; виртуальные hosts ZITADEL и GlitchTip используют соответствующие `*.localhost:8080` origins. Внешний публичный Product endpoint отсутствует.
 
+Idle lifecycle использует только факт и время существования Session Manager session для exact instance. Content-level аудит port-forwarding и SSH-over-SSM не нужен для решения «instance использовался» и не заявляется: AWS не предоставляет session-content logging для этих tunnel types. Ordinary interactive shell при необходимости может иметь CloudWatch/S3 logging, но это отдельная audit policy и не влияет на idle predicate.
+
 Длительные host-control операции через SSM Run Command ожидаются по фактическому
 invocation status, а не по короткому default waiter AWS CLI. Локальный orchestrator
 допускает до одного часа на завершение одной операции восстановления или установки,
@@ -125,37 +157,15 @@ IMDSv2 обязателен, hop limit равен `1`. k3s получает expl
 
 `release/releases/<release>/` содержит exact source graph, source manifest, Product release manifest, Kustomize render, release-local ingress manifest и Helm archives. `release/current` является абсолютной атомарно заменяемой ссылкой только на полностью принятый child release. Root-volume `/opt/workflow-infrastructure/current` является восстановимой ссылкой на retained `release/current`, а не владельцем Product release.
 
-Volume имеет `DeletionPolicy: Retain` и `UpdateReplacePolicy: Retain`. Ordinary
-stop/start сохраняет его. Instance replacement повторно подключает тот же volume.
-Bootstrap форматирует носитель только после полного доказательства, что весь block
-device нулевой. Нераспознанный носитель с любыми ненулевыми bytes останавливает
-bootstrap и никогда не форматируется автоматически. Семь ежедневных incremental
-snapshots обеспечивают восстановление на новый volume, включая exact current Product
-release, необходимый для пересоздания disposable k3s.
+Volume имеет `DeletionPolicy: Retain` и `UpdateReplacePolicy: Retain`. Ordinary stop/start сохраняет его. Instance replacement повторно подключает тот же volume. Bootstrap форматирует носитель только после полного доказательства, что весь block device нулевой. Нераспознанный носитель с любыми ненулевыми bytes останавливает bootstrap и никогда не форматируется автоматически. Только retained volume основной среды `primary` входит в ежедневный AWS Backup plan с хранением семи recovery points. Crash-consistent EBS recovery point достаточен для этой development-среды: это страховочная копия единственного тестового сервера, а не production contract application-consistent backup. Дополнительные development environments не получают регулярный backup plan и selection tag.
 
-`AWS::EC2::Volume.SnapshotId` нельзя обновить у существующего physical volume.
-Поэтому stack имеет base retained resource и два alternating restore resources
-`a`/`b`. Обычный replacement сохраняет текущий retained-volume slot, а каждый
-snapshot restore выбирает следующий slot, создаёт новый physical volume и оставляет
-предыдущий volume по `Retain`. До остановки compute orchestrator доказывает, что
-snapshot принадлежит development account, завершён, зашифрован и помещается в
-утверждённый volume. После update он доказывает новый physical ID, exact
-`SnapshotId`, encryption и attachment, а затем исключает оставленный старый volume
-из DLM target tag. Поэтому daily lifecycle продолжает обслуживать только current
-retained volume. Cost boundary разрешает одновременно только current volume и один
-предыдущий rollback volume: перед следующим restore orchestrator удаляет более
-старый volume только после доказательства exact stack ownership, encryption,
-одинакового размера и KMS key, состояния `available`, отсутствия attachments и DLM
-backup tag. Текущий volume никогда не входит в cleanup. В результате restore
-сохраняет одну непосредственную точку ручного rollback без неограниченного gp3 и
-snapshot fan-out.
+`AWS::EC2::Volume.SnapshotId` нельзя обновить у существующего physical volume. Поэтому stack имеет base retained resource и два alternating restore resources `a`/`b`. Обычный replacement сохраняет текущий retained-volume slot, а каждый snapshot restore выбирает следующий slot, создаёт новый physical volume и оставляет предыдущий volume по `Retain`. До остановки compute orchestrator доказывает, что snapshot принадлежит development account, завершён, зашифрован и помещается в утверждённый volume. После update он доказывает новый physical ID, exact `SnapshotId`, encryption и attachment, а затем исключает оставленный старый volume из primary AWS Backup operational tag. Сам `BackupSelection` при каждом stack update содержит точный ARN единственного current retained volume и не полагается на tag-only discovery. Поэтому план продолжает обслуживать только current retained volume. Cost boundary разрешает одновременно только current volume и один предыдущий rollback volume: перед следующим restore orchestrator удаляет более старый volume только после доказательства exact stack ownership, encryption, одинакового размера и KMS key, состояния `available`, отсутствия attachments и regular-backup tag. Текущий volume никогда не входит в cleanup. В результате restore сохраняет одну непосредственную точку ручного rollback без неограниченного gp3 и snapshot fan-out.
 
-DLM schedule использует `CopyTags=false` и задаёт snapshot-owned `Name`,
-`Project`, `Environment`, `EnvironmentName` и `ManagedBy=DLM` через `TagsToAdd`;
-volume-owned CloudFormation и selection tags не копируются на snapshot и не
-создают duplicate keys. Приёмка проверяет не только CloudFormation status и
-drift, но и provider state exact policy: `ENABLED` обязателен, а `ERROR` является
-отказом apply и явно виден в `status`.
+AWS Backup plan, vault, service role и selection принадлежат только compute stack `primary`. Selection использует exact ARN current retained volume; tag `workflow-control-center-regular-backup=primary` является проверяемой маркировкой, а не границей выбора. После restore tag остаётся только на current volume. Приёмка проверяет не только CloudFormation status и drift, но и фактические plan rule, vault, семидневный lifecycle, exact selection ARN и current-volume tag. Для дополнительной environment приёмка, наоборот, доказывает отсутствие этих ресурсов и selection tag.
+
+Одноразовый EBS snapshot дополнительной environment допустим только как временный артефакт явного копирования диска. После успешного копирования оператор обязан удалить такой snapshot; он не включается в регулярную политику и не превращается в скрытую историю backups. Весь раздел задаёт только backup policy development ресурсов. Production backup/restore определяется отдельно в `design/production-environment.md`.
+
+Host lifecycle каждую минуту наблюдает root и retained filesystems. `warning` возникает при `>=75%` used либо `<10 GiB` free, `critical` — при `>=90%` used либо `<5 GiB` free. Состояние сохраняется environment-local, в journal выводятся переходы, восстановление и не чаще одного напоминания за шесть часов; ошибка наблюдения не отключает fail-safe stop lease. Не чаще одного раза за шесть часов и только при доказанном idle host вызывает Product-owned retention maintenance. Точная reachability, registry read-only safepoint и deletion policy принадлежат WCC, а infrastructure владеет только cadence и безопасным вызовом current release.
 
 `postgres/` физически объединяет БД `apwid`, `apwid_test`, `zitadel` и `glitchtip`, но их логические lifecycle различаются. Product reset может пересоздать только `apwid`, `apwid_test`, workflow registry, WorkflowRun storage и явно выбранные Product data-plane objects. Он сохраняет ZITADEL users, password hashes, identity-provider links, Product role grants, GlitchTip database, uploaded files и source-map state.
 
@@ -287,12 +297,7 @@ Net projected recurring monthly delta накапливается от после
 
 Одноразовый projected spend свыше `USD 10` согласуется отдельно. Границы production, account ownership и security действуют независимо от стоимости. Auto-stop и renewable lease являются lifecycle architecture, а не substitute AWS Budget.
 
-Максимальный fixed gp3 checkpoint равен `260 GiB`: `100 GiB` root/scratch,
-`80 GiB` current retained volume и не более одного `80 GiB` предыдущего rollback
-volume. Семь daily snapshots создаются только для current retained volume.
-Консервативная верхняя граница их billed snapshot storage равна
-`7 × 80 GiB = 560 GiB`: incremental block reuse может уменьшить фактический объём,
-но не используется как недоказанное условие расчёта максимума.
+Максимальный fixed gp3 checkpoint равен `260 GiB`: `100 GiB` root/scratch, `80 GiB` current retained volume и не более одного `80 GiB` предыдущего rollback volume. Семь daily AWS Backup recovery points создаются только для current retained volume. Они физически используют EBS snapshot storage; консервативная верхняя граница billed storage равна `7 × 80 GiB = 560 GiB`: incremental block reuse может уменьшить фактический объём, но не используется как недоказанное условие расчёта максимума.
 
 Перед compute apply cost review получает из AWS Price List API текущие exact
 regional price dimensions для S3 Standard storage и requests, customer-managed
@@ -332,7 +337,7 @@ Acceptance обязана доказать три независимых сце�
 
 ## Проверки
 
-CloudFormation acceptance доказывает exact account/region, stack ownership, no replacement stable data-plane resources, retained policies, IAM trust, VPC routes, отсутствие ingress, IMDSv2, Scheduler lease и семь snapshots. Cost review использует текущие цены и явно записанные usage assumptions.
+CloudFormation acceptance доказывает exact account/region, stack ownership, no replacement stable data-plane resources, retained policies, IAM trust, VPC routes, отсутствие ingress, IMDSv2, Scheduler lease и primary-only AWS Backup plan с семью recovery points. Cost review использует текущие цены и явно записанные usage assumptions.
 
 Deployment acceptance доказывает clean exact source manifests, одно разрешение moving `workflow-container-contract` на release, одинаковую exact contract identity во всех platform consumers, отсутствие Git resolution внутри builds/recovery, native target platform, immutable image digests, registry persistence и live allowed/denied registry paths, credential rotation в том же Pod с обязательным восстановлением platform session, rollback previous release, Product readiness, source-map publication и отсутствие credentials в source, logs, images и retained archives.
 

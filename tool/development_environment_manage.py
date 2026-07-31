@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
 import sys
+from pathlib import Path
 
 sys.dont_write_bytecode = True
 
@@ -70,12 +70,8 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
         default="primary",
         help="Stable development environment selector (default: primary).",
     )
-    parser.add_argument(
-        "--release", help="Exact retained Product release to activate on the host."
-    )
-    parser.add_argument(
-        "--snapshot-id", help="Exact retained-volume snapshot used by restore."
-    )
+    parser.add_argument("--release", help="Exact retained Product release to activate on the host.")
+    parser.add_argument("--snapshot-id", help="Exact retained-volume snapshot used by restore.")
     parser.add_argument(
         "--retained-volume-id",
         help="Exact retained EBS volume expected by host-status.",
@@ -100,9 +96,7 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
     if args.retained_volume_id and args.command != "host-status":
         parser.error("--retained-volume-id is supported only for host-status")
     if args.workflow_container_contract_commit and args.command != "deploy":
-        parser.error(
-            "--workflow-container-contract-commit is supported only for deploy"
-        )
+        parser.error("--workflow-container-contract-commit is supported only for deploy")
     if args.ssh_argument_list and args.command != "ssh":
         parser.error("arguments after the command are supported only for ssh")
     if args.ssh_argument_list[:1] == ["--"]:
@@ -130,51 +124,51 @@ def main(argv_list: list[str]) -> int:
     )
     try:
         if args.command == "apply":
-            environment.apply()
+            environment.provisioning.apply()
         elif args.command == "connect":
-            return environment.connect()
+            return environment.access.connect()
         elif args.command == "console":
-            return environment.console()
+            return environment.access.console()
         elif args.command == "deploy":
-            environment.deploy(
+            environment.product_deployment.deploy(
                 workflow_container_contract_commit=args.workflow_container_contract_commit
             )
         elif args.command == "diagnose":
-            environment.diagnose()
+            environment.diagnostics.diagnose()
         elif args.command == "host-controller":
-            environment.host_controller()
+            environment.host.controller()
         elif args.command == "host-install":
-            environment.host_install()
+            environment.host.install()
         elif args.command == "host-product-recovery-begin":
-            environment.host_product_recovery_begin()
+            environment.product_release.recovery_begin()
         elif args.command == "host-product-recovery-complete":
-            environment.host_product_recovery_complete()
+            environment.product_release.recovery_complete()
         elif args.command == "host-product-recovery-status":
-            environment.host_product_recovery_status()
+            environment.product_release.recovery_status_print()
         elif args.command == "host-product-release-activate":
-            environment.host_product_release_activate(args.release)
+            environment.product_release.activate(args.release)
         elif args.command == "host-product-release-restore":
-            environment.host_product_release_restore()
+            environment.product_release.restore()
         elif args.command == "host-prepare":
-            environment.host_prepare()
+            environment.host.prepare()
         elif args.command == "host-shutdown":
-            environment.host_shutdown()
+            environment.host.host_shutdown()
         elif args.command == "host-status":
-            environment.host_status(args.retained_volume_id)
+            environment.host_status.print_local_status(args.retained_volume_id)
         elif args.command == "lifecycle-acceptance":
-            environment.lifecycle_acceptance()
+            environment.lifecycle.acceptance_run()
         elif args.command == "replace":
-            environment.replace()
+            environment.replacement.replace()
         elif args.command == "restore":
-            environment.restore(args.snapshot_id)
+            environment.replacement.restore(args.snapshot_id)
         elif args.command == "ssh":
-            return environment.ssh(args.ssh_argument_list)
+            return environment.access.ssh(args.ssh_argument_list)
         elif args.command == "start":
-            environment.start()
+            environment.lifecycle.start()
         elif args.command == "status":
-            environment.status()
+            environment.diagnostics.status()
         elif args.command == "stop":
-            environment.stop()
+            environment.lifecycle.stop()
     except DevelopmentEnvironmentError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1

@@ -48,7 +48,7 @@ python tool/development_environment_manage.py status
 
 `start` сначала создаёт one-time external stop schedule на два часа и не запускает instance, если schedule не создан. Schedule вызывает stack-owned tag-resolving stop function. CloudFormation create/replacement отдельно защищает stack-owned replacement guard, который включается до instance по dependency и выключается только после readiness и доказанного renewable lease. После start команда ждёт EC2, SSM, успешный cloud-init, exact retained mount, k3s, Kubernetes node и host controller readiness. Внутренние create/replacement flows после cloud-init устанавливают exact проверенный infrastructure source и controller до финального proof; обычный lifecycle-only `start` переиспользует уже установленный controller и не превращается в неявный deploy.
 
-`stop` выполняет тот же graceful cordon/drain/service-stop path, что и idle controller, затем удаляет pending schedule после доказанной остановки. `status` показывает instance, SSM sessions, stop lease, retained volume, latest snapshot, exact DLM policy state, k3s, current release и безопасный WCC activity summary без secret values. `CloudFormation` `CREATE_COMPLETE`/`UPDATE_COMPLETE` не считается достаточным, если DLM policy имеет `ERROR` вместо `ENABLED`.
+`stop` выполняет тот же graceful cordon/drain/service-stop path, что и idle controller, затем удаляет pending schedule после доказанной остановки. `status` показывает instance, SSM sessions, stop lease, retained volume, latest snapshot, exact primary-only AWS Backup policy state, k3s, current release и безопасный WCC activity summary без secret values. Для `primary` одного `CloudFormation` `CREATE_COMPLETE`/`UPDATE_COMPLETE` недостаточно: фактические plan rule, vault, exact current-volume ARN selection и current-volume tag должны совпасть. Для дополнительной environment status доказывает `NOT_APPLICABLE` и отсутствие regular-backup tag.
 
 Реальная сокращённая проверка AWS lifecycle выполняется отдельно и является
 разрушающей:
@@ -75,6 +75,8 @@ python tool/development_environment_manage.py ssh -- <ssh-arguments>
 `connect` держит одну SSM port-forwarding session от remote ingress к `localhost:8080`. Product UI открывается по `http://localhost:8080`; ZITADEL и GlitchTip используют соответствующие `*.localhost:8080` hostnames. Команда является long-running foreground process, чтобы состояние tunnel оставалось видимым.
 
 `ssh` использует SSH-over-SSM и поддерживает обычные SSH, SCP, rsync и Remote SSH IDE flows без inbound port `22`. Persistent SSH private key или public ingress не создаются.
+
+Idle controller проверяет только наличие Session Manager session для exact instance. Содержимое port-forwarding и SSH-over-SSM не записывается и для idle-решения не требуется; Session Manager не поддерживает content logging этих tunnel sessions. При необходимости ordinary interactive shell logging настраивается отдельно и не становится вторым источником activity truth.
 
 Host bootstrap, Product recovery и recovery acceptance выполняются через SSM Run
 Command. Orchestrator опрашивает фактический invocation status до одного часа,
@@ -121,6 +123,8 @@ python tool/development_environment_manage.py diagnose
 
 `diagnose` собирает безопасный снимок CloudFormation, EC2, SSM, stop lease, volume/snapshot, disk pressure, k3s node, namespaces, workloads, events, registry, current/previous release и Product-owned diagnostics. Он не выводит credential process JSON, Kubernetes Secret values, database content, VPN configuration или Product input.
 
+Host controller пишет transition-aware предупреждения по root и retained volume в systemd journal: warning при `75%` used или менее `10 GiB` free, critical при `90%` used или менее `5 GiB` free, повтор не чаще шести часов. В доказанном idle состоянии он с тем же шестичасовым cadence вызывает `maintenance` exact current WCC release. Неуспешная maintenance сохраняет данные и отражается как warning; она не подменяет activity probe и не разрешает остановку при неопределённом Product state.
+
 AWS, infrastructure, cluster и Product findings показываются раздельно. Неуспешный Product smoke не маскируется готовностью instance или k3s.
 
 ## Восстановление
@@ -138,16 +142,9 @@ source snapshot и старый retained volume, подключает его к 
 tracked source, manifests, render, Helm archives, ingress artifact либо registry
 digest закрывает recovery.
 
-CloudFormation не обновляет `AWS::EC2::Volume.SnapshotId` in place. Stack
-декларативно переключает base/`a`/`b` retained-volume resources, поэтому каждый
-restore создаёт новый physical volume даже при повторном восстановлении. После
-точной проверки нового volume старый `Retain` volume теряет только DLM backup tag:
-его данные сохраняются, но семь новых daily snapshots больше не создаются для
-неактивного volume. Одновременно допускаются current и только один предыдущий
-rollback volume. Перед следующим restore более старый rollback удаляется лишь после
-проверки exact stack tags, encryption, размера, KMS key, состояния `available`,
-пустых attachments и отсутствия DLM tag; current volume cleanup не затрагивает.
-`status` показывает current retained-volume slot и source snapshot.
+CloudFormation не обновляет `AWS::EC2::Volume.SnapshotId` in place. Stack декларативно переключает base/`a`/`b` retained-volume resources, поэтому каждый restore создаёт новый physical volume даже при повторном восстановлении. После точной проверки нового volume старый `Retain` volume теряет только primary AWS Backup selection tag: его данные сохраняются, но новые daily recovery points больше не создаются для неактивного volume. Одновременно допускаются current и только один предыдущий rollback volume. Перед следующим restore более старый rollback удаляется лишь после проверки exact stack tags, encryption, размера, KMS key, состояния `available`, пустых attachments и отсутствия regular-backup tag; current volume cleanup не затрагивает. `status` показывает current retained-volume slot и source snapshot.
+
+Дополнительные development environments регулярных snapshots не имеют. Если для копирования их retained volume создаётся одноразовый EBS snapshot, после доказанного создания копии его удаляют вручную; такой snapshot не является backup history.
 
 `replace` и `restore` задают следующий alternating slot и включённый двухчасовой replacement guard, gracefully останавливают старый instance, доказывают detachment retained EBS и только затем исполняют replacement change set. CloudFormation создаёт новую launch-template version и запускает instance лишь после обновления guard; после запуска проверяется exact version из EC2 metadata. При rollback старый volume повторно подключается к stack-declared остановленному instance до возврата ошибки. Обычный `apply` не требует отдельной operator-команды: при обнаружении новой launch-template version он вызывает тот же controlled replacement primitive автоматически.
 

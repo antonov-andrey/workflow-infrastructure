@@ -61,7 +61,10 @@ def main() -> int:
             return 1
         python_version = version_result.stdout.strip()
         if python_version != PYTHON_VERSION_EXPECTED:
-            print(f"Expected Python {PYTHON_VERSION_EXPECTED}, got {python_version}.", file=sys.stderr)
+            print(
+                f"Expected Python {PYTHON_VERSION_EXPECTED}, got {python_version}.",
+                file=sys.stderr,
+            )
             return 1
         for argument_list in command_list[1:]:
             result = subprocess.run(argument_list, check=False, cwd=project_root)

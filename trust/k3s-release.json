@@ -1,0 +1,11 @@
+{
+  "artifact_sha256_by_name_map": {
+    "k3s": "65a55ec56c24eab44383086166ec620a491952b7e23941a49ddca6e8a4c4b4de",
+    "k3s-arm64": "1dc5fc17f15c28fa0a3f011cee28ad613f918c3d967a426e5a05d43ddb239817",
+    "sha256sum-amd64.txt": "6e3b3f0b382e8f9ede4cb89d562e7bf166449b5848bab3bf02e0dc18ba0075ba",
+    "sha256sum-arm64.txt": "27c8ef95f07b52b1d747fb5c6a1ca9535ffefdbc8d7280e1de52a1b6a494b85a"
+  },
+  "resolved_ref": "refs/tags/v1.36.2+k3s1",
+  "source_commit_sha": "01b6f04aaa69e8b09303f0393d4b4f1811da23aa",
+  "version": "v1.36.2+k3s1"
+}

@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 import base64
 import gzip
 import hashlib
 import io
 import json
-from pathlib import Path
 import re
 import subprocess
+from collections.abc import Callable
+from pathlib import Path
 
 import pytest
 
@@ -62,9 +62,7 @@ class RunnerFake:
             right = tuple(int(value) for value in re.findall(r"\d+", command_list[4]))
             returncode = 0 if left > right else 1
             if check and returncode:
-                raise AssertionError(
-                    "test runner received an unexpected checked comparison"
-                )
+                raise AssertionError("test runner received an unexpected checked comparison")
             return subprocess.CompletedProcess(command_list, returncode, "", "")
         raise AssertionError(f"unexpected command: {command_list}")
 
@@ -87,6 +85,8 @@ def _artifact_get(name: str) -> HostArtifactIdentity:
         url=f"https://example.invalid/{name}",
         sha256=hashlib.sha256(name.encode()).hexdigest(),
         size=len(name),
+        verification="test-proof",
+        verification_identity=f"test:{name}",
         **resolved_source_kwargs,
     )
 
@@ -239,9 +239,7 @@ def test_manifest_round_trip_is_canonical_and_tamper_evident() -> None:
 
     resolution = HostArtifactResolution(
         architecture="arm64",
-        artifact_by_name_map={
-            name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET
-        },
+        artifact_by_name_map={name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET},
         docker_signing_key_fingerprint=DOCKER_SIGNING_KEY_FINGERPRINT,
         python_build="20260718",
     )
@@ -268,9 +266,7 @@ def test_manifest_decode_rejects_any_noncurrent_shape() -> None:
 
     resolution = HostArtifactResolution(
         architecture="arm64",
-        artifact_by_name_map={
-            name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET
-        },
+        artifact_by_name_map={name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET},
         docker_signing_key_fingerprint=DOCKER_SIGNING_KEY_FINGERPRINT,
         python_build="20260718",
     )
@@ -315,9 +311,7 @@ def test_manifest_decode_requires_exact_provenance_shape_by_artifact_owner(
 
     resolution = HostArtifactResolution(
         architecture="arm64",
-        artifact_by_name_map={
-            name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET
-        },
+        artifact_by_name_map={name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET},
         docker_signing_key_fingerprint=DOCKER_SIGNING_KEY_FINGERPRINT,
         python_build="20260718",
     )
@@ -390,6 +384,60 @@ def test_python_selector_chooses_latest_stable_patch_for_target_architecture() -
 
     assert payload["patch"] == 6
     assert payload["build"] == "20260718"
+
+
+def test_k3s_release_requires_exact_repository_owned_trust(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Mutable release metadata cannot authorize one root-executed K3s binary."""
+
+    trust_path = tmp_path / "k3s-release.json"
+    trust_path.write_text(
+        json.dumps(
+            {
+                "artifact_sha256_by_name_map": {
+                    "k3s": "d" * 64,
+                    "k3s-arm64": "a" * 64,
+                    "sha256sum-amd64.txt": "e" * 64,
+                    "sha256sum-arm64.txt": "b" * 64,
+                },
+                "resolved_ref": "refs/tags/v1.36.1+k3s1",
+                "source_commit_sha": "c" * 40,
+                "version": "v1.36.1+k3s1",
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("tool.lib.host_artifact._K3S_TRUST_PATH", trust_path)
+
+    artifact_sha256_by_name_map, trust_sha256 = HostArtifactResolver._k3s_trust_identity_get(
+        binary_name="k3s-arm64",
+        checksum_name="sha256sum-arm64.txt",
+        commit_sha="c" * 40,
+        resolved_ref="refs/tags/v1.36.1+k3s1",
+        version="v1.36.1+k3s1",
+    )
+
+    assert artifact_sha256_by_name_map == {
+        "k3s": "d" * 64,
+        "k3s-arm64": "a" * 64,
+        "sha256sum-amd64.txt": "e" * 64,
+        "sha256sum-arm64.txt": "b" * 64,
+    }
+    assert trust_sha256 == hashlib.sha256(trust_path.read_bytes()).hexdigest()
+
+    with pytest.raises(
+        HostArtifactResolutionError,
+        match="not accepted",
+    ):
+        HostArtifactResolver._k3s_trust_identity_get(
+            binary_name="k3s-arm64",
+            checksum_name="sha256sum-arm64.txt",
+            commit_sha="d" * 40,
+            resolved_ref="refs/tags/v1.36.2+k3s1",
+            version="v1.36.1+k3s1",
+        )
 
 
 def test_docker_signed_index_selects_exact_latest_packages(
@@ -466,12 +514,11 @@ def test_docker_trust_anchor_excludes_additional_primary_keys() -> None:
         ]
     )
 
-    assert HostArtifactResolver._docker_primary_key_fingerprint_list_get(
-        one_primary_with_subkey
-    ) == [trusted_primary]
-    assert HostArtifactResolver._docker_primary_key_fingerprint_list_get(
-        two_primary_keys
-    ) == [trusted_primary, additional_primary]
+    assert HostArtifactResolver._primary_key_fingerprint_list_get(one_primary_with_subkey) == [trusted_primary]
+    assert HostArtifactResolver._primary_key_fingerprint_list_get(two_primary_keys) == [
+        trusted_primary,
+        additional_primary,
+    ]
 
 
 def test_artifact_url_rejects_shell_control_characters(tmp_path: Path) -> None:
@@ -491,6 +538,8 @@ def test_artifact_url_rejects_shell_control_characters(tmp_path: Path) -> None:
             selector="stable",
             version="1.0.0",
             url="https://example.invalid/file'$(touch /tmp/injected)'",
+            verification="test-proof",
+            verification_identity="test",
         )
 
 
@@ -640,26 +689,16 @@ def test_cloudformation_parameters_bind_every_bootstrap_artifact() -> None:
 
     resolution = HostArtifactResolution(
         architecture="arm64",
-        artifact_by_name_map={
-            name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET
-        },
+        artifact_by_name_map={name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET},
         docker_signing_key_fingerprint=DOCKER_SIGNING_KEY_FINGERPRINT,
         python_build="20260718",
     )
 
     parameter_by_name_map = resolution.cloudformation_parameter_by_name_map_get()
 
-    assert parameter_by_name_map["HostArtifactManifestSha256"] == (
-        resolution.manifest_sha256_get()
-    )
-    assert parameter_by_name_map["HostArtifactManifestGzipBase64"] == (
-        resolution.manifest_gzip_base64_get()
-    )
+    assert parameter_by_name_map["HostArtifactManifestSha256"] == (resolution.manifest_sha256_get())
+    assert parameter_by_name_map["HostArtifactManifestGzipBase64"] == (resolution.manifest_gzip_base64_get())
     assert parameter_by_name_map["PythonBuild"] == "20260718"
-    assert parameter_by_name_map["DockerSigningKeyFingerprint"] == (
-        DOCKER_SIGNING_KEY_FINGERPRINT
-    )
+    assert parameter_by_name_map["DockerSigningKeyFingerprint"] == (DOCKER_SIGNING_KEY_FINGERPRINT)
     assert parameter_by_name_map["AwsCliUrl"].endswith("/aws-cli")
-    assert parameter_by_name_map["K3sBinarySha256"] == (
-        resolution.artifact_by_name_map["k3s-binary"].sha256
-    )
+    assert parameter_by_name_map["K3sBinarySha256"] == (resolution.artifact_by_name_map["k3s-binary"].sha256)

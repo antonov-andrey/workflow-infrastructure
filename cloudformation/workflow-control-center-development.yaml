@@ -31,6 +31,7 @@ Conditions:
 Resources:
   AccountPublicAccessBlock:
     Type: Custom::S3AccountPublicAccessBlock
+    Condition: IsPrimaryEnvironment
     DependsOn: AccountPublicAccessBlockFunctionLogGroup
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
@@ -40,6 +41,7 @@ Resources:
 
   AccountPublicAccessBlockFunction:
     Type: AWS::Lambda::Function
+    Condition: IsPrimaryEnvironment
     Properties:
       Architectures:
         - arm64
@@ -107,6 +109,7 @@ Resources:
 
   AccountPublicAccessBlockFunctionLogGroup:
     Type: AWS::Logs::LogGroup
+    Condition: IsPrimaryEnvironment
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
@@ -126,6 +129,7 @@ Resources:
 
   AccountPublicAccessBlockFunctionRole:
     Type: AWS::IAM::Role
+    Condition: IsPrimaryEnvironment
     Properties:
       AssumeRolePolicyDocument:
         Version: '2012-10-17'

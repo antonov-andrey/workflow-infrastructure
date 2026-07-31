@@ -157,17 +157,6 @@ Parameters:
     AllowedPattern: 'v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+'
     Description: Exact k3s release installed by host bootstrap.
 
-  K3sInstallScriptSha256:
-    Type: String
-    AllowedPattern: '[0-9a-f]{64}'
-    Description: Exact SHA-256 of install.sh at the selected k3s release tag.
-
-  K3sInstallScriptUrl:
-    Type: String
-    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
-    MaxLength: 384
-    Description: Exact commit-addressed k3s installer URL.
-
   K3sBinarySha256:
     Type: String
     AllowedPattern: '[0-9a-f]{64}'
@@ -442,98 +431,92 @@ Resources:
       Roles:
         - !Ref PlatformRoleName
 
-  RetainedSnapshotLifecyclePolicy:
-    Type: AWS::DLM::LifecyclePolicy
+  RetainedBackupPlan:
+    Type: AWS::Backup::BackupPlan
+    Condition: IsPrimaryEnvironment
     Properties:
-      Description: Workflow Control Center retained volume daily snapshots
-      ExecutionRoleArn: !GetAtt RetainedSnapshotRole.Arn
-      PolicyDetails:
-        PolicyType: EBS_SNAPSHOT_MANAGEMENT
-        ResourceTypes:
-          - VOLUME
-        TargetTags:
-          - Key: workflow-control-center-retained-backup
-            Value: enabled
-          - Key: EnvironmentName
-            Value: !Ref EnvironmentName
-        Schedules:
-          - CopyTags: false
-            CreateRule:
-              Interval: 24
-              IntervalUnit: HOURS
-              Times:
-                - '03:00'
-            Name: Daily retained volume snapshots
-            RetainRule:
-              Count: 7
-            TagsToAdd:
-              - Key: Name
-                Value: workflow-control-center-development-retained-snapshot
-              - Key: Project
-                Value: !Ref NotificationTagValue
-              - Key: Environment
-                Value: development
-              - Key: EnvironmentName
-                Value: !Ref EnvironmentName
-              - Key: ManagedBy
-                Value: DLM
-      State: ENABLED
-      Tags:
-        - Key: Name
-          Value: workflow-control-center-development-retained
-        - Key: Project
-          Value: !Ref NotificationTagValue
-        - Key: Environment
-          Value: development
-        - Key: EnvironmentName
-          Value: !Ref EnvironmentName
-        - Key: ManagedBy
-          Value: CloudFormation
+      BackupPlan:
+        BackupPlanName: workflow-control-center-development-retained
+        BackupPlanRule:
+          - CompletionWindowMinutes: 360
+            Lifecycle:
+              DeleteAfterDays: 7
+            RecoveryPointTags:
+              Name: workflow-control-center-development-retained-recovery-point
+              Project: !Ref NotificationTagValue
+              Environment: development
+              EnvironmentName: primary
+              ManagedBy: AWSBackup
+            RuleName: daily-retained-volume
+            ScheduleExpression: cron(0 3 * * ? *)
+            ScheduleExpressionTimezone: UTC
+            StartWindowMinutes: 60
+            TargetBackupVault: !Ref RetainedBackupVault
+      BackupPlanTags:
+        Name: workflow-control-center-development-retained
+        Project: !Ref NotificationTagValue
+        Environment: development
+        EnvironmentName: primary
+        ManagedBy: CloudFormation
 
-  RetainedSnapshotRole:
+  RetainedBackupRole:
     Type: AWS::IAM::Role
+    Condition: IsPrimaryEnvironment
     Properties:
-      RoleName: !If
-        - IsPrimaryEnvironment
-        - workflow-control-center-development-dlm
-        - !Sub workflow-control-center-development-${EnvironmentName}-dlm
+      RoleName: workflow-control-center-development-aws-backup
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
-              Service: dlm.amazonaws.com
+              Service: backup.amazonaws.com
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: workflow-control-center-development-dlm
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - ec2:CreateSnapshot
-                  - ec2:CreateSnapshots
-                  - ec2:DeleteSnapshot
-                  - ec2:DescribeInstances
-                  - ec2:DescribeSnapshots
-                  - ec2:DescribeTags
-                  - ec2:DescribeVolumes
-                Resource: '*'
-              - Effect: Allow
-                Action:
-                  - ec2:CreateTags
-                Resource: !Sub arn:${AWS::Partition}:ec2:*::snapshot/*
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup
       Tags:
         - Key: Name
-          Value: workflow-control-center-development-dlm
+          Value: workflow-control-center-development-aws-backup
         - Key: Project
           Value: !Ref NotificationTagValue
         - Key: Environment
           Value: development
         - Key: EnvironmentName
-          Value: !Ref EnvironmentName
+          Value: primary
         - Key: ManagedBy
           Value: CloudFormation
+
+  RetainedBackupSelection:
+    Type: AWS::Backup::BackupSelection
+    Condition: IsPrimaryEnvironment
+    Properties:
+      BackupPlanId: !Ref RetainedBackupPlan
+      BackupSelection:
+        IamRoleArn: !GetAtt RetainedBackupRole.Arn
+        Resources:
+          - !Sub
+            - arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:volume/${SelectedVolumeId}
+            - SelectedVolumeId: !If
+                - UseRetainedVolumeBase
+                - !Ref RetainedVolume
+                - !If
+                  - UseRetainedVolumeRestoreA
+                  - !Ref RetainedVolumeRestoreA
+                  - !Ref RetainedVolumeRestoreB
+        SelectionName: primary-retained-volume
+
+  RetainedBackupVault:
+    Type: AWS::Backup::BackupVault
+    Condition: IsPrimaryEnvironment
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BackupVaultName: workflow-control-center-development-retained
+      BackupVaultTags:
+        Name: workflow-control-center-development-retained
+        Project: !Ref NotificationTagValue
+        Environment: development
+        EnvironmentName: primary
+        ManagedBy: CloudFormation
 
   RetainedVolume:
     Type: AWS::EC2::Volume
@@ -556,8 +539,11 @@ Resources:
           Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
-        - Key: workflow-control-center-retained-backup
-          Value: enabled
+        - !If
+          - IsPrimaryEnvironment
+          - Key: workflow-control-center-regular-backup
+            Value: primary
+          - !Ref AWS::NoValue
 
   RetainedVolumeRestoreA:
     Type: AWS::EC2::Volume
@@ -581,8 +567,11 @@ Resources:
           Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
-        - Key: workflow-control-center-retained-backup
-          Value: enabled
+        - !If
+          - IsPrimaryEnvironment
+          - Key: workflow-control-center-regular-backup
+            Value: primary
+          - !Ref AWS::NoValue
 
   RetainedVolumeRestoreB:
     Type: AWS::EC2::Volume
@@ -606,8 +595,11 @@ Resources:
           Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
-        - Key: workflow-control-center-retained-backup
-          Value: enabled
+        - !If
+          - IsPrimaryEnvironment
+          - Key: workflow-control-center-regular-backup
+            Value: primary
+          - !Ref AWS::NoValue
 
   SchedulerExecutionRole:
     Type: AWS::IAM::Role
@@ -930,8 +922,7 @@ Resources:
                   artifact("uv"),
                   artifact("python"),
                   artifact("helm"),
-                  artifact("k3s-binary"),
-                  artifact("k3s-install-script")
+                  artifact("k3s-binary")
                 ' "$manifest_path" | sha256sum | awk '{print $1}'
               )"
               direct_input="$(
@@ -954,8 +945,6 @@ Resources:
                   '${PythonVersion}' '${PythonUrl}' '${PythonSha256}' \
                   '${HelmVersion}' '${HelmUrl}' '${HelmSha256}' \
                   '${K3sVersion}' '${K3sBinaryUrl}' '${K3sBinarySha256}' \
-                  '${K3sVersion}' '${K3sInstallScriptUrl}' \
-                  '${K3sInstallScriptSha256}' \
                   | sha256sum | awk '{print $1}'
               )"
               test "$manifest_input" = "$direct_input"
@@ -1078,18 +1067,46 @@ Resources:
 
               download_verified '${K3sBinaryUrl}' '${K3sBinarySha256}' /tmp/k3s
               install -m 0755 /tmp/k3s /usr/local/bin/k3s
-              download_verified '${K3sInstallScriptUrl}' \
-                '${K3sInstallScriptSha256}' /tmp/k3s-install
-              chmod 0755 /tmp/k3s-install
-              INSTALL_K3S_VERSION='${K3sVersion}' \
-                INSTALL_K3S_SKIP_DOWNLOAD=true \
-                INSTALL_K3S_EXEC='server --cluster-cidr 10.42.0.0/16 --service-cidr 10.43.0.0/16 --disable traefik --secrets-encryption --write-kubeconfig-mode 0600 --node-label apwid.com/workflow-run-eligible=true' \
-                /tmp/k3s-install
-              rm -f /tmp/k3s-install
+              test "$(/usr/local/bin/k3s --version | awk 'NR == 1 {print $3}')" \
+                = '${K3sVersion}'
+              ln -sfn /usr/local/bin/k3s /usr/local/bin/kubectl
+              ln -sfn /usr/local/bin/k3s /usr/local/bin/crictl
+              ln -sfn /usr/local/bin/k3s /usr/local/bin/ctr
+              install -d -m 0755 /etc/rancher/k3s
+              cat > /etc/systemd/system/k3s.service <<'UNIT'
+              [Unit]
+              Description=Lightweight Kubernetes
+              Documentation=https://k3s.io
+              Wants=network-online.target
+              After=network-online.target
+              Conflicts=shutdown.target
 
-              install -d -m 0755 /etc/systemd/system/k3s.service.d
-              printf '[Service]\nEnvironment=KUBECONFIG=/etc/rancher/k3s/k3s.yaml\n' \
-                > /etc/systemd/system/k3s.service.d/workflow-control-center.conf
+              [Install]
+              WantedBy=multi-user.target
+
+              [Service]
+              Type=notify
+              Environment=KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+              KillMode=process
+              Delegate=yes
+              User=root
+              LimitNOFILE=1048576
+              LimitNPROC=infinity
+              LimitCORE=infinity
+              TasksMax=infinity
+              TimeoutStartSec=0
+              Restart=always
+              RestartSec=5s
+              ExecStartPre=-/sbin/modprobe br_netfilter
+              ExecStartPre=-/sbin/modprobe overlay
+              ExecStart=/usr/local/bin/k3s server \
+                --cluster-cidr 10.42.0.0/16 \
+                --service-cidr 10.43.0.0/16 \
+                --disable traefik \
+                --secrets-encryption \
+                --write-kubeconfig-mode 0600 \
+                --node-label apwid.com/workflow-run-eligible=true
+              UNIT
               cat > /etc/systemd/system/workflow-control-center-imds-deny.service <<'UNIT'
               [Unit]
               Description=Deny Kubernetes pod access to EC2 instance metadata
