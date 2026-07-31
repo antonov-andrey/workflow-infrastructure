@@ -14,6 +14,13 @@ from tool.lib.development_environment_error import DevelopmentEnvironmentError
 
 CLOUDFORMATION_INLINE_TEMPLATE_MAX_BYTE_COUNT = 51_200
 CLOUDFORMATION_S3_TEMPLATE_MAX_BYTE_COUNT = 1_048_576
+STACK_DRIFT_CHECKABLE_STATUS_SET = frozenset(
+    {
+        "CREATE_COMPLETE",
+        "UPDATE_COMPLETE",
+        "UPDATE_ROLLBACK_COMPLETE",
+    }
+)
 STACK_POLL_INTERVAL_SECONDS = 5
 STACK_TIMEOUT_SECONDS = 3600
 
@@ -262,14 +269,11 @@ class DevelopmentStackManager:
             raise DevelopmentEnvironmentError(f"Stack {stack_name} did not reach a complete state")
 
     def drift_validate(self, stack_name: str) -> None:
-        """Prove one stack is complete and in sync."""
+        """Prove one stable stack is available for recovery and in sync."""
 
         stack_payload = self.payload_get(stack_name, is_required=True)
-        if stack_payload.get("StackStatus") not in {
-            "CREATE_COMPLETE",
-            "UPDATE_COMPLETE",
-        }:
-            raise DevelopmentEnvironmentError(f"Stack {stack_name} is not in a complete operational state")
+        if stack_payload.get("StackStatus") not in STACK_DRIFT_CHECKABLE_STATUS_SET:
+            raise DevelopmentEnvironmentError(f"Stack {stack_name} is not in a stable operational state")
         if not self.output_by_name_map_get(stack_name):
             raise DevelopmentEnvironmentError(f"Stack {stack_name} has no validated outputs")
         payload = self._aws.json_get(

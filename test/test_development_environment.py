@@ -1856,19 +1856,27 @@ def test_cost_review_includes_one_bounded_retained_rollback_volume(
     }
 
 
-def test_drift_preflight_requires_complete_stack_status_and_outputs(
+@pytest.mark.parametrize(
+    "stack_status",
+    [
+        "UPDATE_COMPLETE",
+        "UPDATE_ROLLBACK_COMPLETE",
+    ],
+)
+def test_drift_preflight_requires_stable_stack_status_and_outputs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
+    stack_status: str,
 ) -> None:
-    """Mutation preflight proves the live stack status and outputs before drift."""
+    """Mutation preflight accepts completed recovery states and proves drift."""
 
     environment = _environment_get(tmp_path)
     operation_list: list[str] = []
     monkeypatch.setattr(
         environment._stack,
         "payload_get",
-        lambda stack_name, is_required: {"StackStatus": "UPDATE_COMPLETE"},
+        lambda stack_name, is_required: {"StackStatus": stack_status},
     )
     monkeypatch.setattr(
         environment._stack,
@@ -1894,6 +1902,26 @@ def test_drift_preflight_requires_complete_stack_status_and_outputs(
 
     assert operation_list == ["outputs", "detect", "inspect"]
     assert capsys.readouterr().out == "OK: stack stack-a drift is IN_SYNC\n"
+
+
+def test_drift_preflight_rejects_incomplete_stack_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An incomplete rollback cannot become the starting point for another update."""
+
+    environment = _environment_get(tmp_path)
+    monkeypatch.setattr(
+        environment._stack,
+        "payload_get",
+        lambda stack_name, is_required: {"StackStatus": "UPDATE_ROLLBACK_IN_PROGRESS"},
+    )
+
+    with pytest.raises(
+        DevelopmentEnvironmentError,
+        match="not in a stable operational state",
+    ):
+        environment._stack.drift_validate("stack-a")
 
 
 def test_source_archive_is_deterministic_and_excludes_untracked_files(
