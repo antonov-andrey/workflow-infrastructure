@@ -233,6 +233,8 @@ Replacement или snapshot recovery сначала публикует на disp
 
 Trusted control source требует exact current versions обоих release manifests, их environment/host identities, exact source/render digests и каждый tracked source byte до восстановления `/opt/workflow-infrastructure/current`. Любое выполнение Python непосредственно из infrastructure либо Product source release использует одновременно `-B` и `PYTHONDONTWRITEBYTECODE=1`; current WCC самостоятельно владеет тем же guard для host services и Helm post-renderer. Recovery не изменяет retained source: любой дополнительный, отсутствующий или изменённый byte, включая `__pycache__/*.pyc`, отклоняет release. Отсутствующая или прежняя manifest version, source sanitation и infrastructure-side Product compatibility installer запрещены.
 
+Все host-side Product tool invocations, включая systemd timers, до dependency bootstrap устанавливают environment-exclusive `HOME` в disposable Product cache вне `sources/**`. Kubernetes discovery cache, package-tool cache и другой автоматически создаваемый runtime state никогда не записываются в immutable release source graph.
+
 После восстановления ссылки Product-owned `recover`:
 
 - принимает release identity и target platform только из сохранённого manifest;
