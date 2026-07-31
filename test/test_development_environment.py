@@ -3903,6 +3903,54 @@ def test_root_cli_composes_the_exact_repository_root(
 
     assert development_environment_manage.main(["connect"]) == 0
     assert captured_project_root_path == [Path(development_environment_manage.__file__).resolve().parent]
+    assert Path(development_environment_manage.__file__).name == "development_environment_manage.py"
+    assert not (
+        Path(development_environment_manage.__file__).resolve().parent / "tool" / "development_environment_manage.py"
+    ).exists()
+
+
+def test_deploy_starts_the_environment_before_product_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Canonical deploy must be usable after the idle controller stops EC2."""
+
+    event_list: list[str] = []
+
+    class _Lifecycle:
+        @staticmethod
+        def start() -> None:
+            event_list.append("start")
+
+    class _ProductDeployment:
+        @staticmethod
+        def deploy(
+            *,
+            expected_role_key_list: list[str],
+            should_reset_product_state: bool,
+            user_email: str,
+            workflow_container_contract_commit: str | None,
+        ) -> None:
+            assert expected_role_key_list == []
+            assert should_reset_product_state is False
+            assert user_email == ""
+            assert workflow_container_contract_commit == ""
+            event_list.append("deploy")
+
+    class _Environment:
+        lifecycle = _Lifecycle()
+        product_deployment = _ProductDeployment()
+
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+    monkeypatch.setattr(
+        development_environment_manage,
+        "DevelopmentEnvironment",
+        _Environment,
+    )
+
+    assert development_environment_manage.main(["deploy"]) == 0
+    assert event_list == ["start", "deploy"]
 
 
 def _retained_product_release_prepare(
@@ -5055,6 +5103,20 @@ def test_reset_deploy_is_one_candidate_cutover_before_activation_and_host_servic
         < current_activation_index
         < product_host_install_index
         < controller_host_install_index
+    )
+    release_root_path = development_environment_identity.HOST_RELEASE_ROOT_PATH / str(
+        source_manifest_payload_list[0]["release"]
+    )
+    candidate_entrypoint_path = (
+        release_root_path / development_environment_identity.INFRASTRUCTURE_ENTRYPOINT_RELATIVE_PATH
+    )
+    assert remote_command_list_list[host_prepare_index][5] == str(candidate_entrypoint_path)
+    assert remote_command_list_list[current_activation_index][5] == str(candidate_entrypoint_path)
+    assert remote_command_list_list[controller_host_install_index][5] == str(
+        environment._identity.host_control_entrypoint_path
+    )
+    assert "/tool/development_environment_manage.py" not in "\n".join(
+        " ".join(command_list) for command_list in remote_command_list_list
     )
     assert len(reset_keyword_argument_by_name_map_list) == 1
     reset_keyword_argument_by_name_map = reset_keyword_argument_by_name_map_list[0]

@@ -40,6 +40,7 @@ class EnvironmentIdentityProtocol(Protocol):
     """Stable environment identities required by source publication."""
 
     environment_name: str
+    host_control_entrypoint_path: Path
     host_control_current_source_path: Path
     host_control_release_root_path: Path
     instance_name: str
@@ -139,13 +140,7 @@ class DevelopmentSourcePublisher:
                         PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
                         "python3.14",
                         "-B",
-                        str(
-                            self._identity.host_control_current_source_path
-                            / "sources"
-                            / "workflow-infrastructure"
-                            / "tool"
-                            / "development_environment_manage.py"
-                        ),
+                        str(self._identity.host_control_entrypoint_path),
                         "host-install",
                         "--environment-name",
                         self._identity.environment_name,

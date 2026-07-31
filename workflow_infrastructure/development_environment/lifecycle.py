@@ -70,7 +70,7 @@ class EnvironmentIdentityProtocol(Protocol):
 
     compute_stack_name: str
     environment_name: str
-    host_control_current_source_path: Path
+    host_control_entrypoint_path: Path
 
 
 class HostStatusProtocol(Protocol):
@@ -214,11 +214,9 @@ class DevelopmentLifecycleManager:
         command_id = self._transport.ssm_command_start(
             [
                 (
-                    f"if [ -f {self._identity.host_control_current_source_path}/sources/workflow-infrastructure/"
-                    "development_environment_manage.py ]; then "
+                    f"if [ -f {self._identity.host_control_entrypoint_path} ]; then "
                     f"sudo env {PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT} python3.14 -B "
-                    f"{self._identity.host_control_current_source_path}/sources/workflow-infrastructure/"
-                    "development_environment_manage.py host-shutdown "
+                    f"{self._identity.host_control_entrypoint_path} host-shutdown "
                     f"--environment-name {self._identity.environment_name}; "
                     "else sudo systemctl stop k3s || true; sudo systemctl poweroff; fi"
                 )

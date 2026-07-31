@@ -15,6 +15,9 @@ from workflow_infrastructure.development_environment.error import (
 from workflow_infrastructure.development_environment.host.manager import (
     PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
 )
+from workflow_infrastructure.development_environment.identity import (
+    INFRASTRUCTURE_ENTRYPOINT_RELATIVE_PATH,
+)
 from workflow_infrastructure.development_environment.product.release import (
     PRODUCT_SOURCE_REPOSITORY_NAME_LIST,
     SOURCE_MANIFEST_VERSION,
@@ -67,6 +70,7 @@ class EnvironmentIdentityProtocol(Protocol):
     compute_stack_name: str
     data_plane_stack_name: str
     environment_name: str
+    host_control_entrypoint_path: Path
     host_control_current_source_path: Path
     host_control_release_root_path: Path
     host_current_source_path: Path
@@ -382,13 +386,7 @@ class DevelopmentProductDeploymentManager:
                 PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
                 "python3.14",
                 "-B",
-                str(
-                    release_root_path
-                    / "sources"
-                    / "workflow-infrastructure"
-                    / "tool"
-                    / "development_environment_manage.py"
-                ),
+                str(release_root_path / INFRASTRUCTURE_ENTRYPOINT_RELATIVE_PATH),
                 "host-prepare",
                 "--environment-name",
                 self._identity.environment_name,
@@ -452,13 +450,7 @@ class DevelopmentProductDeploymentManager:
                 PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
                 "python3.14",
                 "-B",
-                str(
-                    release_root_path
-                    / "sources"
-                    / "workflow-infrastructure"
-                    / "tool"
-                    / "development_environment_manage.py"
-                ),
+                str(release_root_path / INFRASTRUCTURE_ENTRYPOINT_RELATIVE_PATH),
                 "host-product-release-activate",
                 "--environment-name",
                 self._identity.environment_name,
@@ -519,13 +511,7 @@ class DevelopmentProductDeploymentManager:
                 PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
                 "python3.14",
                 "-B",
-                str(
-                    self._identity.host_control_current_source_path
-                    / "sources"
-                    / "workflow-infrastructure"
-                    / "tool"
-                    / "development_environment_manage.py"
-                ),
+                str(self._identity.host_control_entrypoint_path),
                 "host-install",
                 "--environment-name",
                 self._identity.environment_name,

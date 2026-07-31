@@ -63,7 +63,7 @@ class EnvironmentIdentityProtocol(Protocol):
     """Environment paths and names consumed by host lifecycle."""
 
     environment_name: str
-    host_control_current_source_path: Path
+    host_control_infrastructure_source_path: Path
     host_release_root_path: Path
     host_retained_root_path: Path
     host_state_root_path: Path
@@ -254,9 +254,7 @@ class DevelopmentHostManager:
         """Install the source-owned host controller from the exact release."""
 
         self.prepare()
-        infrastructure_source_path = (
-            self._identity.host_control_current_source_path / "sources" / "workflow-infrastructure"
-        )
+        infrastructure_source_path = self._identity.host_control_infrastructure_source_path
         runtime_home_path = self._identity.host_state_root_path / "home"
         for path in (self._identity.host_state_root_path, runtime_home_path):
             if path.is_symlink():

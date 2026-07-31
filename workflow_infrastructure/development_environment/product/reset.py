@@ -9,6 +9,9 @@ from typing import Protocol
 from workflow_infrastructure.development_environment.host.manager import (
     PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
 )
+from workflow_infrastructure.development_environment.identity import (
+    INFRASTRUCTURE_ENTRYPOINT_RELATIVE_PATH,
+)
 
 
 class DevelopmentProductResetManager:
@@ -86,13 +89,7 @@ class DevelopmentProductResetManager:
                 PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
                 "python3.14",
                 "-B",
-                str(
-                    release_root_path
-                    / "sources"
-                    / "workflow-infrastructure"
-                    / "tool"
-                    / "development_environment_manage.py"
-                ),
+                str(release_root_path / INFRASTRUCTURE_ENTRYPOINT_RELATIVE_PATH),
                 "host-product-release-reset",
                 "--environment-name",
                 self._identity.environment_name,

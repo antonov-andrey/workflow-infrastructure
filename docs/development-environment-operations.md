@@ -92,18 +92,19 @@ python development_environment_manage.py deploy
 
 `deploy`:
 
-1. определяет все необходимые source repositories из Product release contract;
-2. проверяет clean worktrees, exact upstream commits и remote URLs;
-3. передаёт только tracked required files через rsync over SSH-over-SSM;
-4. проверяет content manifest на host и публикует exact source release в retained `release/releases/<release>/`;
-5. из exact infrastructure source атомарно устанавливает checksum-pinned Helm для фактической host architecture;
-6. определяет единую Linux OCI platform по eligible Kubernetes nodes;
-7. сохраняет exact Helm charts и release-local ingress-nginx manifest с SHA-256 provenance;
-8. собирает platform images и source maps, публикует immutable digests в retained local registry;
-9. вызывает Product-owned secret restore, renewable credential refresh, render/apply/smoke path из переданного WCC source;
-10. выполняет live registry gate: exact kubelet pull и read-only proxy reads проходят, private/mutation proxy paths и writer access из builder/постороннего namespace отклоняются, а trusted build-worker write path проходит;
-11. временно ротирует backend credential-process на действующую tenant-role STS session, подтверждает её и восстановленную platform session из того же Pod UID без вывода credential fields;
-12. после полной readiness/smoke атомарно переключает retained `release/current` и восстановимую root-volume ссылку `/opt/workflow-infrastructure/current`, затем переустанавливает host credential timer; при failure восстанавливает previous Helm revisions, ingress и exact render, не меняя current links.
+1. создаёт либо обновляет stop lease и запускает остановленный idle environment через обычный lifecycle contract;
+2. определяет все необходимые source repositories из Product release contract;
+3. проверяет clean worktrees, exact upstream commits и remote URLs;
+4. передаёт только tracked required files через rsync over SSH-over-SSM;
+5. проверяет content manifest на host и публикует exact source release в retained `release/releases/<release>/`;
+6. из exact infrastructure source атомарно устанавливает checksum-pinned Helm для фактической host architecture;
+7. определяет единую Linux OCI platform по eligible Kubernetes nodes;
+8. сохраняет exact Helm charts и release-local ingress-nginx manifest с SHA-256 provenance;
+9. собирает platform images и source maps, публикует immutable digests в retained local registry;
+10. вызывает Product-owned secret restore, renewable credential refresh, render/apply/smoke path из переданного WCC source;
+11. выполняет live registry gate: exact kubelet pull и read-only proxy reads проходят, private/mutation proxy paths и writer access из builder/постороннего namespace отклоняются, а trusted build-worker write path проходит;
+12. временно ротирует backend credential-process на действующую tenant-role STS session, подтверждает её и восстановленную platform session из того же Pod UID без вывода credential fields;
+13. после полной readiness/smoke атомарно переключает retained `release/current` и восстановимую root-volume ссылку `/opt/workflow-infrastructure/current`, затем переустанавливает host credential timer; при failure восстанавливает previous Helm revisions, ingress и exact render, не меняя current links.
 
 Команда не выполняет `git clone` на host и не сохраняет GitHub credentials. Dirty или unpublished source блокирует deployment. AWS credential-process JSON не входит в source/release manifest, retained secret export или operator output; его обновляет Product-owned systemd timer из exact current WCC release.
 

@@ -13,6 +13,8 @@ COMPUTE_STACK_NAME = "workflow-control-center-development-compute"
 DATA_PLANE_STACK_NAME = "workflow-control-center-development"
 HOST_CONTROL_CURRENT_SOURCE_PATH = Path("/opt/workflow-infrastructure/control/current")
 HOST_CONTROL_RELEASE_ROOT_PATH = Path("/opt/workflow-infrastructure/control/releases")
+INFRASTRUCTURE_SOURCE_RELATIVE_PATH = Path("sources/workflow-infrastructure")
+INFRASTRUCTURE_ENTRYPOINT_RELATIVE_PATH = INFRASTRUCTURE_SOURCE_RELATIVE_PATH / "development_environment_manage.py"
 HOST_CURRENT_SOURCE_PATH = Path("/opt/workflow-infrastructure/current")
 HOST_RETAINED_ROOT_PATH = Path("/srv/workflow-control-center")
 HOST_RETAINED_RELEASE_ROOT_PATH = HOST_RETAINED_ROOT_PATH / "release"
@@ -104,6 +106,18 @@ class DevelopmentEnvironmentIdentity:
         if self.is_primary:
             return HOST_CONTROL_CURRENT_SOURCE_PATH
         return self.host_control_root_path / "current"
+
+    @property
+    def host_control_infrastructure_source_path(self) -> Path:
+        """Return the current workflow-infrastructure repository root."""
+
+        return self.host_control_current_source_path / INFRASTRUCTURE_SOURCE_RELATIVE_PATH
+
+    @property
+    def host_control_entrypoint_path(self) -> Path:
+        """Return the current primary development-environment entrypoint."""
+
+        return self.host_control_current_source_path / INFRASTRUCTURE_ENTRYPOINT_RELATIVE_PATH
 
     @property
     def host_retained_root_path(self) -> Path:

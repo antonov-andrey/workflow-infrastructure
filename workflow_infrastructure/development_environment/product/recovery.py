@@ -22,7 +22,7 @@ class EnvironmentIdentityProtocol(Protocol):
     """Environment identity used to address the current control source."""
 
     environment_name: str
-    host_control_current_source_path: Path
+    host_control_entrypoint_path: Path
 
 
 class ProductReleaseProtocol(Protocol):
@@ -148,13 +148,7 @@ class DevelopmentProductRecoveryManager:
             PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
             "python3.14",
             "-B",
-            str(
-                self._identity.host_control_current_source_path
-                / "sources"
-                / "workflow-infrastructure"
-                / "tool"
-                / "development_environment_manage.py"
-            ),
+            str(self._identity.host_control_entrypoint_path),
             command,
             "--environment-name",
             self._identity.environment_name,

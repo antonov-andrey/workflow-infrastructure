@@ -42,7 +42,7 @@ class IdentityProtocol(Protocol):
     """Environment paths and identity used by safe status collection."""
 
     environment_name: str
-    host_control_current_source_path: Path
+    host_control_entrypoint_path: Path
     host_release_root_path: Path
     host_retained_current_release_path: Path
     host_retained_root_path: Path
@@ -117,13 +117,7 @@ class DevelopmentHostStatus:
                         PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
                         "python3.14",
                         "-B",
-                        str(
-                            self._identity.host_control_current_source_path
-                            / "sources"
-                            / "workflow-infrastructure"
-                            / "tool"
-                            / "development_environment_manage.py"
-                        ),
+                        str(self._identity.host_control_entrypoint_path),
                         "host-status",
                         "--environment-name",
                         self._identity.environment_name,
