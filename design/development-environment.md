@@ -304,7 +304,7 @@ REST API Gateway requests и Internet data transfer. Для tiered meters сох
 
 До первого current-format deploy Product-owned reset сохраняет существующие retained ZITADEL и GlitchTip databases/files на месте и доказывает их identities до/после операции. БД `apwid` и `apwid_test`, workflow registry, WorkflowRun storage, все development Data/Secret/Result object versions, dynamic Glue/Athena catalog, retained Product release/current/recovery-marker, Product-tool runtime contents и concrete-workflow migration artifacts удаляются и создаются заново.
 
-Product database migration framework, workflow input migration graph, schema/data compatibility bridge, dual Product deployment, old/new data-state synchronization и завершённый one-time logical dump/import contour отсутствуют. Local Kubernetes branch и перенос прежнего registry отсутствуют.
+Конкретные Product database migration cases и workflow input migration edges удалённого pre-cutover state отсутствуют. Reusable database migration verifier и workflow input migration graph/loader остаются частью current Product source. Schema/data compatibility bridge, dual Product deployment, old/new data-state synchronization, завершённый one-time logical dump/import contour, Local Kubernetes branch и перенос прежнего registry отсутствуют.
 
 ## Восстановление
 
