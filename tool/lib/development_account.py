@@ -160,13 +160,20 @@ class DevelopmentAccountVerifier:
             raise DevelopmentEnvironmentError("Lake Formation account administrators differ from the primary owner")
         required_value_by_name_map: dict[str, object] = {
             "AllowExternalDataFiltering": False,
-            "AllowFullTableExternalDataAccess": False,
             "CreateDatabaseDefaultPermissions": [],
             "CreateTableDefaultPermissions": [],
             "ExternalDataFilteringAllowList": [],
-            "Parameters": {"CROSS_ACCOUNT_VERSION": "4"},
+            "Parameters": {
+                "CROSS_ACCOUNT_VERSION": "4",
+                "SET_CONTEXT": "TRUE",
+                "SET_SOURCE_IDENTITY": "FALSE",
+            },
             "TrustedResourceOwners": [],
         }
+        if settings.get("AllowFullTableExternalDataAccess", False) is not False:
+            raise DevelopmentEnvironmentError(
+                "Lake Formation account setting AllowFullTableExternalDataAccess differs from the primary owner"
+            )
         for name, expected_value in required_value_by_name_map.items():
             if settings.get(name) != expected_value:
                 raise DevelopmentEnvironmentError(

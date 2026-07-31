@@ -1239,7 +1239,6 @@ def test_nonprimary_environment_verifies_primary_owned_account_foundation(
     )
     lake_formation_settings = {
         "AllowExternalDataFiltering": False,
-        "AllowFullTableExternalDataAccess": False,
         "CreateDatabaseDefaultPermissions": [],
         "CreateTableDefaultPermissions": [],
         "DataLakeAdmins": [
@@ -1247,7 +1246,11 @@ def test_nonprimary_environment_verifies_primary_owned_account_foundation(
             {"DataLakePrincipalIdentifier": platform_role_arn},
         ],
         "ExternalDataFilteringAllowList": [],
-        "Parameters": {"CROSS_ACCOUNT_VERSION": "4"},
+        "Parameters": {
+            "CROSS_ACCOUNT_VERSION": "4",
+            "SET_CONTEXT": "TRUE",
+            "SET_SOURCE_IDENTITY": "FALSE",
+        },
         "TrustedResourceOwners": [],
     }
 
@@ -1276,6 +1279,14 @@ def test_nonprimary_environment_verifies_primary_owned_account_foundation(
     monkeypatch.setattr(environment._aws, "json_get", aws_json_get)
 
     environment._account.account_foundation_validate()
+
+    lake_formation_settings["AllowFullTableExternalDataAccess"] = True
+    with pytest.raises(
+        DevelopmentEnvironmentError,
+        match="AllowFullTableExternalDataAccess differs from the primary owner",
+    ):
+        environment._account.account_foundation_validate()
+    lake_formation_settings.pop("AllowFullTableExternalDataAccess")
 
     lake_formation_settings["DataLakeAdmins"].append(
         {"DataLakePrincipalIdentifier": ("arn:aws:iam::463564115167:role/unexpected-account-owner")}
