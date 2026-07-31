@@ -65,6 +65,28 @@ class CommandRunnerProtocol(Protocol):
         """Run one local command."""
 
 
+def _is_data_lake_settings_parameter_change_safe(summary: Mapping[str, object]) -> bool:
+    """Return whether one change is the documented in-place Parameters update."""
+
+    return (
+        summary.get("action") == "Modify"
+        and summary.get("replacement") == "Conditional"
+        and summary.get("resource_type") == "AWS::LakeFormation::DataLakeSettings"
+        and summary.get("detail_list")
+        == [
+            {
+                "ChangeSource": "DirectModification",
+                "Evaluation": "Static",
+                "Target": {
+                    "Attribute": "Properties",
+                    "Name": "Parameters",
+                    "RequiresRecreation": "Conditionally",
+                },
+            }
+        ]
+    )
+
+
 class DevelopmentStackManager:
     """Own all CloudFormation API behavior and physical-identity guards."""
 
@@ -551,6 +573,9 @@ class DevelopmentStackManager:
             if not isinstance(detail_list, list) or not detail_list:
                 conditional_safety_by_logical_id_map[logical_resource_id] = False
                 return False
+            if _is_data_lake_settings_parameter_change_safe(summary):
+                conditional_safety_by_logical_id_map[logical_resource_id] = True
+                return True
             replacement_detail_list = [
                 detail
                 for detail in detail_list

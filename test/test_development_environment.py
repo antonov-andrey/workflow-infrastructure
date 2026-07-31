@@ -2223,6 +2223,67 @@ def test_stable_data_change_allows_only_identity_preserving_conditional_dependen
     ]
 
 
+def test_stable_data_change_allows_only_exact_data_lake_settings_parameter_update(
+    tmp_path: Path,
+) -> None:
+    """The documented in-place Parameters update cannot weaken the stable-data guard."""
+
+    environment = _environment_get(tmp_path)
+    parameter_detail = {
+        "ChangeSource": "DirectModification",
+        "Evaluation": "Static",
+        "Target": {
+            "Attribute": "Properties",
+            "Name": "Parameters",
+            "RequiresRecreation": "Conditionally",
+        },
+    }
+    change_summary = {
+        "action": "Modify",
+        "detail_list": [parameter_detail],
+        "logical_resource_id": "DataLakeSettings",
+        "replacement": "Conditional",
+        "resource_type": "AWS::LakeFormation::DataLakeSettings",
+    }
+
+    assert environment._stack._stable_data_change_violation_list_get([change_summary]) == []
+
+    for unsafe_change_summary in (
+        {
+            **change_summary,
+            "detail_list": [
+                {
+                    **parameter_detail,
+                    "Target": {
+                        **parameter_detail["Target"],
+                        "Name": "Admins",
+                    },
+                }
+            ],
+        },
+        {
+            **change_summary,
+            "detail_list": [
+                parameter_detail,
+                {
+                    **parameter_detail,
+                    "Target": {
+                        **parameter_detail["Target"],
+                        "Name": "MutationType",
+                    },
+                },
+            ],
+        },
+        {
+            **change_summary,
+            "resource_type": "AWS::LakeFormation::Resource",
+        },
+    ):
+        assert environment._stack._stable_data_change_violation_list_get([unsafe_change_summary]) == [
+            "DataLakeSettings"
+        ]
+
+
 def test_stable_data_change_proves_transitive_conditional_dependency_chain(
     tmp_path: Path,
 ) -> None:
