@@ -1956,16 +1956,23 @@ class DevelopmentEnvironment:
             / "sources"
             / "workflow-infrastructure"
         )
-        self._runner.run(
-            [
-                "env",
-                PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
-                "python3.14",
-                "-B",
-                str(infrastructure_source_path / "tool" / "venv_create.py"),
-                "--runtime-only",
-            ]
+        runtime_home_path = self._identity.host_state_root_path / "home"
+        for path in (self._identity.host_state_root_path, runtime_home_path):
+            if path.is_symlink():
+                raise DevelopmentEnvironmentError(
+                    f"Host controller state path must not be a symbolic link: {path}"
+                )
+        self._identity.host_state_root_path.mkdir(
+            mode=0o750, parents=True, exist_ok=True
         )
+        runtime_home_path.mkdir(mode=0o700, exist_ok=True)
+        for path in (self._identity.host_state_root_path, runtime_home_path):
+            if path.is_symlink():
+                raise DevelopmentEnvironmentError(
+                    f"Host controller state path must not be a symbolic link: {path}"
+                )
+        os.chmod(self._identity.host_state_root_path, 0o750)
+        os.chmod(runtime_home_path, 0o700)
         service_path = Path(
             "/etc/systemd/system/workflow-control-center-host-controller.service"
         )
@@ -1977,7 +1984,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment={PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT}
-ExecStart={infrastructure_source_path}/.venv/bin/python -B {infrastructure_source_path}/tool/development_environment_manage.py host-controller --environment-name {self._identity.environment_name}
+Environment=HOME={runtime_home_path}
+WorkingDirectory={self._identity.host_state_root_path}
+ExecStart={HOST_PYTHON_PATH} -B {infrastructure_source_path}/tool/development_environment_manage.py host-controller --environment-name {self._identity.environment_name}
 Restart=always
 RestartSec=30
 User=root

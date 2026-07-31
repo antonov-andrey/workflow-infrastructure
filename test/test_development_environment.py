@@ -4485,12 +4485,13 @@ def test_host_controller_cannot_write_control_release_bytecode(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Host installation keeps both setup and persistent control execution read-only."""
+    """Host installation keeps setup and persistent execution outside exact source."""
 
     environment = _environment_get(
         tmp_path / "control/current/sources/workflow-infrastructure"
     )
     written_text_by_path_map: dict[str, str] = {}
+    directory_mode_by_path_map: dict[str, int] = {}
     command_list_list: list[list[str]] = []
 
     def write_text(
@@ -4503,8 +4504,19 @@ def test_host_controller_cannot_write_control_release_bytecode(
         written_text_by_path_map[str(path)] = text
         return len(text)
 
+    def mkdir(
+        path: Path,
+        *,
+        mode: int = 0o777,
+        parents: bool = False,
+        exist_ok: bool = False,
+    ) -> None:
+        del parents, exist_ok
+        directory_mode_by_path_map[str(path)] = mode
+
     monkeypatch.setattr(environment, "host_prepare", lambda: None)
     monkeypatch.setattr(Path, "write_text", write_text)
+    monkeypatch.setattr(Path, "mkdir", mkdir)
     monkeypatch.setattr(
         development_environment.os,
         "chmod",
@@ -4521,24 +4533,25 @@ def test_host_controller_cannot_write_control_release_bytecode(
 
     environment.host_install()
 
-    assert command_list_list[0][0:4] == [
-        "env",
-        development_environment.PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
-        "python3.14",
-        "-B",
-    ]
+    assert command_list_list[0] == ["systemctl", "daemon-reload"]
+    assert directory_mode_by_path_map == {
+        "/var/lib/workflow-infrastructure": 0o750,
+        "/var/lib/workflow-infrastructure/home": 0o700,
+    }
     service_text = written_text_by_path_map[
         "/etc/systemd/system/workflow-control-center-host-controller.service"
     ]
     assert "Environment=PYTHONDONTWRITEBYTECODE=1" in service_text
+    assert "Environment=HOME=/var/lib/workflow-infrastructure/home" in service_text
+    assert "WorkingDirectory=/var/lib/workflow-infrastructure" in service_text
     assert (
         "ExecStart="
-        "/opt/workflow-infrastructure/control/current/sources/"
-        "workflow-infrastructure/.venv/bin/python -B "
+        "/usr/local/bin/python3.14 -B "
         "/opt/workflow-infrastructure/control/current/sources/"
         "workflow-infrastructure/tool/development_environment_manage.py "
         "host-controller --environment-name primary"
     ) in service_text
+    assert "/.venv/" not in service_text
 
 
 def test_deploy_activates_release_before_installing_product_and_host_services(
