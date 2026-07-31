@@ -8,8 +8,12 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 
-from tool.lib.development_environment_error import DevelopmentEnvironmentError
-from tool.lib.development_host import PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT
+from workflow_infrastructure.development_environment.error import (
+    DevelopmentEnvironmentError,
+)
+from workflow_infrastructure.development_environment.host.manager import (
+    PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
+)
 
 HOST_STATUS_COMMAND_TIMEOUT_SECONDS = 120
 

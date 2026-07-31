@@ -9,9 +9,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-from tool.lib.development_environment_error import DevelopmentEnvironmentError
-from tool.lib.development_host import PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT
-from tool.lib.retained_product_release import (
+from workflow_infrastructure.development_environment.error import (
+    DevelopmentEnvironmentError,
+)
+from workflow_infrastructure.development_environment.host.manager import (
+    PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
+)
+from workflow_infrastructure.development_environment.product.release import (
     PRODUCT_SOURCE_REPOSITORY_NAME_LIST,
     SOURCE_MANIFEST_VERSION,
 )

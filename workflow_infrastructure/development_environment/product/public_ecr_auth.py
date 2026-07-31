@@ -8,7 +8,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Protocol
 
-from tool.lib.development_environment_error import DevelopmentEnvironmentError
+from workflow_infrastructure.development_environment.error import (
+    DevelopmentEnvironmentError,
+)
 
 _RELEASE_NAME_PATTERN = re.compile(r"[0-9]{20}")
 _PUBLIC_ECR_LOGIN_SCRIPT = """\
@@ -75,12 +77,8 @@ class DevelopmentPublicEcrAuthManager:
         """
 
         if _RELEASE_NAME_PATTERN.fullmatch(release_name) is None:
-            raise DevelopmentEnvironmentError(
-                "Public ECR authentication requires one exact Product release"
-            )
-        docker_config_path = (
-            self._identity.host_state_root_path / "docker-auth" / release_name
-        )
+            raise DevelopmentEnvironmentError("Public ECR authentication requires one exact Product release")
+        docker_config_path = self._identity.host_state_root_path / "docker-auth" / release_name
         try:
             self._transport.ssh_run(
                 [

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from tool.lib.development_storage import (
+from workflow_infrastructure.development_environment.storage import (
     DevelopmentHostLifecycle,
     DevelopmentMaintenanceSchedule,
     DevelopmentStorageMonitor,
@@ -93,7 +93,7 @@ def test_volume_pressure_reports_transitions_and_bounded_reminders(
         )
     }
     monkeypatch.setattr(
-        "tool.lib.development_storage.shutil.disk_usage",
+        "workflow_infrastructure.development_environment.storage.shutil.disk_usage",
         lambda path: usage_by_free_map["value"],
     )
     monitor = DevelopmentStorageMonitor(state_root_path=tmp_path / "state")
@@ -170,7 +170,7 @@ def test_storage_monitor_ignores_malformed_or_naive_persisted_state(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "tool.lib.development_storage.shutil.disk_usage",
+        "workflow_infrastructure.development_environment.storage.shutil.disk_usage",
         lambda path: _DiskUsage(
             total=100 * 1024**3,
             used=80 * 1024**3,

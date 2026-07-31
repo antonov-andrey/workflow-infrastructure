@@ -9,7 +9,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 
-from tool.lib.development_environment_error import DevelopmentEnvironmentError
+from workflow_infrastructure.development_environment.error import (
+    DevelopmentEnvironmentError,
+)
 
 HOST_READY_TIMEOUT_SECONDS = 1800
 HOST_STATUS_COMMAND_TIMEOUT_SECONDS = 120

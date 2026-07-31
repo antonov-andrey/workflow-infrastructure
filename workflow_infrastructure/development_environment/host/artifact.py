@@ -8,8 +8,10 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 
-from tool.lib.development_environment_error import DevelopmentEnvironmentError
-from tool.lib.host_artifact import (
+from workflow_infrastructure.development_environment.error import (
+    DevelopmentEnvironmentError,
+)
+from workflow_infrastructure.development_environment.host.manifest import (
     HostArtifactResolution,
     HostArtifactResolutionError,
     HostArtifactResolver,
@@ -87,6 +89,7 @@ class DevelopmentHostArtifactManager:
             resolution = HostArtifactResolver(
                 cache_root_path=self._project_root_path / ".local" / "host-artifact-cache",
                 runner=self._runner,
+                trust_root_path=self._project_root_path / "trust",
             ).resolve(architecture)
         except HostArtifactResolutionError as error:
             raise DevelopmentEnvironmentError(f"Host artifact resolution failed: {error}") from error

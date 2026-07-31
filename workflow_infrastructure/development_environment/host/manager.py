@@ -10,9 +10,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
-from tool.lib.development_environment_error import DevelopmentEnvironmentError
-from tool.lib.development_storage import DevelopmentHostLifecycle
-from tool.lib.host_artifact import (
+from workflow_infrastructure.development_environment.error import (
+    DevelopmentEnvironmentError,
+)
+from workflow_infrastructure.development_environment.storage import (
+    DevelopmentHostLifecycle,
+)
+from workflow_infrastructure.development_environment.host.manifest import (
     HostArtifactResolutionError,
     host_artifact_manifest_json_decode,
 )
@@ -275,7 +279,7 @@ Type=simple
 Environment={PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT}
 Environment=HOME={runtime_home_path}
 WorkingDirectory={self._identity.host_state_root_path}
-ExecStart={HOST_PYTHON_PATH} -B {infrastructure_source_path}/tool/development_environment_manage.py host-controller --environment-name {self._identity.environment_name}
+ExecStart={HOST_PYTHON_PATH} -B {infrastructure_source_path}/development_environment_manage.py host-controller --environment-name {self._identity.environment_name}
 Restart=always
 RestartSec=30
 User=root

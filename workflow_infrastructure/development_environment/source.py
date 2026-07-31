@@ -17,8 +17,10 @@ from typing import Protocol
 
 import tomllib
 
-from tool.lib.development_environment_error import DevelopmentEnvironmentError
-from tool.lib.retained_product_release import (
+from workflow_infrastructure.development_environment.error import (
+    DevelopmentEnvironmentError,
+)
+from workflow_infrastructure.development_environment.product.release import (
     MOVING_SOURCE_SELECTOR,
     REPOSITORY_URL_BY_NAME_MAP,
 )

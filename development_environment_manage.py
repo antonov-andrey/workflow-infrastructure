@@ -16,10 +16,12 @@ for parent_path in Path(__file__).resolve().parents:
         sys.path.insert(0, str(parent_path))
     break
 
-from tool.lib.development_environment import (
-    Clock,
-    CommandRunner,
+from workflow_infrastructure.development_environment.clock import Clock
+from workflow_infrastructure.development_environment.command import CommandRunner
+from workflow_infrastructure.development_environment.composition import (
     DevelopmentEnvironment,
+)
+from workflow_infrastructure.development_environment.error import (
     DevelopmentEnvironmentError,
 )
 
@@ -35,7 +37,7 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
     """
 
     parser = argparse.ArgumentParser(
-        prog="tool/development_environment_manage.py",
+        prog="development_environment_manage.py",
         description=__doc__,
     )
     parser.add_argument(
@@ -141,7 +143,7 @@ def main(argv_list: list[str]) -> int:
     """
 
     args = _args_parse(argv_list)
-    project_root_path = Path(__file__).resolve().parents[1]
+    project_root_path = Path(__file__).resolve().parent
     environment = DevelopmentEnvironment(
         clock=Clock(),
         environment_name=args.environment_name,

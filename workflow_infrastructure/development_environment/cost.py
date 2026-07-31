@@ -9,8 +9,10 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Protocol
 
-from tool.lib.development_aws import DevelopmentAwsClient
-from tool.lib.development_environment_error import DevelopmentEnvironmentError
+from workflow_infrastructure.development_environment.aws import DevelopmentAwsClient
+from workflow_infrastructure.development_environment.error import (
+    DevelopmentEnvironmentError,
+)
 
 
 class ClockProtocol(Protocol):

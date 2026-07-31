@@ -10,7 +10,9 @@ from collections.abc import Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
-from tool.lib.development_environment_error import DevelopmentEnvironmentError
+from workflow_infrastructure.development_environment.error import (
+    DevelopmentEnvironmentError,
+)
 
 CLOUDFORMATION_INLINE_TEMPLATE_MAX_BYTE_COUNT = 51_200
 CLOUDFORMATION_S3_TEMPLATE_MAX_BYTE_COUNT = 1_048_576

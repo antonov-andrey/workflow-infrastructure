@@ -7,8 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from tool.lib.development_environment_error import DevelopmentEnvironmentError
-from tool.lib.development_public_ecr_auth import DevelopmentPublicEcrAuthManager
+from workflow_infrastructure.development_environment.error import (
+    DevelopmentEnvironmentError,
+)
+from workflow_infrastructure.development_environment.product.public_ecr_auth import (
+    DevelopmentPublicEcrAuthManager,
+)
 
 
 class IdentityFake:
@@ -49,9 +53,7 @@ def test_public_ecr_auth_is_release_local_and_removed_after_failure() -> None:
         transport=transport,
     )
     release_name = "20260731190000123456"
-    expected_docker_config_path = (
-        IdentityFake.host_state_root_path / "docker-auth" / release_name
-    )
+    expected_docker_config_path = IdentityFake.host_state_root_path / "docker-auth" / release_name
 
     with pytest.raises(RuntimeError, match="Product deploy failed"):
         with manager.session(

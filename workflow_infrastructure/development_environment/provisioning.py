@@ -7,7 +7,9 @@ from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Protocol
 
-from tool.lib.development_environment_error import DevelopmentEnvironmentError
+from workflow_infrastructure.development_environment.error import (
+    DevelopmentEnvironmentError,
+)
 
 
 class AccountVerifierProtocol(Protocol):

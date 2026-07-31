@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from tool.lib.host_artifact import (
+from workflow_infrastructure.development_environment.host.manifest import (
     DOCKER_SIGNING_KEY_FINGERPRINT,
     HOST_ARTIFACT_NAME_SET,
     HOST_ARTIFACT_RESOLVED_SOURCE_NAME_SET,
@@ -101,6 +101,7 @@ def test_latest_tag_resolution_uses_numeric_stable_version(
     resolver = HostArtifactResolver(
         cache_root_path=tmp_path,
         runner=runner,
+        trust_root_path=tmp_path,
     )
 
     assert resolver._latest_tag_resolve(
@@ -176,6 +177,7 @@ def test_tag_source_identity_requires_exact_commit_object(
     resolver = HostArtifactResolver(
         cache_root_path=tmp_path,
         runner=runner,
+        trust_root_path=tmp_path,
     )
 
     with pytest.raises(
@@ -226,6 +228,7 @@ def test_tag_source_identity_accepts_exact_commit_object(tmp_path: Path) -> None
     resolver = HostArtifactResolver(
         cache_root_path=tmp_path,
         runner=GitObjectRunnerFake(),
+        trust_root_path=tmp_path,
     )
 
     resolver._git_ref_commit_validate(
@@ -415,7 +418,6 @@ def test_python_selector_chooses_latest_stable_patch_for_target_architecture() -
 
 
 def test_k3s_release_requires_exact_repository_owned_trust(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     """Mutable release metadata cannot authorize one root-executed K3s binary."""
@@ -437,9 +439,13 @@ def test_k3s_release_requires_exact_repository_owned_trust(
         ),
         encoding="utf-8",
     )
-    monkeypatch.setattr("tool.lib.host_artifact._K3S_TRUST_PATH", trust_path)
+    resolver = HostArtifactResolver(
+        cache_root_path=tmp_path / "cache",
+        runner=RunnerFake(),
+        trust_root_path=tmp_path,
+    )
 
-    artifact_sha256_by_name_map, trust_sha256 = HostArtifactResolver._k3s_trust_identity_get(
+    artifact_sha256_by_name_map, trust_sha256 = resolver._k3s_trust_identity_get(
         binary_name="k3s-arm64",
         checksum_name="sha256sum-arm64.txt",
         commit_sha="c" * 40,
@@ -459,7 +465,7 @@ def test_k3s_release_requires_exact_repository_owned_trust(
         HostArtifactResolutionError,
         match="not accepted",
     ):
-        HostArtifactResolver._k3s_trust_identity_get(
+        resolver._k3s_trust_identity_get(
             binary_name="k3s-arm64",
             checksum_name="sha256sum-arm64.txt",
             commit_sha="d" * 40,
@@ -476,6 +482,7 @@ def test_docker_signed_index_selects_exact_latest_packages(
     resolver = HostArtifactResolver(
         cache_root_path=tmp_path,
         runner=RunnerFake(),
+        trust_root_path=tmp_path,
     )
     index_text = (
         "-----BEGIN PGP SIGNED MESSAGE-----\n"
@@ -555,6 +562,7 @@ def test_artifact_url_rejects_shell_control_characters(tmp_path: Path) -> None:
     resolver = HostArtifactResolver(
         cache_root_path=tmp_path,
         runner=RunnerFake(),
+        trust_root_path=tmp_path,
     )
 
     with pytest.raises(
@@ -603,6 +611,7 @@ def test_artifact_download_verifies_stream_and_reuses_exact_cache(
     resolver = HostArtifactResolver(
         cache_root_path=tmp_path,
         runner=RunnerFake(),
+        trust_root_path=tmp_path,
     )
     artifact_path = tmp_path / "artifact"
     expected_sha256 = hashlib.sha256(payload).hexdigest()
@@ -652,6 +661,7 @@ def test_artifact_download_refreshes_one_moving_metadata_url(
     resolver = HostArtifactResolver(
         cache_root_path=tmp_path,
         runner=RunnerFake(),
+        trust_root_path=tmp_path,
     )
     artifact_path = tmp_path / "moving-metadata"
 
@@ -691,7 +701,10 @@ def test_artifact_download_rejects_oversized_response_before_cache_publication(
 
             return "https://cdn.example.invalid/oversized"
 
-    monkeypatch.setattr("tool.lib.host_artifact._MAX_HOST_ARTIFACT_SIZE_BYTES", 8)
+    monkeypatch.setattr(
+        "workflow_infrastructure.development_environment.host.manifest._MAX_HOST_ARTIFACT_SIZE_BYTES",
+        8,
+    )
     monkeypatch.setattr(
         "urllib.request.urlopen",
         lambda request, timeout: ResponseFake(payload),
@@ -699,6 +712,7 @@ def test_artifact_download_rejects_oversized_response_before_cache_publication(
     resolver = HostArtifactResolver(
         cache_root_path=tmp_path,
         runner=RunnerFake(),
+        trust_root_path=tmp_path,
     )
     artifact_path = tmp_path / "oversized"
 

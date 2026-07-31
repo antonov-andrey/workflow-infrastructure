@@ -50,32 +50,34 @@ Development environment имеет stable name. Default name `primary` сохр�
 
 ### Границы Operator-Модулей
 
-`tool/lib/development_environment.py` является только composition root: он создаёт и связывает capability owners, а CLI обращается к соответствующему owner напрямую. Provisioning, lifecycle, replacement, release и diagnostics не образуют второй скрытый orchestration слой внутри composition root. Конкретные границы имеют единственных владельцев:
+`workflow_infrastructure/development_environment/composition.py` является только composition root: он создаёт и связывает capability owners, а корневой Product entrypoint `development_environment_manage.py` обращается к соответствующему owner напрямую. Provisioning, lifecycle, replacement, release и diagnostics не образуют второй скрытый orchestration слой внутри composition root. Общий development-environment context принадлежит пакету `workflow_infrastructure/development_environment/`; host-specific owners находятся в `host/`, а Product release owners — в `product/`. Плоский набор `development_*.py` в общем каталоге запрещён. Конкретные границы имеют единственных владельцев:
 
 | Владелец | Ответственность |
 | --- | --- |
-| `development_account.py` | caller/account identity и проверка единственного primary account-global guard |
-| `development_access.py` | интерактивные Session Manager tunnel, console и SSH-over-SSM process lifecycles |
-| `development_aws.py` | единый AWS CLI transport |
-| `development_compute.py` | EC2 identity/state, launch-template proof, SSM readiness и runtime platform facts |
-| `development_cost.py` | cost checkpoint и pricing review |
-| `development_diagnostics.py` | безопасная агрегация operator status и bounded diagnostic commands |
-| `development_lifecycle.py` | EC2 start/graceful stop и real stop-lease acceptance |
-| `development_provisioning.py` | полный apply двух CloudFormation stacks и post-apply acceptance |
-| `development_replacement.py` | replacement/restore cutover, alternating slots и fail-safe guard |
-| `development_stack.py` | CloudFormation template transport, change sets, apply и drift |
-| `development_retained_volume.py` | retained EBS, restore slots, temporary snapshots и primary-only AWS Backup proof |
-| `development_source.py` | exact source resolution, archive и delivery |
-| `development_transport.py` | SSM Run Command и SSH-over-SSM |
-| `development_host.py` | host-local controller port, activity proof, dependency validation, service install и shutdown |
-| `development_host_artifact.py` | architecture-specific host-artifact resolution и compute-stack provenance |
-| `development_host_status.py` | локальный и SSM-сбор нормализованного safe host status |
-| `development_product_deployment.py` | immutable Product source publication, deploy, activation и service install |
-| `development_product_recovery.py` | durable Product recovery transitions и acceptance |
-| `development_public_ecr_auth.py` | release-local AWS Public ECR login и гарантированное удаление Docker credential directory |
-| `development_storage.py` | idle lifecycle, maintenance cadence и volume-pressure warnings |
-| `host_artifact.py` | exact third-party host artifact resolution and verification |
-| `retained_product_release.py` | current/rollback pointers, release validation и durable Product recovery marker |
+| `account.py` | caller/account identity и проверка единственного primary account-global guard |
+| `access.py` | интерактивные Session Manager tunnel, console и SSH-over-SSM process lifecycles |
+| `aws.py` | единый AWS CLI transport |
+| `compute.py` | EC2 identity/state, launch-template proof, SSM readiness и runtime platform facts |
+| `cost.py` | cost checkpoint и pricing review |
+| `diagnostics.py` | безопасная агрегация operator status и bounded diagnostic commands |
+| `identity.py` | единое выведение environment-local AWS и host identities |
+| `command.py` / `clock.py` | явные process и time boundaries composition graph |
+| `lifecycle.py` | EC2 start/graceful stop и real stop-lease acceptance |
+| `provisioning.py` | полный apply двух CloudFormation stacks и post-apply acceptance |
+| `replacement.py` | replacement/restore cutover, alternating slots и fail-safe guard |
+| `stack.py` | CloudFormation template transport, change sets, apply и drift |
+| `retained_volume.py` | retained EBS, restore slots, temporary snapshots и primary-only AWS Backup proof |
+| `source.py` | exact source resolution, archive и delivery |
+| `transport.py` | SSM Run Command и SSH-over-SSM |
+| `host/manager.py` | host-local controller port, activity proof, dependency validation, service install и shutdown |
+| `host/artifact.py` | architecture-specific host-artifact resolution и compute-stack provenance |
+| `host/status.py` | локальный и SSM-сбор нормализованного safe host status |
+| `host/manifest.py` | exact third-party host artifact resolution and verification |
+| `product/deployment.py` | immutable Product source publication, deploy, activation и service install |
+| `product/recovery.py` | durable Product recovery transitions и acceptance |
+| `product/public_ecr_auth.py` | release-local AWS Public ECR login и гарантированное удаление Docker credential directory |
+| `product/release.py` | current/rollback pointers, release validation и durable Product recovery marker |
+| `storage.py` | idle lifecycle, maintenance cadence и volume-pressure warnings |
 
 Новая независимая provider-, storage-, security-, artifact- или persisted-state семья добавляется отдельным collaborator в той же change, где она появляется. Перенос методов в mixin, pass-through facade либо файл без переноса state и инвариантов не считается разделением ответственности.
 

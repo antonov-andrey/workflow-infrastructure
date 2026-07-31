@@ -44,7 +44,9 @@
 - `design/production-environment.md` owns the required future production specialization on Amazon EKS; it does not authorize or provision production resources.
 - `docs/development-environment-operations.md` owns the maintained operator workflow for the implemented development environment.
 - `cloudformation/**` owns declarative AWS resources. Lasting AWS resources must not be created only through the console or ad hoc commands.
-- `tool/**` owns the local Python orchestration client for provisioning, lifecycle, source delivery, deployment, diagnostics, and recovery.
+- `development_environment_manage.py` is the primary operator entrypoint of this infrastructure product.
+- `workflow_infrastructure/**` owns the main Python implementation for provisioning, lifecycle, source delivery, deployment, diagnostics, and recovery.
+- `tool/**` owns only auxiliary project-maintenance commands; Product orchestration MUST NOT be placed there.
 - `workflow-control-center` owns Product Kubernetes manifests, Product images, ZITADEL, GlitchTip, application smoke checks, and Product behavior. This repository orchestrates those owners without copying their implementation.
 - `marketplace-infrastructure` is unrelated to Workflow Control Center and must not own, forward, or duplicate this repository's contracts or resources.
 
@@ -63,11 +65,15 @@ project/
     production-environment.md
   docs/
     development-environment-operations.md
+  development_environment_manage.py
   test/
+  workflow_infrastructure/
+    development_environment/
+      composition.py
+      host/
+      product/
   tool/
-    development_environment_manage.py
     venv_create.py
-    lib/
 ```
 
 - `AGENTS.md`: repository-root canonical instruction owner.
@@ -81,11 +87,12 @@ project/
 - `design/production-environment.md`: canonical future production-environment architecture.
 - `docs/`: maintained operator documentation.
 - `docs/development-environment-operations.md`: canonical development-environment operations guide.
+- `development_environment_manage.py`: canonical primary orchestration entrypoint.
 - `test/`: verification code for infrastructure orchestration and templates.
-- `tool/`: project support and control code.
-- `tool/development_environment_manage.py`: canonical local orchestration entrypoint.
+- `workflow_infrastructure/`: importable `Main project code` package.
+- `workflow_infrastructure/development_environment/`: cohesive development-environment subsystem package; shared primitives and composition live at this level, while host and Product release responsibilities live in their explicit child packages.
+- `tool/`: auxiliary project-maintenance code only.
 - `tool/venv_create.py`: direct Python 3.14 virtual-environment recreation utility.
-- `tool/lib/`: shared implementation used by project-local tools.
 
 ## AWS Execution Boundary
 

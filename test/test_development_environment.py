@@ -20,28 +20,48 @@ from cfnlint.decode import decode
 from cfnlint.schema.manager import ProviderSchemaManager
 from yaml.nodes import MappingNode, ScalarNode, SequenceNode
 
-from tool import development_environment_manage
-from tool.lib import (
-    development_access,
-    development_compute,
-    development_environment,
-    development_host,
-    development_host_status,
-    development_transport,
+import development_environment_manage
+from workflow_infrastructure.development_environment import access as development_access
+from workflow_infrastructure.development_environment import (
+    compute as development_compute,
 )
-from tool.lib.development_environment import (
-    Clock,
-    CommandRunner,
+from workflow_infrastructure.development_environment import (
+    identity as development_environment_identity,
+)
+from workflow_infrastructure.development_environment import (
+    lifecycle as development_lifecycle,
+)
+from workflow_infrastructure.development_environment import (
+    replacement as development_replacement,
+)
+from workflow_infrastructure.development_environment import stack as development_stack
+from workflow_infrastructure.development_environment import (
+    transport as development_transport,
+)
+from workflow_infrastructure.development_environment.clock import Clock
+from workflow_infrastructure.development_environment.command import CommandRunner
+from workflow_infrastructure.development_environment.composition import (
+    AWS_ACCOUNT_ID,
     DevelopmentEnvironment,
+)
+from workflow_infrastructure.development_environment.error import (
     DevelopmentEnvironmentError,
+)
+from workflow_infrastructure.development_environment.host import (
+    manager as development_host,
+)
+from workflow_infrastructure.development_environment.host import (
+    status as development_host_status,
+)
+from workflow_infrastructure.development_environment.identity import (
     DevelopmentEnvironmentIdentity,
 )
-from tool.lib.host_artifact import (
+from workflow_infrastructure.development_environment.host.manifest import (
     DOCKER_SIGNING_KEY_FINGERPRINT,
     HOST_ARTIFACT_NAME_SET,
     HOST_ARTIFACT_RESOLVED_SOURCE_NAME_SET,
 )
-from tool.lib.retained_product_release import (
+from workflow_infrastructure.development_environment.product.release import (
     PRODUCT_RELEASE_MANIFEST_VERSION,
     PRODUCT_SOURCE_REPOSITORY_NAME_LIST,
     REPOSITORY_URL_BY_NAME_MAP,
@@ -200,7 +220,7 @@ def test_cloudformation_template_transport_uses_verified_s3_for_oversized_body(
 
     environment = _environment_get(tmp_path)
     template_path = tmp_path / "template.yaml"
-    template_bytes = b"x" * (development_environment.CLOUDFORMATION_INLINE_TEMPLATE_MAX_BYTE_COUNT + 1)
+    template_bytes = b"x" * (development_stack.CLOUDFORMATION_INLINE_TEMPLATE_MAX_BYTE_COUNT + 1)
     template_path.write_bytes(template_bytes)
     digest_bytes = hashlib.sha256(template_bytes).digest()
     digest = digest_bytes.hex()
@@ -548,14 +568,16 @@ def test_environment_identity_preserves_primary_and_isolates_nonprimary() -> Non
     primary = DevelopmentEnvironmentIdentity()
     alternate = DevelopmentEnvironmentIdentity("feature1")
 
-    assert primary.data_plane_stack_name == development_environment.DATA_PLANE_STACK_NAME
-    assert primary.compute_stack_name == development_environment.COMPUTE_STACK_NAME
-    assert primary.instance_name == development_environment.INSTANCE_NAME
-    assert primary.lease_group_name == development_environment.LEASE_GROUP_NAME
-    assert primary.lease_name == development_environment.LEASE_NAME
-    assert primary.host_control_current_source_path == (development_environment.HOST_CONTROL_CURRENT_SOURCE_PATH)
-    assert primary.host_release_root_path == development_environment.HOST_RELEASE_ROOT_PATH
-    assert primary.host_retained_root_path == development_environment.HOST_RETAINED_ROOT_PATH
+    assert primary.data_plane_stack_name == development_environment_identity.DATA_PLANE_STACK_NAME
+    assert primary.compute_stack_name == development_environment_identity.COMPUTE_STACK_NAME
+    assert primary.instance_name == development_environment_identity.INSTANCE_NAME
+    assert primary.lease_group_name == development_environment_identity.LEASE_GROUP_NAME
+    assert primary.lease_name == development_environment_identity.LEASE_NAME
+    assert primary.host_control_current_source_path == (
+        development_environment_identity.HOST_CONTROL_CURRENT_SOURCE_PATH
+    )
+    assert primary.host_release_root_path == development_environment_identity.HOST_RELEASE_ROOT_PATH
+    assert primary.host_retained_root_path == development_environment_identity.HOST_RETAINED_ROOT_PATH
 
     primary_identity_set = {
         primary.compute_stack_name,
@@ -699,7 +721,7 @@ def test_current_product_tool_calls_preserve_nonprimary_environment(
     assert product_local_command_list == [
         [
             "env",
-            development_environment.PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
+            development_host.PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
             "python3.14",
             "-B",
             product_tool_path,
@@ -709,7 +731,7 @@ def test_current_product_tool_calls_preserve_nonprimary_environment(
         ],
         [
             "env",
-            development_environment.PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
+            development_host.PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
             "python3.14",
             "-B",
             product_tool_path,
@@ -739,7 +761,7 @@ def test_current_primary_product_tool_calls_include_exact_environment(
     assert command_list[-3:] == ["activity", "--environment-name", "primary"]
     assert command_list[:4] == [
         "env",
-        development_environment.PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
+        development_host.PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
         "python3.14",
         "-B",
     ]
@@ -1352,7 +1374,7 @@ def test_nonprimary_environment_verifies_primary_owned_account_foundation(
         "parameter_by_name_map_get",
         lambda stack_name: (
             {"DeploymentPrincipalArn": deployment_principal_arn}
-            if stack_name == development_environment.DATA_PLANE_STACK_NAME
+            if stack_name == development_environment_identity.DATA_PLANE_STACK_NAME
             else {}
         ),
     )
@@ -1361,7 +1383,7 @@ def test_nonprimary_environment_verifies_primary_owned_account_foundation(
         "output_by_name_map_get",
         lambda stack_name: (
             {"PlatformRoleArn": platform_role_arn}
-            if stack_name == development_environment.DATA_PLANE_STACK_NAME
+            if stack_name == development_environment_identity.DATA_PLANE_STACK_NAME
             else {}
         ),
     )
@@ -2530,7 +2552,7 @@ def test_ordinary_compute_apply_rejects_every_possible_stable_identity_replaceme
 
     assert environment._stack._protected_identity_change_violation_list_get(
         change_summary_list=change_summary_list,
-        protected_identity_logical_id_set=(development_environment.COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET),
+        protected_identity_logical_id_set=(development_replacement.COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET),
     ) == [
         "DevelopmentInstance",
         "RetainedVolumeAttachment",
@@ -2719,7 +2741,7 @@ def test_restore_source_must_be_completed_owned_encrypted_snapshot(
     environment = _environment_get(tmp_path)
     snapshot_payload = {
         "Encrypted": True,
-        "OwnerId": development_environment.AWS_ACCOUNT_ID,
+        "OwnerId": AWS_ACCOUNT_ID,
         "SnapshotId": "snap-0123456789abcdef0",
         "State": "completed",
         "VolumeSize": 80,
@@ -2844,7 +2866,7 @@ def test_restore_cleanup_keeps_current_and_deletes_only_owned_stale_rollback(
         {"Key": "Project", "Value": "workflow-control-center"},
         {
             "Key": "aws:cloudformation:stack-name",
-            "Value": development_environment.COMPUTE_STACK_NAME,
+            "Value": development_environment_identity.COMPUTE_STACK_NAME,
         },
     ]
     current_volume_payload = {
@@ -3052,7 +3074,7 @@ def test_first_replacement_relies_on_cloudformation_guard_before_target_exists(
         "detach",
         (
             "apply",
-            development_environment.COMPUTE_RETAINED_VOLUME_LOGICAL_ID_SET,
+            development_replacement.COMPUTE_RETAINED_VOLUME_LOGICAL_ID_SET,
         ),
         "attachment",
         "version",
@@ -3589,22 +3611,22 @@ def test_host_status_collects_exact_mount_node_release_and_activity(
         device_root_path,
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RETAINED_ROOT_PATH",
         retained_root_path,
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RETAINED_RELEASE_ROOT_PATH",
         retained_root_path / "release",
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RETAINED_CURRENT_RELEASE_PATH",
         current_release_path,
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RELEASE_ROOT_PATH",
         release_root_path,
     )
@@ -3847,6 +3869,42 @@ def test_cli_interrupt_returns_standard_status_without_traceback(
     assert capsys.readouterr() == ("", "")
 
 
+def test_root_cli_composes_the_exact_repository_root(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Moving the primary entrypoint cannot retain the former tool-directory offset."""
+
+    captured_project_root_path: list[Path] = []
+
+    class _Access:
+        @staticmethod
+        def connect() -> int:
+            return 0
+
+    class _Environment:
+        access = _Access()
+
+        def __init__(
+            self,
+            *,
+            clock: object,
+            environment_name: str,
+            project_root_path: Path,
+            runner: object,
+        ) -> None:
+            del clock, environment_name, runner
+            captured_project_root_path.append(project_root_path)
+
+    monkeypatch.setattr(
+        development_environment_manage,
+        "DevelopmentEnvironment",
+        _Environment,
+    )
+
+    assert development_environment_manage.main(["connect"]) == 0
+    assert captured_project_root_path == [Path(development_environment_manage.__file__).resolve().parent]
+
+
 def _retained_product_release_prepare(
     release_root_path: Path,
     *,
@@ -4003,22 +4061,22 @@ def test_host_product_release_activation_is_verified_retained_and_atomic(
         release_name=release_root_path.name,
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RETAINED_RELEASE_ROOT_PATH",
         retained_release_root_path,
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RETAINED_CURRENT_RELEASE_PATH",
         current_release_path,
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RELEASE_ROOT_PATH",
         retained_release_root_path / "releases",
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_CURRENT_SOURCE_PATH",
         current_source_path,
     )
@@ -4049,7 +4107,7 @@ def test_host_product_release_rejects_noncurrent_source_manifest(
         source_manifest_version=source_manifest_version,
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RELEASE_ROOT_PATH",
         retained_release_root_path / "releases",
     )
@@ -4087,7 +4145,7 @@ def test_host_product_release_rejects_noncurrent_release_manifest(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RELEASE_ROOT_PATH",
         retained_release_root_path / "releases",
     )
@@ -4128,7 +4186,7 @@ def test_host_product_release_rejects_noncurrent_manifest_shape(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RELEASE_ROOT_PATH",
         release_root_path.parent,
     )
@@ -4154,7 +4212,7 @@ def test_host_product_release_requires_exact_current_timestamp_identity(
         release_name=release_root_path.name,
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RELEASE_ROOT_PATH",
         retained_release_root_path / "releases",
     )
@@ -4227,27 +4285,27 @@ def test_host_product_release_reset_removes_only_exact_product_graph(
     preserved_path.mkdir()
     (preserved_path / "identity.txt").write_text("preserved\n", encoding="utf-8")
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_CURRENT_SOURCE_PATH",
         current_source_path,
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RELEASE_ROOT_PATH",
         retained_release_root_path / "releases",
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RETAINED_CURRENT_RELEASE_PATH",
         current_release_path,
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RETAINED_RELEASE_ROOT_PATH",
         retained_release_root_path,
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RETAINED_ROOT_PATH",
         retained_root_path,
     )
@@ -4283,27 +4341,27 @@ def test_host_product_release_reset_rejects_unowned_retained_entry(
     unexpected_path = retained_release_root_path / "unowned"
     unexpected_path.write_text("preserve\n", encoding="utf-8")
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_CURRENT_SOURCE_PATH",
         current_source_path,
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RELEASE_ROOT_PATH",
         retained_release_root_path / "releases",
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RETAINED_CURRENT_RELEASE_PATH",
         current_release_path,
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RETAINED_RELEASE_ROOT_PATH",
         retained_release_root_path,
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RETAINED_ROOT_PATH",
         retained_root_path,
     )
@@ -4558,22 +4616,22 @@ def test_host_product_release_restore_rejects_changed_tracked_source(
     bytecode_path.parent.mkdir(parents=True)
     bytecode_path.write_bytes(b"must not be removed before the whole release is proven")
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RETAINED_RELEASE_ROOT_PATH",
         retained_release_root_path,
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RETAINED_CURRENT_RELEASE_PATH",
         current_release_path,
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RELEASE_ROOT_PATH",
         retained_release_root_path / "releases",
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_CURRENT_SOURCE_PATH",
         current_source_path,
     )
@@ -4622,22 +4680,22 @@ def test_host_product_release_restore_rejects_current_unmanifested_source_file(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RETAINED_RELEASE_ROOT_PATH",
         retained_release_root_path,
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RETAINED_CURRENT_RELEASE_PATH",
         current_release_path,
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RELEASE_ROOT_PATH",
         retained_release_root_path / "releases",
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_CURRENT_SOURCE_PATH",
         current_source_path,
     )
@@ -4673,22 +4731,22 @@ def test_host_product_recovery_marker_is_durable_and_identity_bound(
     current_release_path.parent.mkdir(parents=True, exist_ok=True)
     current_release_path.symlink_to(release_root_path)
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RETAINED_RELEASE_ROOT_PATH",
         retained_release_root_path,
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RETAINED_CURRENT_RELEASE_PATH",
         current_release_path,
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RELEASE_ROOT_PATH",
         retained_release_root_path / "releases",
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_CURRENT_SOURCE_PATH",
         current_source_path,
     )
@@ -4798,7 +4856,7 @@ def test_host_controller_cannot_write_control_release_bytecode(
         "ExecStart="
         "/usr/local/bin/python3.14 -B "
         "/opt/workflow-infrastructure/control/current/sources/"
-        "workflow-infrastructure/tool/development_environment_manage.py "
+        "workflow-infrastructure/development_environment_manage.py "
         "host-controller --environment-name primary"
     ) in service_text
     assert "/.venv/" not in service_text
@@ -4969,8 +5027,7 @@ def test_reset_deploy_is_one_candidate_cutover_before_activation_and_host_servic
     public_ecr_cleanup_index = next(
         index
         for index, command_list in enumerate(remote_command_list_list)
-        if command_list[:4] == ["sudo", "rm", "-rf", "--"]
-        and "/docker-auth/" in command_list[-1]
+        if command_list[:4] == ["sudo", "rm", "-rf", "--"] and "/docker-auth/" in command_list[-1]
     )
     current_activation_index = next(
         index
@@ -4981,13 +5038,13 @@ def test_reset_deploy_is_one_candidate_cutover_before_activation_and_host_servic
         index
         for index, command_list in enumerate(remote_command_list_list)
         if "host-install" in command_list
-        and str(development_environment.HOST_CURRENT_SOURCE_PATH) in " ".join(command_list)
+        and str(development_environment_identity.HOST_CURRENT_SOURCE_PATH) in " ".join(command_list)
     )
     controller_host_install_index = next(
         index
         for index, command_list in enumerate(remote_command_list_list)
         if "host-install" in command_list
-        and str(development_environment.HOST_CONTROL_CURRENT_SOURCE_PATH) in " ".join(command_list)
+        and str(development_environment_identity.HOST_CONTROL_CURRENT_SOURCE_PATH) in " ".join(command_list)
     )
     assert (
         host_prepare_index
@@ -5009,9 +5066,7 @@ def test_reset_deploy_is_one_candidate_cutover_before_activation_and_host_servic
     assert reset_keyword_argument_by_name_map["user_email"] == "owner@example.test"
     product_deploy_command_list = remote_command_list_list[product_deploy_index]
     docker_config_assignment = next(
-        argument
-        for argument in product_deploy_command_list
-        if argument.startswith("DOCKER_CONFIG=")
+        argument for argument in product_deploy_command_list if argument.startswith("DOCKER_CONFIG=")
     )
     assert docker_config_assignment == (
         "DOCKER_CONFIG="
@@ -5022,7 +5077,7 @@ def test_reset_deploy_is_one_candidate_cutover_before_activation_and_host_servic
         if "python3.14" in command_list:
             python_index = command_list.index("python3.14")
             assert command_list[python_index + 1] == "-B"
-    assert remote_release_root_path_list == [development_environment.HOST_RELEASE_ROOT_PATH] * 6
+    assert remote_release_root_path_list == [development_environment_identity.HOST_RELEASE_ROOT_PATH] * 6
     assert len(source_manifest_payload_list) == 1
     assert source_manifest_payload_list[0]["source_manifest_version"] == (SOURCE_MANIFEST_VERSION)
     assert source_manifest_payload_list[0]["python_bytecode_write_disabled"] is True
@@ -5261,7 +5316,7 @@ def test_host_prepare_rejects_product_release_built_for_another_host_input(
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_RELEASE_ROOT_PATH",
         host_release_root_path,
     )
@@ -5308,7 +5363,7 @@ def test_host_controller_renews_beyond_two_hours_then_stops_after_proven_idle(
         return subprocess.CompletedProcess(argument_list, 0, "", "")
 
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_STATE_ROOT_PATH",
         tmp_path / "state",
     )
@@ -5371,7 +5426,7 @@ def test_host_controller_discards_stale_idle_proof_on_restart(
     shutdown_time_list: list[datetime] = []
 
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_STATE_ROOT_PATH",
         state_root,
     )
@@ -5428,7 +5483,7 @@ def test_host_controller_treats_unknown_session_state_as_busy(
         return 0
 
     monkeypatch.setattr(
-        development_environment,
+        development_environment_identity,
         "HOST_STATE_ROOT_PATH",
         tmp_path / "state",
     )
@@ -5513,7 +5568,7 @@ def test_lifecycle_acceptance_uses_short_real_lease_then_restores_production(
         lambda command_list: event_list.append(("ssm", command_list)),
     )
 
-    def stop_lease_upsert(*, lease_duration: timedelta = development_environment.LEASE_DURATION) -> None:
+    def stop_lease_upsert(*, lease_duration: timedelta = development_lifecycle.LEASE_DURATION) -> None:
         lease_duration_list.append(lease_duration)
         event_list.append(("lease", lease_duration, clock.t_now))
 
@@ -5550,8 +5605,8 @@ def test_lifecycle_acceptance_uses_short_real_lease_then_restores_production(
     environment.lifecycle.acceptance_run()
 
     assert lease_duration_list == [
-        development_environment.LIFECYCLE_ACCEPTANCE_INITIAL_LEASE_DURATION,
-        development_environment.LIFECYCLE_ACCEPTANCE_RENEWED_LEASE_DURATION,
+        development_lifecycle.LIFECYCLE_ACCEPTANCE_INITIAL_LEASE_DURATION,
+        development_lifecycle.LIFECYCLE_ACCEPTANCE_RENEWED_LEASE_DURATION,
     ]
     assert ("start", datetime(2026, 7, 28, 12, 7, 30, tzinfo=UTC)) in event_list
     assert event_list[-1] == "product-acceptance"
@@ -5588,7 +5643,7 @@ def test_lifecycle_acceptance_failure_restores_controller_and_production_lease(
         lambda command_list: event_list.append(("ssm", command_list)),
     )
 
-    def stop_lease_upsert(*, lease_duration: timedelta = development_environment.LEASE_DURATION) -> None:
+    def stop_lease_upsert(*, lease_duration: timedelta = development_lifecycle.LEASE_DURATION) -> None:
         nonlocal lease_call_count
         lease_call_count += 1
         event_list.append(("lease", lease_duration))
@@ -5606,7 +5661,7 @@ def test_lifecycle_acceptance_failure_restores_controller_and_production_lease(
         environment.lifecycle.acceptance_run()
 
     assert event_list[-3:] == [
-        ("lease", development_environment.LEASE_DURATION),
+        ("lease", development_lifecycle.LEASE_DURATION),
         (
             "ssm",
             ["sudo systemctl start workflow-control-center-host-controller"],

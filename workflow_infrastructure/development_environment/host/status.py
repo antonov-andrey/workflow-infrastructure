@@ -8,7 +8,9 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol
 
-from tool.lib.development_environment_error import DevelopmentEnvironmentError
+from workflow_infrastructure.development_environment.error import (
+    DevelopmentEnvironmentError,
+)
 
 HOST_EBS_DEVICE_BY_ID_ROOT_PATH = Path("/dev/disk/by-id")
 HOST_STATUS_COMMAND_TIMEOUT_SECONDS = 120

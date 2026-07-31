@@ -19,7 +19,7 @@ Host controller вызывает тот же utility с `--runtime-only` и ра
 Единственный entrypoint оператора:
 
 ```bash
-python tool/development_environment_manage.py <command>
+python development_environment_manage.py <command>
 ```
 
 Команды не принимают или не печатают static credentials. До AWS mutation entrypoint проверяет identity, region, stack state и renewable stop lease.
@@ -27,7 +27,7 @@ python tool/development_environment_manage.py <command>
 ## Создание И Обновление Инфраструктуры
 
 ```bash
-python tool/development_environment_manage.py apply
+python development_environment_manage.py apply
 ```
 
 `apply` проверяет оба шаблона, создаёт и инспектирует change sets data-plane и compute stacks, применяет разрешённые изменения и проверяет outputs, retained-resource identities, Session Manager readiness и host bootstrap. Existing stable data-plane stack обновляется in place; compute stack управляется отдельно. Ordinary compute change set не имеет права неявно заменить instance, retained volume или attachment. Если exact launch input изменился, `apply` включает external guard, доказывает остановку и detach, меняет instance slot, подключает тот же retained state и завершает recovery acceptance только для exact current-format release с тем же host-artifact manifest. Отдельные `replace` и `restore` остаются явными operator recovery commands, а не обязательным продолжением обычного apply.
@@ -41,9 +41,9 @@ Data-plane template может превышать inline limit CloudFormation. �
 ## Запуск И Остановка
 
 ```bash
-python tool/development_environment_manage.py start
-python tool/development_environment_manage.py stop
-python tool/development_environment_manage.py status
+python development_environment_manage.py start
+python development_environment_manage.py stop
+python development_environment_manage.py status
 ```
 
 `start` сначала создаёт one-time external stop schedule на два часа и не запускает instance, если schedule не создан. Schedule вызывает stack-owned tag-resolving stop function. CloudFormation create/replacement отдельно защищает stack-owned replacement guard, который включается до instance по dependency и выключается только после readiness и доказанного renewable lease. После start команда ждёт EC2, SSM, успешный cloud-init, exact retained mount, k3s, Kubernetes node и host controller readiness. Внутренние create/replacement flows после cloud-init устанавливают exact проверенный infrastructure source и controller до финального proof; обычный lifecycle-only `start` переиспользует уже установленный controller и не превращается в неявный deploy.
@@ -54,7 +54,7 @@ python tool/development_environment_manage.py status
 разрушающей:
 
 ```bash
-python tool/development_environment_manage.py lifecycle-acceptance
+python development_environment_manage.py lifecycle-acceptance
 ```
 
 Она допускается только при `WCC activity=idle`, не меняет steady-state development policy
@@ -68,8 +68,8 @@ controller, k3s и Product recovery acceptance. Любая промежуточ�
 ## Подключение
 
 ```bash
-python tool/development_environment_manage.py connect
-python tool/development_environment_manage.py ssh -- <ssh-arguments>
+python development_environment_manage.py connect
+python development_environment_manage.py ssh -- <ssh-arguments>
 ```
 
 `connect` держит одну SSM port-forwarding session от remote ingress к `localhost:8080`. Product UI открывается по `http://localhost:8080`; ZITADEL и GlitchTip используют соответствующие `*.localhost:8080` hostnames. Команда является long-running foreground process, чтобы состояние tunnel оставалось видимым.
@@ -87,7 +87,7 @@ ID, не отменяя удалённую операцию. Её состоян
 ## Развёртывание Product
 
 ```bash
-python tool/development_environment_manage.py deploy
+python development_environment_manage.py deploy
 ```
 
 `deploy`:
@@ -110,7 +110,7 @@ python tool/development_environment_manage.py deploy
 Pre-hardening compute/source/runtime contracts не поддерживаются. До первого `current-format` deploy оператор выполняет утверждённый destructive Product cutover:
 
 ```bash
-python tool/development_environment_manage.py deploy \
+python development_environment_manage.py deploy \
   --reset-product-state \
   --user-email antonov.andrey@gmail.com
 ```
@@ -122,7 +122,7 @@ python tool/development_environment_manage.py deploy \
 ## Диагностика
 
 ```bash
-python tool/development_environment_manage.py diagnose
+python development_environment_manage.py diagnose
 ```
 
 `diagnose` собирает безопасный снимок CloudFormation, EC2, SSM, stop lease, volume/snapshot, disk pressure, k3s node, namespaces, workloads, events, registry, current/previous release и Product-owned diagnostics. Он не выводит credential process JSON, Kubernetes Secret values, database content, VPN configuration или Product input.
@@ -134,7 +134,7 @@ AWS, infrastructure, cluster и Product findings показываются раз
 ## Восстановление
 
 ```bash
-python tool/development_environment_manage.py restore --snapshot-id <snapshot-id>
+python development_environment_manage.py restore --snapshot-id <snapshot-id>
 ```
 
 `restore` создаёт новый encrypted retained volume из exact snapshot, не изменяя
@@ -166,7 +166,7 @@ CloudFormation не обновляет `AWS::EC2::Volume.SnapshotId` in place. S
 Обычная проверка recovery выполняет:
 
 - stop/start того же instance;
-- replacement instance с тем же volume через `python tool/development_environment_manage.py replace`;
+- replacement instance с тем же volume через `python development_environment_manage.py replace`;
 - replacement instance с новым volume из snapshot.
 
 Каждый сценарий проверяет ZITADEL user/grants, GlitchTip, Product databases по их заявленному lifecycle, registry, WorkflowRun recovery, AWS data plane, UI и current release identity.

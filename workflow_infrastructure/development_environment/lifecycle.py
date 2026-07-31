@@ -7,9 +7,15 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Protocol
 
-from tool.lib.development_compute import HOST_READY_TIMEOUT_SECONDS
-from tool.lib.development_environment_error import DevelopmentEnvironmentError
-from tool.lib.development_host import PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT
+from workflow_infrastructure.development_environment.compute import (
+    HOST_READY_TIMEOUT_SECONDS,
+)
+from workflow_infrastructure.development_environment.error import (
+    DevelopmentEnvironmentError,
+)
+from workflow_infrastructure.development_environment.host.manager import (
+    PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
+)
 
 LEASE_DURATION = timedelta(hours=2)
 LIFECYCLE_ACCEPTANCE_INITIAL_LEASE_DURATION = timedelta(minutes=2)
@@ -209,10 +215,10 @@ class DevelopmentLifecycleManager:
             [
                 (
                     f"if [ -f {self._identity.host_control_current_source_path}/sources/workflow-infrastructure/"
-                    "tool/development_environment_manage.py ]; then "
+                    "development_environment_manage.py ]; then "
                     f"sudo env {PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT} python3.14 -B "
                     f"{self._identity.host_control_current_source_path}/sources/workflow-infrastructure/"
-                    "tool/development_environment_manage.py host-shutdown "
+                    "development_environment_manage.py host-shutdown "
                     f"--environment-name {self._identity.environment_name}; "
                     "else sudo systemctl stop k3s || true; sudo systemctl poweroff; fi"
                 )

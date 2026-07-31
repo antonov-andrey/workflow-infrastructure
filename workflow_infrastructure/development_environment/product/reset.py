@@ -6,7 +6,9 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 
-from tool.lib.development_host import PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT
+from workflow_infrastructure.development_environment.host.manager import (
+    PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
+)
 
 
 class DevelopmentProductResetManager:

@@ -12,7 +12,9 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
-from tool.lib.development_environment_error import DevelopmentEnvironmentError
+from workflow_infrastructure.development_environment.error import (
+    DevelopmentEnvironmentError,
+)
 
 MOVING_SOURCE_SELECTOR = "HEAD"
 PRODUCT_SOURCE_REPOSITORY_NAME_LIST = [

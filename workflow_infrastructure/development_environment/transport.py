@@ -11,7 +11,9 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol
 
-from tool.lib.development_environment_error import DevelopmentEnvironmentError
+from workflow_infrastructure.development_environment.error import (
+    DevelopmentEnvironmentError,
+)
 
 SSM_COMMAND_TIMEOUT_SECONDS = 3600
 STACK_POLL_INTERVAL_SECONDS = 5

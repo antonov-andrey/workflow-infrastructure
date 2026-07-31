@@ -41,8 +41,6 @@ UV_SIGNER_WORKFLOW = "astral-sh/uv/.github/workflows/release.yml"
 
 _MAX_HOST_ARTIFACT_SIZE_BYTES = 1024 * 1024 * 1024
 _HOST_ARTIFACT_URL_PATTERN = re.compile(r"https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+")
-_TRUST_ROOT_PATH = Path(__file__).resolve().parents[2] / "trust"
-_K3S_TRUST_PATH = _TRUST_ROOT_PATH / "k3s-release.json"
 _K3S_TRUST_ARTIFACT_NAME_SET = {
     "k3s",
     "k3s-arm64",
@@ -228,16 +226,24 @@ class HostArtifactResolution:
 class HostArtifactResolver:
     """Resolve, download, and verify one exact architecture-specific artifact graph."""
 
-    def __init__(self, *, cache_root_path: Path, runner: object) -> None:
+    def __init__(
+        self,
+        *,
+        cache_root_path: Path,
+        runner: object,
+        trust_root_path: Path,
+    ) -> None:
         """Initialize the trusted operator-side resolver.
 
         Args:
             cache_root_path: Private local cache for exact downloaded bytes.
             runner: Command runner exposing ``run`` with the project contract.
+            trust_root_path: Repository-owned release trust records.
         """
 
         self._cache_root_path = cache_root_path
         self._runner = runner
+        self._trust_root_path = trust_root_path
 
     def resolve(self, architecture: str) -> HostArtifactResolution:
         """Resolve all moving selectors once and verify every selected byte stream.
@@ -320,7 +326,7 @@ class HostArtifactResolver:
         self._pgp_detached_signature_validate(
             artifact_path=self._artifact_cache_path_get(artifact.url),
             expected_primary_fingerprint=AWS_CLI_SIGNING_KEY_FINGERPRINT,
-            key_path=_TRUST_ROOT_PATH / "aws-cli-release.asc",
+            key_path=self._trust_root_path / "aws-cli-release.asc",
             signature_path=self._artifact_cache_path_get(signature.url),
         )
         self._git_ref_unchanged_validate(
@@ -570,8 +576,8 @@ class HostArtifactResolver:
             "k3s-checksums": checksum_artifact,
         }
 
-    @staticmethod
     def _k3s_trust_identity_get(
+        self,
         *,
         binary_name: str,
         checksum_name: str,
@@ -582,7 +588,7 @@ class HostArtifactResolver:
         """Return one reviewed K3s release identity from repository-owned trust."""
 
         try:
-            trust_bytes = _K3S_TRUST_PATH.read_bytes()
+            trust_bytes = (self._trust_root_path / "k3s-release.json").read_bytes()
             payload = json.loads(trust_bytes)
         except (OSError, json.JSONDecodeError) as error:
             raise HostArtifactResolutionError("repository-owned K3s release trust record is unavailable") from error
@@ -652,7 +658,7 @@ class HostArtifactResolver:
         self._pgp_detached_signature_validate(
             artifact_path=self._artifact_cache_path_get(artifact.url),
             expected_primary_fingerprint=HELM_SIGNING_KEY_FINGERPRINT,
-            key_path=_TRUST_ROOT_PATH / "helm-release.asc",
+            key_path=self._trust_root_path / "helm-release.asc",
             signature_path=self._artifact_cache_path_get(signature.url),
         )
         self._git_ref_unchanged_validate(
