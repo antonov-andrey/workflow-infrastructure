@@ -2171,7 +2171,7 @@ def test_service_readiness_checks_every_required_aws_control_plane(
         ["s3api", "list-buckets"],
         ["kms", "list-keys", "--limit", "1"],
         ["athena", "list-work-groups", "--max-results", "1"],
-        ["cloudformation", "list-stacks", "--max-results", "1"],
+        ["cloudformation", "list-stacks"],
     ]
 
 

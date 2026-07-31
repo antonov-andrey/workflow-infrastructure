@@ -98,7 +98,7 @@ class DevelopmentAccountVerifier:
             ["s3api", "list-buckets"],
             ["kms", "list-keys", "--limit", "1"],
             ["athena", "list-work-groups", "--max-results", "1"],
-            ["cloudformation", "list-stacks", "--max-results", "1"],
+            ["cloudformation", "list-stacks"],
         ):
             self._aws.run(aws_argument_list)
 
