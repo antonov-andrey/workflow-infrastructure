@@ -18,22 +18,6 @@ Parameters:
     Default: /aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id
     Description: Canonical Ubuntu 24.04 LTS arm64 AMI resolved at deployment time.
 
-  AwsCliSha256:
-    Type: String
-    AllowedPattern: '[0-9a-f]{64}'
-    Description: Verified SHA-256 of the exact AWS CLI archive.
-
-  AwsCliUrl:
-    Type: String
-    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
-    MaxLength: 384
-    Description: Exact versioned AWS CLI archive URL.
-
-  AwsCliVersion:
-    Type: String
-    AllowedPattern: '2\.[0-9]+\.[0-9]+'
-    Description: Exact AWS CLI v2 version resolved for this compute release.
-
   ComputeArchitecture:
     Type: String
     Default: arm64
@@ -41,85 +25,6 @@ Parameters:
       - amd64
       - arm64
     Description: Architecture of the development compute instance and runtime platform.
-
-  DockerBuildxPackageSha256:
-    Type: String
-    AllowedPattern: '[0-9a-f]{64}'
-
-  DockerBuildxPackageUrl:
-    Type: String
-    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
-    MaxLength: 384
-
-  DockerBuildxPackageVersion:
-    Type: String
-    AllowedPattern: '[A-Za-z0-9.+:~_-]+'
-
-  DockerCeCliPackageSha256:
-    Type: String
-    AllowedPattern: '[0-9a-f]{64}'
-
-  DockerCeCliPackageUrl:
-    Type: String
-    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
-    MaxLength: 384
-
-  DockerCeCliPackageVersion:
-    Type: String
-    AllowedPattern: '[A-Za-z0-9.+:~_-]+'
-
-  DockerCePackageSha256:
-    Type: String
-    AllowedPattern: '[0-9a-f]{64}'
-
-  DockerCePackageUrl:
-    Type: String
-    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
-    MaxLength: 384
-
-  DockerCePackageVersion:
-    Type: String
-    AllowedPattern: '[A-Za-z0-9.+:~_-]+'
-
-  DockerContainerdPackageSha256:
-    Type: String
-    AllowedPattern: '[0-9a-f]{64}'
-
-  DockerContainerdPackageUrl:
-    Type: String
-    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
-    MaxLength: 384
-
-  DockerContainerdPackageVersion:
-    Type: String
-    AllowedPattern: '[A-Za-z0-9.+:~_-]+'
-
-  DockerSigningKeyFingerprint:
-    Type: String
-    AllowedPattern: '[0-9A-F]{40}'
-    Description: Explicit Docker repository signing trust anchor.
-
-  DockerSigningKeySha256:
-    Type: String
-    AllowedPattern: '[0-9a-f]{64}'
-
-  DockerSigningKeyUrl:
-    Type: String
-    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
-    MaxLength: 384
-
-  HelmSha256:
-    Type: String
-    AllowedPattern: '[0-9a-f]{64}'
-
-  HelmUrl:
-    Type: String
-    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
-    MaxLength: 384
-
-  HelmVersion:
-    Type: String
-    AllowedPattern: 'v4\.[0-9]+\.[0-9]+'
 
   HostArtifactManifestGzipBase64:
     Type: String
@@ -152,22 +57,6 @@ Parameters:
     AllowedPattern: '[a-z0-9.]+'
     Description: Approved development compute instance type compatible with ComputeArchitecture.
 
-  K3sVersion:
-    Type: String
-    AllowedPattern: 'v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+'
-    Description: Exact k3s release installed by host bootstrap.
-
-  K3sBinarySha256:
-    Type: String
-    AllowedPattern: '[0-9a-f]{64}'
-    Description: Exact SHA-256 of the selected k3s binary.
-
-  K3sBinaryUrl:
-    Type: String
-    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
-    MaxLength: 384
-    Description: Exact versioned k3s binary URL.
-
   NotificationTagValue:
     Type: String
     Default: workflow-control-center
@@ -179,25 +68,6 @@ Parameters:
     Default: workflow-control-center-platform
     AllowedPattern: '[A-Za-z0-9+=,.@_-]+'
     Description: Existing data-plane platform role attached to the EC2 instance profile.
-
-  PythonBuild:
-    Type: String
-    AllowedPattern: '[0-9]{8}'
-    Description: Exact python-build-standalone build selected by the resolved uv release.
-
-  PythonSha256:
-    Type: String
-    AllowedPattern: '[0-9a-f]{64}'
-
-  PythonUrl:
-    Type: String
-    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
-    MaxLength: 384
-
-  PythonVersion:
-    Type: String
-    AllowedPattern: '3\.14\.[0-9]+'
-    Description: Exact patch release resolved from the supported Python 3.14 selector.
 
   RetainedVolumeSizeGiB:
     Type: Number
@@ -247,19 +117,6 @@ Parameters:
       - 'false'
       - 'true'
     Description: Whether to create the no-hourly-charge S3 gateway endpoint.
-
-  UvSha256:
-    Type: String
-    AllowedPattern: '[0-9a-f]{64}'
-
-  UvUrl:
-    Type: String
-    AllowedPattern: 'https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+'
-    MaxLength: 384
-
-  UvVersion:
-    Type: String
-    AllowedPattern: '0\.[0-9]+\.[0-9]+'
 
 Rules:
   RetainedVolumeSourceIsConsistent:
@@ -507,7 +364,7 @@ Resources:
   RetainedBackupVault:
     Type: AWS::Backup::BackupVault
     Condition: IsPrimaryEnvironment
-    DeletionPolicy: Retain
+    DeletionPolicy: RetainExceptOnCreate
     UpdateReplacePolicy: Retain
     Properties:
       BackupVaultName: workflow-control-center-development-retained
@@ -894,8 +751,6 @@ Resources:
               install -d -m 0755 /etc/workflow-control-center
               printf '%s\n' '${HostArtifactManifestSha256}' \
                 > /etc/workflow-control-center/host-artifact-manifest.sha256
-              printf '%s' '${HostArtifactManifestGzipBase64}' \
-                > /etc/workflow-control-center/host-artifact-manifest.json.gz.b64
               manifest_path='/etc/workflow-control-center/host-artifact-manifest.json'
               printf '%s' '${HostArtifactManifestGzipBase64}' \
                 | base64 --decode \
@@ -906,57 +761,94 @@ Resources:
                 "$manifest_path" \
                 | sha256sum --check --strict
 
-              manifest_input="$(
-                jq --exit-status --raw-output '
-                  def artifact($name):
-                    .artifact_by_name_map[$name] | .version, .url, .sha256;
-                  .architecture,
-                  .docker_signing_key_fingerprint,
-                  .python_build,
-                  artifact("aws-cli"),
-                  artifact("docker-signing-key"),
-                  artifact("containerd.io"),
-                  artifact("docker-buildx-plugin"),
-                  artifact("docker-ce"),
-                  artifact("docker-ce-cli"),
-                  artifact("uv"),
-                  artifact("python"),
-                  artifact("helm"),
-                  artifact("k3s-binary")
-                ' "$manifest_path" | sha256sum | awk '{print $1}'
-              )"
-              direct_input="$(
-                printf '%s\n' \
-                  '${ComputeArchitecture}' \
-                  '${DockerSigningKeyFingerprint}' \
-                  '${PythonBuild}' \
-                  '${AwsCliVersion}' '${AwsCliUrl}' '${AwsCliSha256}' \
-                  '${DockerSigningKeyFingerprint}' '${DockerSigningKeyUrl}' \
-                  '${DockerSigningKeySha256}' \
-                  '${DockerContainerdPackageVersion}' \
-                  '${DockerContainerdPackageUrl}' '${DockerContainerdPackageSha256}' \
-                  '${DockerBuildxPackageVersion}' '${DockerBuildxPackageUrl}' \
-                  '${DockerBuildxPackageSha256}' \
-                  '${DockerCePackageVersion}' '${DockerCePackageUrl}' \
-                  '${DockerCePackageSha256}' \
-                  '${DockerCeCliPackageVersion}' '${DockerCeCliPackageUrl}' \
-                  '${DockerCeCliPackageSha256}' \
-                  '${UvVersion}' '${UvUrl}' '${UvSha256}' \
-                  '${PythonVersion}' '${PythonUrl}' '${PythonSha256}' \
-                  '${HelmVersion}' '${HelmUrl}' '${HelmSha256}' \
-                  '${K3sVersion}' '${K3sBinaryUrl}' '${K3sBinarySha256}' \
-                  | sha256sum | awk '{print $1}'
-              )"
-              test "$manifest_input" = "$direct_input"
+              manifest_value() {
+                jq --exit-status --raw-output "$1" "$manifest_path"
+              }
 
-              download_verified '${AwsCliUrl}' '${AwsCliSha256}' /tmp/awscliv2.zip
+              compute_architecture="$(manifest_value '.architecture')"
+              docker_signing_key_fingerprint="$(
+                manifest_value '.docker_signing_key_fingerprint'
+              )"
+              python_build="$(manifest_value '.python_build')"
+              aws_cli_version="$(
+                manifest_value '.artifact_by_name_map["aws-cli"].version'
+              )"
+              aws_cli_url="$(
+                manifest_value '.artifact_by_name_map["aws-cli"].url'
+              )"
+              aws_cli_sha256="$(
+                manifest_value '.artifact_by_name_map["aws-cli"].sha256'
+              )"
+              docker_signing_key_url="$(
+                manifest_value '.artifact_by_name_map["docker-signing-key"].url'
+              )"
+              docker_signing_key_sha256="$(
+                manifest_value '.artifact_by_name_map["docker-signing-key"].sha256'
+              )"
+              docker_containerd_package_version="$(
+                manifest_value '.artifact_by_name_map["containerd.io"].version'
+              )"
+              docker_containerd_package_url="$(
+                manifest_value '.artifact_by_name_map["containerd.io"].url'
+              )"
+              docker_containerd_package_sha256="$(
+                manifest_value '.artifact_by_name_map["containerd.io"].sha256'
+              )"
+              docker_buildx_package_version="$(
+                manifest_value '.artifact_by_name_map["docker-buildx-plugin"].version'
+              )"
+              docker_buildx_package_url="$(
+                manifest_value '.artifact_by_name_map["docker-buildx-plugin"].url'
+              )"
+              docker_buildx_package_sha256="$(
+                manifest_value '.artifact_by_name_map["docker-buildx-plugin"].sha256'
+              )"
+              docker_ce_package_version="$(
+                manifest_value '.artifact_by_name_map["docker-ce"].version'
+              )"
+              docker_ce_package_url="$(
+                manifest_value '.artifact_by_name_map["docker-ce"].url'
+              )"
+              docker_ce_package_sha256="$(
+                manifest_value '.artifact_by_name_map["docker-ce"].sha256'
+              )"
+              docker_ce_cli_package_version="$(
+                manifest_value '.artifact_by_name_map["docker-ce-cli"].version'
+              )"
+              docker_ce_cli_package_url="$(
+                manifest_value '.artifact_by_name_map["docker-ce-cli"].url'
+              )"
+              docker_ce_cli_package_sha256="$(
+                manifest_value '.artifact_by_name_map["docker-ce-cli"].sha256'
+              )"
+              uv_version="$(manifest_value '.artifact_by_name_map.uv.version')"
+              uv_url="$(manifest_value '.artifact_by_name_map.uv.url')"
+              uv_sha256="$(manifest_value '.artifact_by_name_map.uv.sha256')"
+              python_version="$(manifest_value '.artifact_by_name_map.python.version')"
+              python_url="$(manifest_value '.artifact_by_name_map.python.url')"
+              python_sha256="$(manifest_value '.artifact_by_name_map.python.sha256')"
+              helm_version="$(manifest_value '.artifact_by_name_map.helm.version')"
+              helm_url="$(manifest_value '.artifact_by_name_map.helm.url')"
+              helm_sha256="$(manifest_value '.artifact_by_name_map.helm.sha256')"
+              k3s_version="$(
+                manifest_value '.artifact_by_name_map["k3s-binary"].version'
+              )"
+              k3s_binary_url="$(
+                manifest_value '.artifact_by_name_map["k3s-binary"].url'
+              )"
+              k3s_binary_sha256="$(
+                manifest_value '.artifact_by_name_map["k3s-binary"].sha256'
+              )"
+              test "$compute_architecture" = '${ComputeArchitecture}'
+
+              download_verified "$aws_cli_url" "$aws_cli_sha256" /tmp/awscliv2.zip
               unzip -q /tmp/awscliv2.zip -d /tmp
               /tmp/aws/install
-              /usr/local/bin/aws --version 2>&1 | grep -F "aws-cli/${AwsCliVersion} "
+              /usr/local/bin/aws --version 2>&1 | grep -F "aws-cli/$aws_cli_version "
               rm -rf /tmp/aws /tmp/awscliv2.zip
 
               install -d -m 0755 /etc/apt/keyrings
-              download_verified '${DockerSigningKeyUrl}' '${DockerSigningKeySha256}' \
+              download_verified "$docker_signing_key_url" "$docker_signing_key_sha256" \
                 /etc/apt/keyrings/docker.asc
               chmod 0644 /etc/apt/keyrings/docker.asc
               install -d -m 0700 /tmp/docker-gpg
@@ -974,56 +866,56 @@ Resources:
                   primary && $1 == "fpr" {print $10; exit}
                 ' /tmp/docker-key-colons
               )"
-              test "$docker_signing_fingerprint" = '${DockerSigningKeyFingerprint}'
+              test "$docker_signing_fingerprint" = "$docker_signing_key_fingerprint"
 
-              download_verified '${DockerContainerdPackageUrl}' \
-                '${DockerContainerdPackageSha256}' /tmp/containerd.io.deb
-              download_verified '${DockerBuildxPackageUrl}' \
-                '${DockerBuildxPackageSha256}' /tmp/docker-buildx-plugin.deb
-              download_verified '${DockerCePackageUrl}' \
-                '${DockerCePackageSha256}' /tmp/docker-ce.deb
-              download_verified '${DockerCeCliPackageUrl}' \
-                '${DockerCeCliPackageSha256}' /tmp/docker-ce-cli.deb
+              download_verified "$docker_containerd_package_url" \
+                "$docker_containerd_package_sha256" /tmp/containerd.io.deb
+              download_verified "$docker_buildx_package_url" \
+                "$docker_buildx_package_sha256" /tmp/docker-buildx-plugin.deb
+              download_verified "$docker_ce_package_url" \
+                "$docker_ce_package_sha256" /tmp/docker-ce.deb
+              download_verified "$docker_ce_cli_package_url" \
+                "$docker_ce_cli_package_sha256" /tmp/docker-ce-cli.deb
               apt-get install --no-install-recommends -y \
                 /tmp/containerd.io.deb \
                 /tmp/docker-buildx-plugin.deb \
                 /tmp/docker-ce.deb \
                 /tmp/docker-ce-cli.deb
               test "$(dpkg-query --show --showformat='${!Version}' containerd.io)" \
-                = '${DockerContainerdPackageVersion}'
+                = "$docker_containerd_package_version"
               test "$(dpkg-query --show --showformat='${!Version}' docker-buildx-plugin)" \
-                = '${DockerBuildxPackageVersion}'
+                = "$docker_buildx_package_version"
               test "$(dpkg-query --show --showformat='${!Version}' docker-ce)" \
-                = '${DockerCePackageVersion}'
+                = "$docker_ce_package_version"
               test "$(dpkg-query --show --showformat='${!Version}' docker-ce-cli)" \
-                = '${DockerCeCliPackageVersion}'
+                = "$docker_ce_cli_package_version"
               systemctl enable --now containerd docker ssh
 
-              download_verified '${UvUrl}' '${UvSha256}' /tmp/uv.tar.gz
+              download_verified "$uv_url" "$uv_sha256" /tmp/uv.tar.gz
               install -d -m 0755 /tmp/uv
               tar --extract --gzip --file /tmp/uv.tar.gz \
                 --directory /tmp/uv --strip-components=1
               install -m 0755 /tmp/uv/uv /usr/local/bin/uv
               test "$(/usr/local/bin/uv --version | cut --delimiter=' ' --fields=1-2)" \
-                = 'uv ${UvVersion}'
+                = "uv $uv_version"
 
-              download_verified '${PythonUrl}' '${PythonSha256}' /tmp/python.tar.gz
-              python_root='/opt/python/cpython-${PythonVersion}+${PythonBuild}'
+              download_verified "$python_url" "$python_sha256" /tmp/python.tar.gz
+              python_root="/opt/python/cpython-$python_version+$python_build"
               install -d -m 0755 "$python_root"
               tar --extract --gzip --file /tmp/python.tar.gz \
                 --directory "$python_root" --strip-components=1
               test "$("$python_root/bin/python3.14" \
                 -c 'import platform; print(platform.python_version())')" \
-                = '${PythonVersion}'
+                = "$python_version"
               ln -sfn "$python_root/bin/python3.14" /usr/local/bin/python3.14
 
-              download_verified '${HelmUrl}' '${HelmSha256}' /tmp/helm.tar.gz
+              download_verified "$helm_url" "$helm_sha256" /tmp/helm.tar.gz
               install -d -m 0755 /tmp/helm
               tar --extract --gzip --file /tmp/helm.tar.gz \
                 --directory /tmp/helm --strip-components=1
               install -m 0755 /tmp/helm/helm /usr/local/bin/helm
               test "$(/usr/local/bin/helm version --template '{{.Version}}')" \
-                = '${HelmVersion}'
+                = "$helm_version"
 
               volume_id='${RetainedVolumeId}'
               volume_serial="$(printf '%s' "$volume_id" | tr -d '-')"
@@ -1065,10 +957,10 @@ Resources:
                 "$retained_root/workflow-registry" \
                 "$retained_root/workflow-run"
 
-              download_verified '${K3sBinaryUrl}' '${K3sBinarySha256}' /tmp/k3s
+              download_verified "$k3s_binary_url" "$k3s_binary_sha256" /tmp/k3s
               install -m 0755 /tmp/k3s /usr/local/bin/k3s
               test "$(/usr/local/bin/k3s --version | awk 'NR == 1 {print $3}')" \
-                = '${K3sVersion}'
+                = "$k3s_version"
               ln -sfn /usr/local/bin/k3s /usr/local/bin/kubectl
               ln -sfn /usr/local/bin/k3s /usr/local/bin/crictl
               ln -sfn /usr/local/bin/k3s /usr/local/bin/ctr
@@ -1212,8 +1104,6 @@ Outputs:
     Value: !Ref InstanceSlot
   InstanceType:
     Value: !Ref InstanceType
-  K3sVersion:
-    Value: !Ref K3sVersion
   LatestLaunchTemplateVersion:
     Value: !GetAtt DevelopmentHostLaunchTemplate.LatestVersionNumber
   Region:

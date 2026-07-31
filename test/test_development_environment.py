@@ -994,6 +994,9 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
 
     backup_plan = resource_by_name_map["RetainedBackupPlan"]
     assert backup_plan["Condition"] == "IsPrimaryEnvironment"
+    backup_vault = resource_by_name_map["RetainedBackupVault"]
+    assert backup_vault["DeletionPolicy"] == "RetainExceptOnCreate"
+    assert backup_vault["UpdateReplacePolicy"] == "Retain"
     backup_rule = backup_plan["Properties"]["BackupPlan"]["BackupPlanRule"][0]
     assert backup_rule == {
         "CompletionWindowMinutes": 360,
@@ -1046,7 +1049,13 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
     }
     user_data = launch_template_data["UserData"]["Fn::Base64"]["Fn::Sub"][0]
     parameter_by_name_map = template["Parameters"]
-    assert "Default" not in parameter_by_name_map["K3sVersion"]
+    assert {
+        "HostArtifactManifestGzipBase64",
+        "HostArtifactManifestSha256",
+    } <= set(parameter_by_name_map)
+    assert "K3sVersion" not in parameter_by_name_map
+    assert "K3sBinaryUrl" not in parameter_by_name_map
+    assert "PythonVersion" not in parameter_by_name_map
     assert "apt upgrade" not in user_data
     for k3s_argument in (
         "--cluster-cidr 10.42.0.0/16",
@@ -1060,17 +1069,17 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
     assert "https://astral.sh/uv/install.sh" not in user_data
     assert "curl | sh" not in user_data
     assert "apt-get install --no-install-recommends -y docker-ce" not in user_data
-    assert "${K3sBinaryUrl}" in user_data
-    assert "K3sBinarySha256" in user_data
+    assert '.artifact_by_name_map["k3s-binary"].url' in user_data
+    assert '.artifact_by_name_map["k3s-binary"].sha256' in user_data
     assert "sha256sum --check --strict" in user_data
-    assert "${PythonVersion}" in user_data
-    assert "${PythonSha256}" in user_data
-    assert "${UvVersion}" in user_data
+    assert ".artifact_by_name_map.python.version" in user_data
+    assert ".artifact_by_name_map.python.sha256" in user_data
+    assert ".artifact_by_name_map.uv.version" in user_data
     assert "cut --delimiter=' ' --fields=1-2" in user_data
-    assert "${HelmVersion}" in user_data
+    assert ".artifact_by_name_map.helm.version" in user_data
     assert "HostArtifactManifestGzipBase64" in user_data
-    assert "manifest_input" in user_data
-    assert "direct_input" in user_data
+    assert "host-artifact-manifest.json.gz.b64" not in user_data
+    assert "direct_input" not in user_data
     assert 'test "$docker_primary_key_count" = 1' in user_data
     assert '"$retained_root/product-tool"' in user_data
     assert '"$retained_root/release"' in user_data
@@ -1150,7 +1159,7 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
 
 
 def test_compute_bootstrap_is_syntactically_valid_and_fits_ec2_user_data() -> None:
-    """Max-bounded exact launch inputs must fit the EC2 raw UserData limit."""
+    """The maximum canonical manifest must fit the EC2 raw UserData limit."""
 
     project_root_path = Path(__file__).resolve().parents[1]
     template = _template_get(
@@ -1160,43 +1169,13 @@ def test_compute_bootstrap_is_syntactically_valid_and_fits_ec2_user_data() -> No
     user_data = template["Resources"]["DevelopmentHostLaunchTemplate"]["Properties"]["LaunchTemplateData"]["UserData"][
         "Fn::Base64"
     ]["Fn::Sub"][0]
+    manifest_max_length = template["Parameters"]["HostArtifactManifestGzipBase64"]["MaxLength"]
     parameter_by_name_map = {
-        "AwsCliSha256": "a" * 64,
-        "AwsCliUrl": "https://example.invalid/aws-cli",
-        "AwsCliVersion": "2.36.11",
         "ComputeArchitecture": "arm64",
-        "DockerBuildxPackageSha256": "a" * 64,
-        "DockerBuildxPackageUrl": "https://example.invalid/buildx.deb",
-        "DockerBuildxPackageVersion": "0.36.0-1~ubuntu.24.04~noble",
-        "DockerCeCliPackageSha256": "a" * 64,
-        "DockerCeCliPackageUrl": "https://example.invalid/docker-cli.deb",
-        "DockerCeCliPackageVersion": "5:29.6.2-1~ubuntu.24.04~noble",
-        "DockerCePackageSha256": "a" * 64,
-        "DockerCePackageUrl": "https://example.invalid/docker-ce.deb",
-        "DockerCePackageVersion": "5:29.6.2-1~ubuntu.24.04~noble",
-        "DockerContainerdPackageSha256": "a" * 64,
-        "DockerContainerdPackageUrl": "https://example.invalid/containerd.deb",
-        "DockerContainerdPackageVersion": "2.2.6-1~ubuntu.24.04~noble",
-        "DockerSigningKeyFingerprint": "A" * 40,
-        "DockerSigningKeySha256": "a" * 64,
-        "DockerSigningKeyUrl": "https://example.invalid/docker.gpg",
-        "HelmSha256": "a" * 64,
-        "HelmUrl": "https://example.invalid/helm.tar.gz",
-        "HelmVersion": "v4.2.3",
-        "HostArtifactManifestGzipBase64": "A" * 3072,
+        "HostArtifactManifestGzipBase64": "A" * manifest_max_length,
         "HostArtifactManifestSha256": "a" * 64,
-        "K3sBinarySha256": "a" * 64,
-        "K3sBinaryUrl": "https://example.invalid/k3s",
-        "K3sVersion": "v1.36.2+k3s1",
-        "PythonBuild": "20260728",
-        "PythonSha256": "a" * 64,
-        "PythonUrl": "https://example.invalid/python.tar.gz",
-        "PythonVersion": "3.14.6",
         "RetainedRootPath": "/srv/workflow-control-center",
         "RetainedVolumeId": "vol-0123456789abcdef0",
-        "UvSha256": "a" * 64,
-        "UvUrl": "https://example.invalid/uv.tar.gz",
-        "UvVersion": "0.12.0",
     }
     rendered_user_data = user_data.replace("${!Version}", "${Version}")
     for parameter_name, value in parameter_by_name_map.items():

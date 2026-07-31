@@ -211,7 +211,7 @@ class HostArtifactResolution:
         return base64.b64encode(gzip.compress(payload_bytes, mtime=0)).decode()
 
     def cloudformation_parameter_by_name_map_get(self) -> dict[str, str]:
-        """Return exact compute-template parameters for every bootstrap artifact."""
+        """Return the canonical manifest as the single compute-template artifact input."""
 
         artifact = self.artifact_by_name_map
         if any(len(item.url) > 384 for item in artifact.values()):
@@ -219,42 +219,10 @@ class HostArtifactResolution:
         encoded_manifest = self.manifest_gzip_base64_get()
         if len(encoded_manifest) > 3072:
             raise HostArtifactResolutionError("host artifact manifest exceeds the bounded launch-input contract")
-        parameter_by_name_map = {
-            "AwsCliSha256": artifact["aws-cli"].sha256,
-            "AwsCliUrl": artifact["aws-cli"].url,
-            "AwsCliVersion": artifact["aws-cli"].version,
-            "DockerBuildxPackageSha256": artifact["docker-buildx-plugin"].sha256,
-            "DockerBuildxPackageUrl": artifact["docker-buildx-plugin"].url,
-            "DockerBuildxPackageVersion": artifact["docker-buildx-plugin"].version,
-            "DockerCeCliPackageSha256": artifact["docker-ce-cli"].sha256,
-            "DockerCeCliPackageUrl": artifact["docker-ce-cli"].url,
-            "DockerCeCliPackageVersion": artifact["docker-ce-cli"].version,
-            "DockerCePackageSha256": artifact["docker-ce"].sha256,
-            "DockerCePackageUrl": artifact["docker-ce"].url,
-            "DockerCePackageVersion": artifact["docker-ce"].version,
-            "DockerContainerdPackageSha256": artifact["containerd.io"].sha256,
-            "DockerContainerdPackageUrl": artifact["containerd.io"].url,
-            "DockerContainerdPackageVersion": artifact["containerd.io"].version,
-            "DockerSigningKeyFingerprint": self.docker_signing_key_fingerprint,
-            "DockerSigningKeySha256": artifact["docker-signing-key"].sha256,
-            "DockerSigningKeyUrl": artifact["docker-signing-key"].url,
-            "HelmSha256": artifact["helm"].sha256,
-            "HelmUrl": artifact["helm"].url,
-            "HelmVersion": artifact["helm"].version,
+        return {
             "HostArtifactManifestSha256": self.manifest_sha256_get(),
             "HostArtifactManifestGzipBase64": encoded_manifest,
-            "K3sBinarySha256": artifact["k3s-binary"].sha256,
-            "K3sBinaryUrl": artifact["k3s-binary"].url,
-            "K3sVersion": artifact["k3s-binary"].version,
-            "PythonBuild": self.python_build,
-            "PythonSha256": artifact["python"].sha256,
-            "PythonUrl": artifact["python"].url,
-            "PythonVersion": artifact["python"].version,
-            "UvSha256": artifact["uv"].sha256,
-            "UvUrl": artifact["uv"].url,
-            "UvVersion": artifact["uv"].version,
         }
-        return parameter_by_name_map
 
 
 class HostArtifactResolver:

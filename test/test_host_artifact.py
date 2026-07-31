@@ -684,8 +684,8 @@ def test_artifact_download_rejects_oversized_response_before_cache_publication(
     assert not artifact_path.exists()
 
 
-def test_cloudformation_parameters_bind_every_bootstrap_artifact() -> None:
-    """Launch input must carry exact URLs, versions, digests, and full provenance."""
+def test_cloudformation_parameters_use_single_canonical_bootstrap_manifest() -> None:
+    """Launch input carries one exact manifest instead of duplicated artifact fields."""
 
     resolution = HostArtifactResolution(
         architecture="arm64",
@@ -696,9 +696,7 @@ def test_cloudformation_parameters_bind_every_bootstrap_artifact() -> None:
 
     parameter_by_name_map = resolution.cloudformation_parameter_by_name_map_get()
 
-    assert parameter_by_name_map["HostArtifactManifestSha256"] == (resolution.manifest_sha256_get())
-    assert parameter_by_name_map["HostArtifactManifestGzipBase64"] == (resolution.manifest_gzip_base64_get())
-    assert parameter_by_name_map["PythonBuild"] == "20260718"
-    assert parameter_by_name_map["DockerSigningKeyFingerprint"] == (DOCKER_SIGNING_KEY_FINGERPRINT)
-    assert parameter_by_name_map["AwsCliUrl"].endswith("/aws-cli")
-    assert parameter_by_name_map["K3sBinarySha256"] == (resolution.artifact_by_name_map["k3s-binary"].sha256)
+    assert parameter_by_name_map == {
+        "HostArtifactManifestGzipBase64": resolution.manifest_gzip_base64_get(),
+        "HostArtifactManifestSha256": resolution.manifest_sha256_get(),
+    }
