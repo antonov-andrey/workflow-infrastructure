@@ -4954,12 +4954,23 @@ def test_reset_deploy_is_one_candidate_cutover_before_activation_and_host_servic
         if "host-prepare" in command_list and "/sources/workflow-infrastructure/" in " ".join(command_list)
     )
     reset_index = remote_command_list_list.index(["candidate-product-reset"])
+    public_ecr_login_index = next(
+        index
+        for index, command_list in enumerate(remote_command_list_list)
+        if "aws ecr-public get-login-password" in " ".join(command_list)
+    )
     product_deploy_index = next(
         index
         for index, command_list in enumerate(remote_command_list_list)
         if "deploy" in command_list
         and "linux/arm64" in command_list
         and "development_kubernetes_manage.py" in " ".join(command_list)
+    )
+    public_ecr_cleanup_index = next(
+        index
+        for index, command_list in enumerate(remote_command_list_list)
+        if command_list[:4] == ["sudo", "rm", "-rf", "--"]
+        and "/docker-auth/" in command_list[-1]
     )
     current_activation_index = next(
         index
@@ -4981,7 +4992,9 @@ def test_reset_deploy_is_one_candidate_cutover_before_activation_and_host_servic
     assert (
         host_prepare_index
         < reset_index
+        < public_ecr_login_index
         < product_deploy_index
+        < public_ecr_cleanup_index
         < current_activation_index
         < product_host_install_index
         < controller_host_install_index
@@ -4994,6 +5007,17 @@ def test_reset_deploy_is_one_candidate_cutover_before_activation_and_host_servic
     )
     assert reset_keyword_argument_by_name_map["target_platform"] == "linux/arm64"
     assert reset_keyword_argument_by_name_map["user_email"] == "owner@example.test"
+    product_deploy_command_list = remote_command_list_list[product_deploy_index]
+    docker_config_assignment = next(
+        argument
+        for argument in product_deploy_command_list
+        if argument.startswith("DOCKER_CONFIG=")
+    )
+    assert docker_config_assignment == (
+        "DOCKER_CONFIG="
+        f"{environment._identity.host_state_root_path}/docker-auth/"
+        f"{source_manifest_payload_list[0]['release']}"
+    )
     for command_list in remote_command_list_list:
         if "python3.14" in command_list:
             python_index = command_list.index("python3.14")

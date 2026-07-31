@@ -83,6 +83,18 @@ class ProductRecoveryProtocol(Protocol):
         """Return current retained recovery state."""
 
 
+class PublicEcrAuthProtocol(Protocol):
+    """Ephemeral upstream-registry authentication boundary."""
+
+    def session(
+        self,
+        *,
+        release_name: str,
+        ssh_control_path: Path,
+    ) -> AbstractContextManager[Path]:
+        """Yield one release-local authenticated Docker config."""
+
+
 class ProductResetProtocol(Protocol):
     """Destructive candidate-reset boundary."""
 
@@ -169,6 +181,7 @@ class DevelopmentProductDeploymentManager:
         product_recovery: ProductRecoveryProtocol,
         product_reset: ProductResetProtocol,
         project_root_path: Path,
+        public_ecr_auth: PublicEcrAuthProtocol,
         source_publisher: SourcePublisherProtocol,
         stack: StackManagerProtocol,
         transport: SsmTransportProtocol,
@@ -184,6 +197,7 @@ class DevelopmentProductDeploymentManager:
         self._product_recovery = product_recovery
         self._product_reset = product_reset
         self._project_root_path = project_root_path
+        self._public_ecr_auth = public_ecr_auth
         self._source_publisher = source_publisher
         self._stack = stack
         self._transport = transport
@@ -241,12 +255,17 @@ class DevelopmentProductDeploymentManager:
                     target_platform=platform,
                     user_email=user_email,
                 )
-            self._product_deploy(
-                platform=platform,
+            with self._public_ecr_auth.session(
                 release_name=release_name,
-                release_root_path=release_root_path,
                 ssh_control_path=ssh_control_path,
-            )
+            ) as docker_config_path:
+                self._product_deploy(
+                    docker_config_path=docker_config_path,
+                    platform=platform,
+                    release_name=release_name,
+                    release_root_path=release_root_path,
+                    ssh_control_path=ssh_control_path,
+                )
             self._release_activate(
                 release_name=release_name,
                 release_root_path=release_root_path,
@@ -376,6 +395,7 @@ class DevelopmentProductDeploymentManager:
     def _product_deploy(
         self,
         *,
+        docker_config_path: Path,
         platform: str,
         release_name: str,
         release_root_path: Path,
@@ -388,6 +408,7 @@ class DevelopmentProductDeploymentManager:
                 "sudo",
                 "env",
                 PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
+                f"DOCKER_CONFIG={docker_config_path}",
                 "python3.14",
                 "-B",
                 str(

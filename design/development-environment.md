@@ -72,6 +72,7 @@ Development environment имеет stable name. Default name `primary` сохр�
 | `development_host_status.py` | локальный и SSM-сбор нормализованного safe host status |
 | `development_product_deployment.py` | immutable Product source publication, deploy, activation и service install |
 | `development_product_recovery.py` | durable Product recovery transitions и acceptance |
+| `development_public_ecr_auth.py` | release-local AWS Public ECR login и гарантированное удаление Docker credential directory |
 | `development_storage.py` | idle lifecycle, maintenance cadence и volume-pressure warnings |
 | `host_artifact.py` | exact third-party host artifact resolution and verification |
 | `retained_product_release.py` | current/rollback pointers, release validation и durable Product recovery marker |
@@ -174,6 +175,8 @@ Host lifecycle каждую минуту наблюдает root и retained fil
 k3s version закрепляется явно. Single-node server включает secrets encryption, не публикует Kubernetes API наружу и не использует встроенный Traefik. Ingress-nginx и все Product manifests отслеживаются проектом `workflow-control-center`. Каждый Product Pod явно задаёт `serviceAccountName` и `automountServiceAccountToken`: token разрешён только workload’ам с доказанным Kubernetes API contract, а pinned third-party Helm charts проходят тот же fail-closed workload classification до установки.
 
 Development adapter использует один retained cluster-local OCI registry. Registry Deployment имеет strategy `Recreate`, чтобы две replicas не писали один retained filesystem одновременно. Image pull выполняет node/containerd, поэтому writer-registry NetworkPolicy разрешает trusted node boundary, exact platform push/cleanup workload и один stateless read-only registry proxy, а не пытается авторизовать pull по namespace целевого Pod. Proxy пропускает только registry `GET`/`HEAD` и только exact optional platform-base repository; private user image repositories и write/delete API через него недоступны. Builder получает saved attempt digest через reserved `WORKFLOW_PLATFORM_BASE_IMAGE=<repository>@<digest>`, а BuildKit mirror направляет этот pull в proxy; mutable convenience tag не участвует в platform build identity. Builder экспортирует OCI artifact, который публикует trusted push boundary. Остальной cross-namespace access запрещён. Registry endpoints не входят в environment-neutral manifests и не становятся production contract.
+
+При создании нового Product release официальный Docker Library mirror в AWS Public ECR авторизуется instance role через `GetAuthorizationToken`. Infrastructure создаёт отдельный root-only `DOCKER_CONFIG` под disposable environment state, передаёт его только Product deploy и удаляет в обязательном cleanup как после success, так и после failure. Token не попадает в аргументы процесса, source manifest, retained volume, journal либо operator output; постоянный `/root/.docker/config.json` не используется. Vendor images остаются в официальных vendor registries, а единственный официальный upstream image, публикуемый только в Docker Hub, разрешается там. Уже принятый release использует сохранённые digests и при recovery не требует upstream authentication.
 
 Каждый Product deploy и retained recovery выполняет live registry gate до
 принятия результата. Gate доказывает фактический kubelet pull exact

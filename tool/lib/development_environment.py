@@ -40,6 +40,7 @@ from tool.lib.development_product_recovery import (
     DevelopmentProductRecoveryManager,
 )
 from tool.lib.development_product_reset import DevelopmentProductResetManager
+from tool.lib.development_public_ecr_auth import DevelopmentPublicEcrAuthManager
 from tool.lib.development_provisioning import DevelopmentProvisioningManager
 from tool.lib.development_replacement import (
     COMPUTE_RETAINED_VOLUME_LOGICAL_ID_SET,
@@ -467,6 +468,11 @@ class DevelopmentEnvironment:
             identity=self._identity,
             transport=self._transport,
         )
+        self._public_ecr_auth = DevelopmentPublicEcrAuthManager(
+            aws_region=AWS_REGION,
+            identity=self._identity,
+            transport=self._transport,
+        )
         self.access = DevelopmentAccessManager(
             account=self._account,
             aws_profile=AWS_PROFILE,
@@ -486,6 +492,7 @@ class DevelopmentEnvironment:
             product_recovery=self.product_recovery,
             product_reset=self.product_reset,
             project_root_path=project_root_path,
+            public_ecr_auth=self._public_ecr_auth,
             source_publisher=self._source_publisher,
             stack=self._stack,
             transport=self._transport,
