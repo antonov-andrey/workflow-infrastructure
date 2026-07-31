@@ -269,6 +269,97 @@ def test_cloudformation_template_transport_keeps_small_body_inline(
     ]
 
 
+def test_cloudformation_stack_update_drops_parameters_removed_from_template(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """One update carries forward only parameters declared by the submitted template."""
+
+    environment = _environment_get(tmp_path)
+    template_path = tmp_path / "template.yaml"
+    template_path.write_text("Parameters: {}\nResources: {}\n", encoding="utf-8")
+    command_list: list[list[str]] = []
+    monkeypatch.setattr(
+        environment._stack,
+        "payload_get",
+        lambda stack_name, *, is_required: {"StackStatus": "UPDATE_COMPLETE"},
+    )
+    monkeypatch.setattr(
+        environment._stack,
+        "parameter_by_name_map_get",
+        lambda stack_name: {
+            "CurrentParameter": "old",
+            "EnvironmentName": "primary",
+            "RemovedParameter": "legacy",
+        },
+    )
+
+    def aws_run(
+        argument_list: list[str],
+        *,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        """Record one controlled CloudFormation command."""
+
+        del check
+        command_list.append(argument_list)
+        return subprocess.CompletedProcess(argument_list, 0, "{}", "")
+
+    def aws_json_get(argument_list: list[str]) -> dict[str, object]:
+        """Return the submitted template schema and empty change set."""
+
+        if argument_list[:2] == ["cloudformation", "get-template-summary"]:
+            return {
+                "Parameters": [
+                    {"ParameterKey": "AddedParameter"},
+                    {"ParameterKey": "CurrentParameter"},
+                    {"ParameterKey": "EnvironmentName"},
+                ]
+            }
+        if argument_list[:2] == ["cloudformation", "describe-change-set"]:
+            return {"Changes": []}
+        raise AssertionError(argument_list)
+
+    monkeypatch.setattr(environment._aws, "run", aws_run)
+    monkeypatch.setattr(environment._aws, "json_get", aws_json_get)
+
+    environment._stack.apply(
+        stack_name="workflow-control-center-development-compute",
+        template_path=template_path,
+        parameter_by_name_map={
+            "AddedParameter": "added",
+            "CurrentParameter": "new",
+        },
+        must_preserve_resource=False,
+    )
+
+    create_change_set_command = command_list[0]
+    assert "ParameterKey=AddedParameter,ParameterValue=added" in create_change_set_command
+    assert "ParameterKey=CurrentParameter,ParameterValue=new" in create_change_set_command
+    assert "ParameterKey=EnvironmentName,ParameterValue=primary" in create_change_set_command
+    assert not any("RemovedParameter" in argument for argument in create_change_set_command)
+
+
+def test_cloudformation_template_parameter_schema_rejects_malformed_response(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A malformed remote template summary cannot silently discard stack parameters."""
+
+    environment = _environment_get(tmp_path)
+    monkeypatch.setattr(
+        environment._aws,
+        "json_get",
+        lambda argument_list: {"Parameters": [{"ParameterKey": 1}]},
+    )
+
+    with pytest.raises(
+        DevelopmentEnvironmentError,
+        match="template Parameters are malformed",
+    ):
+        environment._stack._template_parameter_name_set_get(["--template-body", "file:///tmp/template.yaml"])
+
+
 @pytest.mark.parametrize(
     "template_name",
     [

@@ -123,6 +123,7 @@ class DevelopmentStackManager:
         stack_payload = self.payload_get(stack_name, is_required=False)
         change_set_type = "UPDATE" if stack_payload else "CREATE"
         change_set_name = f"codex-{self._clock.now().strftime('%Y%m%d%H%M%S%f')}"
+        template_argument_list = self._template_argument_list_get(template_path)
         command_list = [
             "cloudformation",
             "create-change-set",
@@ -132,7 +133,7 @@ class DevelopmentStackManager:
             change_set_name,
             "--change-set-type",
             change_set_type,
-            *self._template_argument_list_get(template_path),
+            *template_argument_list,
             "--capabilities",
             "CAPABILITY_NAMED_IAM",
             "--tags",
@@ -143,6 +144,12 @@ class DevelopmentStackManager:
         ]
         if stack_payload:
             current_parameter_by_name_map = self.parameter_by_name_map_get(stack_name)
+            template_parameter_name_set = self._template_parameter_name_set_get(template_argument_list)
+            current_parameter_by_name_map = {
+                parameter_name: parameter_value
+                for parameter_name, parameter_value in current_parameter_by_name_map.items()
+                if parameter_name in template_parameter_name_set
+            }
             current_parameter_by_name_map.update(parameter_by_name_map)
             parameter_by_name_map = current_parameter_by_name_map
         if parameter_by_name_map:
@@ -512,6 +519,27 @@ class DevelopmentStackManager:
             raise DevelopmentEnvironmentError("CloudFormation template artifact identity does not match local bytes")
         template_url = f"https://{bucket_name}.s3.{self._aws_region}.amazonaws.com/" f"{object_key}"
         return ["--template-url", template_url]
+
+    def _template_parameter_name_set_get(self, template_argument_list: Sequence[str]) -> set[str]:
+        """Return the parameter names declared by the submitted template."""
+
+        payload = self._aws.json_get(
+            [
+                "cloudformation",
+                "get-template-summary",
+                *template_argument_list,
+            ]
+        )
+        parameter_list = payload.get("Parameters", [])
+        if not isinstance(parameter_list, list):
+            raise DevelopmentEnvironmentError("CloudFormation template Parameters are malformed")
+        parameter_name_set: set[str] = set()
+        for parameter_payload in parameter_list:
+            parameter_name = parameter_payload.get("ParameterKey") if isinstance(parameter_payload, Mapping) else None
+            if not isinstance(parameter_name, str):
+                raise DevelopmentEnvironmentError("CloudFormation template Parameters are malformed")
+            parameter_name_set.add(parameter_name)
+        return parameter_name_set
 
     def _change_set_delete(
         self,
