@@ -3918,7 +3918,8 @@ def test_deploy_starts_the_environment_before_product_publication(
 
     class _Lifecycle:
         @staticmethod
-        def start() -> None:
+        def start(*, should_publish_infrastructure_source: bool) -> None:
+            assert should_publish_infrastructure_source is True
             event_list.append("start")
 
     class _ProductDeployment:

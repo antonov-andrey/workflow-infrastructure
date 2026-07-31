@@ -92,7 +92,7 @@ python development_environment_manage.py deploy
 
 `deploy`:
 
-1. создаёт либо обновляет stop lease и запускает остановленный idle environment через обычный lifecycle contract;
+1. создаёт либо обновляет stop lease, запускает остановленный idle environment через обычный lifecycle contract и публикует текущий clean infrastructure control source до полной host readiness;
 2. определяет все необходимые source repositories из Product release contract;
 3. проверяет clean worktrees, exact upstream commits и remote URLs;
 4. передаёт только tracked required files через rsync over SSH-over-SSM;

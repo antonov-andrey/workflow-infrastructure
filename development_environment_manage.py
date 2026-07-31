@@ -158,7 +158,7 @@ def main(argv_list: list[str]) -> int:
         elif args.command == "console":
             return environment.access.console()
         elif args.command == "deploy":
-            environment.lifecycle.start()
+            environment.lifecycle.start(should_publish_infrastructure_source=True)
             environment.product_deployment.deploy(
                 expected_role_key_list=args.expected_role_key,
                 should_reset_product_state=args.reset_product_state,
