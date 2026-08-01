@@ -18,18 +18,33 @@ from workflow_infrastructure.development_environment.compute import (
 from workflow_infrastructure.development_environment.diagnostics import (
     DevelopmentDiagnostics,
 )
+from workflow_infrastructure.development_environment.error import (
+    DevelopmentEnvironmentError,
+)
 from workflow_infrastructure.development_environment.clock import Clock
+from workflow_infrastructure.development_environment.cleanup_binding import (
+    TaskCleanupBinding,
+)
+from workflow_infrastructure.development_environment.cleanup import (
+    DevelopmentEnvironmentCleanupManager,
+)
 from workflow_infrastructure.development_environment.command import CommandRunner
 from workflow_infrastructure.development_environment.identity import (
-    DATA_PLANE_STACK_NAME,
+    ACCOUNT_FOUNDATION_STACK_NAME,
     DevelopmentEnvironmentIdentity,
 )
 from workflow_infrastructure.development_environment.host.manager import (
     PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
     DevelopmentHostManager,
 )
-from workflow_infrastructure.development_environment.host.artifact import (
+from workflow_infrastructure.development_environment.foundation import (
+    DevelopmentAccountFoundationManager,
+)
+from workflow_infrastructure.development_environment.host.artifact.manager import (
     DevelopmentHostArtifactManager,
+)
+from workflow_infrastructure.development_environment.host.bootstrap.invocation import (
+    DevelopmentHostBootstrapInvocation,
 )
 from workflow_infrastructure.development_environment.host.status import (
     DevelopmentHostStatus,
@@ -76,6 +91,18 @@ from workflow_infrastructure.development_environment.product.release import (
     DevelopmentRetainedProductReleaseManager,
     RetainedProductReleaseValidator,
 )
+from workflow_infrastructure.development_environment.product.release.manifest import (
+    RetainedProductHostManifestValidator,
+)
+from workflow_infrastructure.development_environment.product.release.recovery import (
+    RetainedProductRecoveryStore,
+)
+from workflow_infrastructure.development_environment.product.release.reset import (
+    RetainedProductReleaseReset,
+)
+from workflow_infrastructure.development_environment.product.release.rollback import (
+    RetainedProductReleasePointerStore,
+)
 
 AWS_ACCOUNT_ID = "463564115167"
 AWS_PROFILE = "workflow-control-center-devel"
@@ -92,6 +119,7 @@ class DevelopmentEnvironment:
         *,
         clock: Clock,
         environment_name: str = "primary",
+        git_worktree: str = "",
         project_root_path: Path,
         runner: CommandRunner,
     ) -> None:
@@ -105,7 +133,10 @@ class DevelopmentEnvironment:
         """
 
         self._clock = clock
-        self._identity = DevelopmentEnvironmentIdentity(environment_name)
+        self._identity = DevelopmentEnvironmentIdentity(
+            environment_name, git_worktree=git_worktree
+        )
+        self.cleanup_binding = TaskCleanupBinding(project_root_path=project_root_path)
         self._is_host = project_root_path.is_relative_to(
             self._identity.host_control_release_root_path
         ) or project_root_path.is_relative_to(self._identity.host_release_root_path)
@@ -129,12 +160,26 @@ class DevelopmentEnvironment:
         self._account = DevelopmentAccountVerifier(
             account_id=AWS_ACCOUNT_ID,
             aws=self._aws,
-            data_plane_stack_name=self._identity.data_plane_stack_name,
-            primary_data_plane_stack_name=DATA_PLANE_STACK_NAME,
+            foundation_stack_name=ACCOUNT_FOUNDATION_STACK_NAME,
             profile=AWS_PROFILE,
             region=AWS_REGION,
             runner=runner,
             stack=self._stack,
+        )
+        self.cleanup = DevelopmentEnvironmentCleanupManager(
+            account=self._account,
+            account_id=AWS_ACCOUNT_ID,
+            aws=self._aws,
+            binding=self.cleanup_binding,
+            identity=self._identity,
+            region=AWS_REGION,
+            stack=self._stack,
+        )
+        self.foundation = DevelopmentAccountFoundationManager(
+            account=self._account,
+            identity=self._identity,
+            stack=self._stack,
+            template_path=project_root_path / "cloudformation/account-foundation.yaml",
         )
         self._cost_reviewer = DevelopmentCostReviewer(
             aws=self._aws,
@@ -146,6 +191,7 @@ class DevelopmentEnvironment:
             account_id=AWS_ACCOUNT_ID,
             aws=self._aws,
             aws_region=AWS_REGION,
+            foundation_stack_name=ACCOUNT_FOUNDATION_STACK_NAME,
             identity=self._identity,
             instance_state_get=lambda instance_id: self.compute.state_get(instance_id),
             stack=self._stack,
@@ -166,13 +212,32 @@ class DevelopmentEnvironment:
             runner=runner,
             transport=self._transport,
         )
+        product_release_validator = RetainedProductReleaseValidator(self._identity)
+        product_release_pointer = RetainedProductReleasePointerStore(
+            identity=self._identity,
+            validator=product_release_validator,
+        )
+        product_release_recovery = RetainedProductRecoveryStore(
+            identity=self._identity,
+            pointer=product_release_pointer,
+            runner=runner,
+        )
         self.product_release = DevelopmentRetainedProductReleaseManager(
-            host_artifact_manifest_get=lambda: (self.host.host_artifact_manifest_get()),
+            host_manifest_validator=RetainedProductHostManifestValidator(
+                lambda: self.host.host_artifact_manifest_get()
+            ),
             identity=self._identity,
             is_host_get=lambda: self._is_host,
-            python_bytecode_environment_assignment=(PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT),
-            runner=runner,
-            validator=RetainedProductReleaseValidator(self._identity),
+            pointer=product_release_pointer,
+            python_bytecode_environment_assignment=(
+                PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT
+            ),
+            recovery=product_release_recovery,
+            reset=RetainedProductReleaseReset(
+                identity=self._identity,
+                runner=runner,
+            ),
+            validator=product_release_validator,
         )
         self._host_status = DevelopmentHostStatus(
             identity=self._identity,
@@ -201,9 +266,19 @@ class DevelopmentEnvironment:
             transport=self._transport,
         )
         self.host_artifact = DevelopmentHostArtifactManager(
+            aws=self._aws,
+            aws_region=AWS_REGION,
             identity=self._identity,
             project_root_path=project_root_path,
             runner=runner,
+            stack=self._stack,
+        )
+        self._host_bootstrap = DevelopmentHostBootstrapInvocation(
+            account_id=AWS_ACCOUNT_ID,
+            aws=self._aws,
+            clock=clock,
+            compute_stack_name=self._identity.compute_stack_name,
+            identity=self._identity,
             stack=self._stack,
         )
         self.host = DevelopmentHostManager(
@@ -261,6 +336,7 @@ class DevelopmentEnvironment:
             clock=clock,
             compute=self.compute,
             host_status=self._host_status,
+            host_bootstrap=self._host_bootstrap,
             identity=self._identity,
             product_recovery=self.product_recovery,
             project_root_path=project_root_path,
@@ -274,7 +350,7 @@ class DevelopmentEnvironment:
             clock=clock,
             compute=self.compute,
             compute_template_path=(
-                project_root_path / "cloudformation/workflow-control-center-development-compute.yaml"
+                project_root_path / "cloudformation/development-compute.yaml"
             ),
             identity=self._identity,
             lease_duration=LEASE_DURATION,
@@ -288,13 +364,20 @@ class DevelopmentEnvironment:
         )
         self.provisioning = DevelopmentProvisioningManager(
             account=self._account,
+            aws_account_id=AWS_ACCOUNT_ID,
+            aws_region=AWS_REGION,
             compute=self.compute,
-            compute_stable_identity_logical_id_set=(COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET),
+            compute_stable_identity_logical_id_set=(
+                COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET
+            ),
             compute_template_path=(
-                project_root_path / "cloudformation/workflow-control-center-development-compute.yaml"
+                project_root_path / "cloudformation/development-compute.yaml"
             ),
             cost_reviewer=self._cost_reviewer,
-            data_plane_template_path=(project_root_path / "cloudformation/workflow-control-center-development.yaml"),
+            data_plane_template_path=(
+                project_root_path / "cloudformation/development-data.yaml"
+            ),
+            foundation=self.foundation,
             host_artifact=self.host_artifact,
             identity=self._identity,
             project_root_path=project_root_path,
@@ -317,3 +400,17 @@ class DevelopmentEnvironment:
             transport=self._transport,
         )
         self.host_status = self._host_status
+
+    def account_foundation_apply(self) -> None:
+        """Create or reconcile the sole account-global development owner."""
+
+        if not self._identity.is_primary:
+            raise DevelopmentEnvironmentError(
+                "Account foundation can be applied only by the primary environment"
+            )
+        self._account.local_operator_context_validate()
+        self._source_publisher.validate_repository(
+            self._project_root_path,
+            "workflow-infrastructure",
+        )
+        self.foundation.ensure()

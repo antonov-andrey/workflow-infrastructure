@@ -49,6 +49,7 @@ class EnvironmentIdentityProtocol(Protocol):
     """Environment identity consumed by SSH access."""
 
     instance_name: str
+    local_http_port: int
 
 
 class SsmTransportProtocol(Protocol):
@@ -103,7 +104,10 @@ class DevelopmentAccessManager:
                 self._port_forward_document_name,
                 "--parameters",
                 json.dumps(
-                    {"localPortNumber": ["8080"], "portNumber": ["8080"]},
+                    {
+                        "localPortNumber": [str(self._identity.local_http_port)],
+                        "portNumber": ["8080"],
+                    },
                     separators=(",", ":"),
                 ),
             ],

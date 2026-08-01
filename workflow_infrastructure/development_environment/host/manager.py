@@ -16,14 +16,18 @@ from workflow_infrastructure.development_environment.error import (
 from workflow_infrastructure.development_environment.storage import (
     DevelopmentHostLifecycle,
 )
-from workflow_infrastructure.development_environment.host.manifest import (
+from workflow_infrastructure.development_environment.host.artifact import (
     HostArtifactResolutionError,
     host_artifact_manifest_json_decode,
 )
 
 HELM_BINARY_PATH = Path("/usr/local/bin/helm")
-HOST_ARTIFACT_MANIFEST_PATH = Path("/etc/workflow-control-center/host-artifact-manifest.json")
-HOST_ARTIFACT_MANIFEST_SHA256_PATH = Path("/etc/workflow-control-center/host-artifact-manifest.sha256")
+HOST_ARTIFACT_MANIFEST_PATH = Path(
+    "/etc/workflow-infrastructure/host-artifact-manifest.json"
+)
+HOST_ARTIFACT_MANIFEST_SHA256_PATH = Path(
+    "/etc/workflow-infrastructure/host-artifact-manifest.sha256"
+)
 HOST_PYTHON_PATH = Path("/usr/local/bin/python3.14")
 PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT = "PYTHONDONTWRITEBYTECODE=1"
 
@@ -190,7 +194,9 @@ class DevelopmentHostManager:
             check=False,
         )
         if result.returncode != 0:
-            message = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
+            message = (
+                result.stderr or result.stdout or f"exit {result.returncode}"
+            ).strip()
             print(f"WARNING: Product maintenance failed: {message}")
             return False
         print("OK: idle Product retention maintenance completed")
@@ -214,23 +220,34 @@ class DevelopmentHostManager:
 
         if not self._is_host:
             raise DevelopmentEnvironmentError(
-                "host-prepare is supported only from an exact source release " "on the development host"
+                "host-prepare is supported only from an exact source release "
+                "on the development host"
             )
         host_artifact_manifest = self.host_artifact_manifest_get()
-        if self._project_root_path.is_relative_to(self._identity.host_release_root_path):
-            source_manifest_path = self._project_root_path.parent.parent / "source-manifest.json"
+        if self._project_root_path.is_relative_to(
+            self._identity.host_release_root_path
+        ):
+            source_manifest_path = (
+                self._project_root_path.parent.parent / "source-manifest.json"
+            )
             try:
-                source_manifest = json.loads(source_manifest_path.read_text(encoding="utf-8"))
+                source_manifest = json.loads(
+                    source_manifest_path.read_text(encoding="utf-8")
+                )
             except (OSError, json.JSONDecodeError) as error:
                 raise DevelopmentEnvironmentError(
                     "Product source manifest is unavailable during host preparation"
                 ) from error
             if (
                 not isinstance(source_manifest, Mapping)
-                or source_manifest.get("environment_name") != self._identity.environment_name
-                or source_manifest.get("host_artifact_manifest") != host_artifact_manifest
+                or source_manifest.get("environment_name")
+                != self._identity.environment_name
+                or source_manifest.get("host_artifact_manifest")
+                != host_artifact_manifest
             ):
-                raise DevelopmentEnvironmentError("Product release and active host artifact identities differ")
+                raise DevelopmentEnvironmentError(
+                    "Product release and active host artifact identities differ"
+                )
         helm_version = self._helm_validate(host_artifact_manifest)
         print(f"OK: exact Helm {helm_version} is installed")
 
@@ -239,34 +256,50 @@ class DevelopmentHostManager:
 
         try:
             manifest_json = HOST_ARTIFACT_MANIFEST_PATH.read_text(encoding="utf-8")
-            expected_sha256 = HOST_ARTIFACT_MANIFEST_SHA256_PATH.read_text(encoding="utf-8").strip()
+            expected_sha256 = HOST_ARTIFACT_MANIFEST_SHA256_PATH.read_text(
+                encoding="utf-8"
+            ).strip()
             manifest = host_artifact_manifest_json_decode(
                 manifest_json=manifest_json,
                 expected_sha256=expected_sha256,
             )
         except OSError as error:
-            raise DevelopmentEnvironmentError("Host artifact manifest is unavailable") from error
+            raise DevelopmentEnvironmentError(
+                "Host artifact manifest is unavailable"
+            ) from error
         except HostArtifactResolutionError as error:
-            raise DevelopmentEnvironmentError(f"Host artifact manifest is invalid: {error}") from error
+            raise DevelopmentEnvironmentError(
+                f"Host artifact manifest is invalid: {error}"
+            ) from error
         return manifest
 
     def install(self) -> None:
         """Install the source-owned host controller from the exact release."""
 
         self.prepare()
-        infrastructure_source_path = self._identity.host_control_infrastructure_source_path
+        infrastructure_source_path = (
+            self._identity.host_control_infrastructure_source_path
+        )
         runtime_home_path = self._identity.host_state_root_path / "home"
         for path in (self._identity.host_state_root_path, runtime_home_path):
             if path.is_symlink():
-                raise DevelopmentEnvironmentError("Host controller state path must not be a symbolic link: " f"{path}")
-        self._identity.host_state_root_path.mkdir(mode=0o750, parents=True, exist_ok=True)
+                raise DevelopmentEnvironmentError(
+                    "Host controller state path must not be a symbolic link: " f"{path}"
+                )
+        self._identity.host_state_root_path.mkdir(
+            mode=0o750, parents=True, exist_ok=True
+        )
         runtime_home_path.mkdir(mode=0o700, exist_ok=True)
         for path in (self._identity.host_state_root_path, runtime_home_path):
             if path.is_symlink():
-                raise DevelopmentEnvironmentError("Host controller state path must not be a symbolic link: " f"{path}")
+                raise DevelopmentEnvironmentError(
+                    "Host controller state path must not be a symbolic link: " f"{path}"
+                )
         os.chmod(self._identity.host_state_root_path, 0o750)
         os.chmod(runtime_home_path, 0o700)
-        service_path = Path("/etc/systemd/system/workflow-control-center-host-controller.service")
+        service_path = Path(
+            "/etc/systemd/system/workflow-control-center-host-controller.service"
+        )
         service_text = f"""[Unit]
 Description=Workflow Control Center development host lifecycle controller
 After=k3s.service network-online.target
@@ -288,8 +321,12 @@ WantedBy=multi-user.target
         service_path.write_text(service_text, encoding="utf-8")
         os.chmod(service_path, 0o644)
         self._runner.run(["systemctl", "daemon-reload"])
-        self._runner.run(["systemctl", "enable", "workflow-control-center-host-controller"])
-        self._runner.run(["systemctl", "restart", "workflow-control-center-host-controller"])
+        self._runner.run(
+            ["systemctl", "enable", "workflow-control-center-host-controller"]
+        )
+        self._runner.run(
+            ["systemctl", "restart", "workflow-control-center-host-controller"]
+        )
         print("OK: host lifecycle controller is installed")
 
     def host_shutdown(self) -> None:
@@ -307,7 +344,9 @@ WantedBy=multi-user.target
                     ["k3s", "kubectl", "uncordon", self._node_name_get()],
                     check=False,
                 )
-                raise DevelopmentEnvironmentError("Product graceful shutdown failed; node was uncordoned")
+                raise DevelopmentEnvironmentError(
+                    "Product graceful shutdown failed; node was uncordoned"
+                )
         else:
             self._runner.run(["systemctl", "stop", "k3s"], check=False)
         self._runner.run(["systemctl", "poweroff"], should_capture=False)
@@ -365,10 +404,14 @@ WantedBy=multi-user.target
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError as error:
-            raise DevelopmentEnvironmentError("Host Session Manager response is invalid") from error
+            raise DevelopmentEnvironmentError(
+                "Host Session Manager response is invalid"
+            ) from error
         session_list = payload.get("Sessions", []) if isinstance(payload, dict) else []
         if not isinstance(session_list, list):
-            raise DevelopmentEnvironmentError("Host Session Manager response is malformed")
+            raise DevelopmentEnvironmentError(
+                "Host Session Manager response is malformed"
+            )
         return len(session_list)
 
     def _node_name_get(self) -> str:
@@ -396,12 +439,25 @@ WantedBy=multi-user.target
         """Validate preinstalled Helm against immutable launch input."""
 
         artifact_by_name_map = host_artifact_manifest.get("artifact_by_name_map")
-        helm_artifact = artifact_by_name_map.get("helm") if isinstance(artifact_by_name_map, dict) else None
-        helm_version = helm_artifact.get("version") if isinstance(helm_artifact, dict) else None
-        if not isinstance(helm_version, str) or re.fullmatch(r"v4\.[0-9]+\.[0-9]+", helm_version) is None:
-            raise DevelopmentEnvironmentError("Host artifact manifest has no exact Helm identity")
+        helm_artifact = (
+            artifact_by_name_map.get("helm")
+            if isinstance(artifact_by_name_map, dict)
+            else None
+        )
+        helm_version = (
+            helm_artifact.get("version") if isinstance(helm_artifact, dict) else None
+        )
+        if (
+            not isinstance(helm_version, str)
+            or re.fullmatch(r"v4\.[0-9]+\.[0-9]+", helm_version) is None
+        ):
+            raise DevelopmentEnvironmentError(
+                "Host artifact manifest has no exact Helm identity"
+            )
         if not HELM_BINARY_PATH.is_file():
-            raise DevelopmentEnvironmentError("Exact Helm binary was not installed by host bootstrap")
+            raise DevelopmentEnvironmentError(
+                "Exact Helm binary was not installed by host bootstrap"
+            )
         installed_result = self._runner.run(
             [
                 str(HELM_BINARY_PATH),
@@ -411,6 +467,11 @@ WantedBy=multi-user.target
             ],
             check=False,
         )
-        if installed_result.returncode != 0 or installed_result.stdout.strip() != helm_version:
-            raise DevelopmentEnvironmentError("Installed Helm version differs from immutable launch input")
+        if (
+            installed_result.returncode != 0
+            or installed_result.stdout.strip() != helm_version
+        ):
+            raise DevelopmentEnvironmentError(
+                "Installed Helm version differs from immutable launch input"
+            )
         return helm_version

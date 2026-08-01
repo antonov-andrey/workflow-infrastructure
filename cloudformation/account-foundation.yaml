@@ -1,0 +1,362 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Account-global foundation for the isolated workflow development account.
+
+Parameters:
+  DeploymentPrincipalArn:
+    Type: String
+    Default: arn:aws:iam::463564115167:role/aws-reserved/sso.amazonaws.com/AWSReservedSSO_AdministratorAccess_96adc54d23890b23
+    AllowedPattern: 'arn:aws:iam::[0-9]{12}:role/.+'
+  PrimaryPlatformRoleArn:
+    Type: String
+    Default: ''
+  PrimaryRetainedVolumeArn:
+    Type: String
+    Default: ''
+
+Conditions:
+  HasPrimaryPlatformRole: !Not [!Equals [!Ref PrimaryPlatformRoleArn, '']]
+  HasPrimaryRetainedVolume: !Not [!Equals [!Ref PrimaryRetainedVolumeArn, '']]
+
+Resources:
+  AccountPublicAccessBlockRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: account-public-access-block
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: account-public-access-block
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetAccountPublicAccessBlock
+                  - s3:PutAccountPublicAccessBlock
+                Resource: '*'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/account-public-access-block:*
+      Tags:
+        - Key: Name
+          Value: account-public-access-block
+        - Key: EnvironmentClass
+          Value: development
+        - Key: EnvironmentName
+          Value: primary
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  AccountPublicAccessBlockLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      LogGroupName: /aws/lambda/account-public-access-block
+      RetentionInDays: 30
+      Tags:
+        - Key: Name
+          Value: account-public-access-block
+        - Key: EnvironmentClass
+          Value: development
+        - Key: EnvironmentName
+          Value: primary
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  AccountPublicAccessBlockFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: AccountPublicAccessBlockLogGroup
+    Properties:
+      FunctionName: account-public-access-block
+      Architectures:
+        - arm64
+      Code:
+        ZipFile: |
+          import json
+          import urllib.request
+
+          import boto3
+
+
+          EXPECTED = {
+              "BlockPublicAcls": True,
+              "IgnorePublicAcls": True,
+              "BlockPublicPolicy": True,
+              "RestrictPublicBuckets": True,
+          }
+
+
+          def _respond(event, context, status, reason=""):
+              body = json.dumps(
+                  {
+                      "Status": status,
+                      "Reason": reason or f"See CloudWatch Log Stream: {context.log_stream_name}",
+                      "PhysicalResourceId": f"account-public-access-block-{event['ResourceProperties']['AccountId']}",
+                      "StackId": event["StackId"],
+                      "RequestId": event["RequestId"],
+                      "LogicalResourceId": event["LogicalResourceId"],
+                      "NoEcho": False,
+                  },
+                  separators=(",", ":"),
+              ).encode()
+              request = urllib.request.Request(
+                  event["ResponseURL"],
+                  data=body,
+                  headers={"content-length": str(len(body)), "content-type": ""},
+                  method="PUT",
+              )
+              with urllib.request.urlopen(request, timeout=10):
+                  pass
+
+
+          def handler(event, context):
+              try:
+                  if event["RequestType"] != "Delete":
+                      account_id = event["ResourceProperties"]["AccountId"]
+                      client = boto3.client("s3control")
+                      client.put_public_access_block(
+                          AccountId=account_id,
+                          PublicAccessBlockConfiguration=EXPECTED,
+                      )
+                      actual = client.get_public_access_block(AccountId=account_id)[
+                          "PublicAccessBlockConfiguration"
+                      ]
+                      if actual != EXPECTED:
+                          raise RuntimeError("account-level S3 public access block differs")
+                  _respond(event, context, "SUCCESS")
+              except Exception as error:
+                  _respond(event, context, "FAILED", str(error))
+      Handler: index.handler
+      MemorySize: 128
+      Role: !GetAtt AccountPublicAccessBlockRole.Arn
+      Runtime: python3.14
+      Timeout: 30
+      Tags:
+        - Key: Name
+          Value: account-public-access-block
+        - Key: EnvironmentClass
+          Value: development
+        - Key: EnvironmentName
+          Value: primary
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  AccountPublicAccessBlock:
+    Type: Custom::S3AccountPublicAccessBlock
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      ServiceToken: !GetAtt AccountPublicAccessBlockFunction.Arn
+      AccountId: !Ref AWS::AccountId
+      ContractVersion: '1'
+
+  SessionLogKey:
+    Type: AWS::KMS::Key
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Description: Encrypt ordinary Session Manager shell logs.
+      EnableKeyRotation: true
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AccountAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:root
+            Action: kms:*
+            Resource: '*'
+          - Sid: CloudWatchLogsEncryption
+            Effect: Allow
+            Principal:
+              Service: !Sub logs.${AWS::Region}.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:Encrypt
+              - kms:GenerateDataKey*
+              - kms:ReEncrypt*
+            Resource: '*'
+            Condition:
+              ArnEquals:
+                kms:EncryptionContext:aws:logs:arn: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/session-manager/shell
+      Tags:
+        - Key: Name
+          Value: session-shell-log-key
+        - Key: EnvironmentClass
+          Value: development
+        - Key: EnvironmentName
+          Value: primary
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  SessionLogKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/session-shell-log
+      TargetKeyId: !Ref SessionLogKey
+
+  SessionShellLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      KmsKeyId: !GetAtt SessionLogKey.Arn
+      LogGroupName: /session-manager/shell
+      RetentionInDays: 30
+      Tags:
+        - Key: Name
+          Value: session-shell-log
+        - Key: EnvironmentClass
+          Value: development
+        - Key: EnvironmentName
+          Value: primary
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  SessionManagerRunShellPreferences:
+    Type: AWS::SSM::Document
+    Properties:
+      DocumentType: Session
+      Name: SSM-SessionManagerRunShell
+      TargetType: /AWS::EC2::Instance
+      Content:
+        schemaVersion: '1.0'
+        description: Development account Session Manager shell preferences.
+        sessionType: Standard_Stream
+        inputs:
+          cloudWatchEncryptionEnabled: true
+          cloudWatchLogGroupName: !Ref SessionShellLogGroup
+          idleSessionTimeout: '20'
+          kmsKeyId: !GetAtt SessionLogKey.Arn
+          maxSessionDuration: ''
+          runAsDefaultUser: ''
+          runAsEnabled: false
+          s3BucketName: ''
+          s3EncryptionEnabled: true
+          s3KeyPrefix: ''
+          shellProfile:
+            linux: ''
+            windows: ''
+      Tags:
+        - Key: Name
+          Value: session-manager-run-shell
+        - Key: EnvironmentClass
+          Value: development
+        - Key: EnvironmentName
+          Value: primary
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  DataLakeSettings:
+    Type: AWS::LakeFormation::DataLakeSettings
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Admins:
+        - DataLakePrincipalIdentifier: !Ref DeploymentPrincipalArn
+        - !If
+          - HasPrimaryPlatformRole
+          - DataLakePrincipalIdentifier: !Ref PrimaryPlatformRoleArn
+          - !Ref AWS::NoValue
+      AllowExternalDataFiltering: false
+      AllowFullTableExternalDataAccess: false
+      AuthorizedSessionTagValueList: []
+      CreateDatabaseDefaultPermissions: []
+      CreateTableDefaultPermissions: []
+      ExternalDataFilteringAllowList: []
+      MutationType: REPLACE
+      Parameters:
+        CROSS_ACCOUNT_VERSION: '4'
+        SET_CONTEXT: 'TRUE'
+        SET_SOURCE_IDENTITY: 'FALSE'
+      ReadOnlyAdmins: []
+      TrustedResourceOwners: []
+
+  RetainedBackupVault:
+    Type: AWS::Backup::BackupVault
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BackupVaultName: development-retained
+      BackupVaultTags:
+        Name: development-retained
+        EnvironmentClass: development
+        EnvironmentName: primary
+        ManagedBy: CloudFormation
+
+  RetainedBackupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: backup-primary-retained
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: backup.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AWSBackupServiceRolePolicyForBackup
+      Tags:
+        - Key: Name
+          Value: backup-primary-retained
+        - Key: EnvironmentClass
+          Value: development
+        - Key: EnvironmentName
+          Value: primary
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  RetainedBackupPlan:
+    Type: AWS::Backup::BackupPlan
+    Properties:
+      BackupPlan:
+        BackupPlanName: development-primary-retained
+        BackupPlanRule:
+          - CompletionWindowMinutes: 360
+            Lifecycle:
+              DeleteAfterDays: 7
+            RecoveryPointTags:
+              Name: primary-retained-recovery-point
+              EnvironmentClass: development
+              EnvironmentName: primary
+              ManagedBy: AWSBackup
+            RuleName: daily-retained-volume
+            ScheduleExpression: cron(0 3 * * ? *)
+            ScheduleExpressionTimezone: UTC
+            StartWindowMinutes: 60
+            TargetBackupVault: !Ref RetainedBackupVault
+      BackupPlanTags:
+        Name: development-primary-retained
+        EnvironmentClass: development
+        EnvironmentName: primary
+        ManagedBy: CloudFormation
+
+  RetainedBackupSelection:
+    Type: AWS::Backup::BackupSelection
+    Condition: HasPrimaryRetainedVolume
+    Properties:
+      BackupPlanId: !Ref RetainedBackupPlan
+      BackupSelection:
+        IamRoleArn: !GetAtt RetainedBackupRole.Arn
+        Resources:
+          - !Ref PrimaryRetainedVolumeArn
+        SelectionName: primary-retained-volume
+
+Outputs:
+  AccountPublicAccessBlockOwner:
+    Value: account-foundation
+  BackupPlanId:
+    Value: !Ref RetainedBackupPlan
+  SessionShellLogGroupName:
+    Value: !Ref SessionShellLogGroup
+  SessionShellLogKeyArn:
+    Value: !GetAtt SessionLogKey.Arn

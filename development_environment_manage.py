@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from workflow_infrastructure.development_environment.command import CommandRunne
 from workflow_infrastructure.development_environment.composition import (
     DevelopmentEnvironment,
 )
+from workflow_infrastructure.development_environment.cleanup import CleanupRequest
 from workflow_infrastructure.development_environment.error import (
     DevelopmentEnvironmentError,
 )
@@ -43,10 +45,13 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "command",
         choices=[
+            "account-foundation-apply",
             "apply",
             "connect",
             "console",
             "deploy",
+            "destroy",
+            "destroy-inventory",
             "diagnose",
             "host-controller",
             "host-install",
@@ -74,10 +79,17 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
         help="Stable development environment selector (default: primary).",
     )
     parser.add_argument(
+        "--git-worktree",
+        default="",
+        help="Exact goal common prefix selecting its isolated task environment.",
+    )
+    parser.add_argument(
         "--release",
         help="Exact retained Product release used by one host-local operation.",
     )
-    parser.add_argument("--snapshot-id", help="Exact retained-volume snapshot used by restore.")
+    parser.add_argument(
+        "--snapshot-id", help="Exact retained-volume snapshot used by restore."
+    )
     parser.add_argument(
         "--retained-volume-id",
         help="Exact retained EBS volume expected by host-status.",
@@ -87,7 +99,9 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
         default="",
         help="Exact one-deploy workflow-container-contract commit override.",
     )
-    parser.add_argument("--user-email", help="Preserved ZITADEL user to verify around Product reset.")
+    parser.add_argument(
+        "--user-email", help="Preserved ZITADEL user to verify around Product reset."
+    )
     parser.add_argument(
         "--expected-role-key",
         action="append",
@@ -118,17 +132,33 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
     if args.retained_volume_id and args.command != "host-status":
         parser.error("--retained-volume-id is supported only for host-status")
     if args.workflow_container_contract_commit and args.command != "deploy":
-        parser.error("--workflow-container-contract-commit is supported only for deploy")
+        parser.error(
+            "--workflow-container-contract-commit is supported only for deploy"
+        )
     if args.reset_product_state and args.command != "deploy":
         parser.error("--reset-product-state is supported only for deploy")
     if args.command == "deploy" and args.reset_product_state and not args.user_email:
         parser.error("--user-email is required with --reset-product-state")
-    if (args.user_email or args.expected_role_key) and (args.command != "deploy" or not args.reset_product_state):
-        parser.error("--user-email and --expected-role-key require deploy --reset-product-state")
+    if (args.user_email or args.expected_role_key) and (
+        args.command != "deploy" or not args.reset_product_state
+    ):
+        parser.error(
+            "--user-email and --expected-role-key require deploy --reset-product-state"
+        )
     if args.ssh_argument_list and args.command != "ssh":
         parser.error("arguments after the command are supported only for ssh")
     if args.ssh_argument_list[:1] == ["--"]:
         args.ssh_argument_list = args.ssh_argument_list[1:]
+    if args.git_worktree and args.environment_name != "primary":
+        parser.error(
+            "--git-worktree derives the environment name and cannot be combined with --environment-name"
+        )
+    if args.git_worktree and args.command == "account-foundation-apply":
+        parser.error(
+            "account-foundation-apply is owned only by the primary environment"
+        )
+    if args.command in {"destroy", "destroy-inventory"} and not args.git_worktree:
+        parser.error(f"{args.command} is supported only with --git-worktree")
     return args
 
 
@@ -147,11 +177,25 @@ def main(argv_list: list[str]) -> int:
     environment = DevelopmentEnvironment(
         clock=Clock(),
         environment_name=args.environment_name,
+        git_worktree=args.git_worktree,
         project_root_path=project_root_path,
         runner=CommandRunner(),
     )
     try:
-        if args.command == "apply":
+        if args.git_worktree and args.command in {
+            "apply",
+            "deploy",
+            "destroy",
+            "destroy-inventory",
+            "replace",
+            "restore",
+            "start",
+            "stop",
+        }:
+            environment.cleanup_binding.validate(common_prefix=args.git_worktree)
+        if args.command == "account-foundation-apply":
+            environment.account_foundation_apply()
+        elif args.command == "apply":
             environment.provisioning.apply()
         elif args.command == "connect":
             return environment.access.connect()
@@ -167,6 +211,16 @@ def main(argv_list: list[str]) -> int:
             )
         elif args.command == "diagnose":
             environment.diagnostics.diagnose()
+        elif args.command in {"destroy", "destroy-inventory"}:
+            request = CleanupRequest.from_json(
+                sys.stdin.read(), expected_common_prefix=args.git_worktree
+            )
+            response = (
+                environment.cleanup.destroy(request)
+                if args.command == "destroy"
+                else environment.cleanup.inventory(request)
+            )
+            print(json.dumps(response, separators=(",", ":"), sort_keys=True))
         elif args.command == "host-controller":
             environment.host.controller()
         elif args.command == "host-install":

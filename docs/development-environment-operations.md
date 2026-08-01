@@ -22,15 +22,17 @@ Host controller вызывает тот же utility с `--runtime-only` и ра
 python development_environment_manage.py <command>
 ```
 
-Команды не принимают или не печатают static credentials. До AWS mutation entrypoint проверяет identity, region, stack state и renewable stop lease.
+Каждая environment operation получает ровно один exact selector: `--environment-name primary` для основной среды либо `--git-worktree <task-common-prefix>` для task environment. Task selector сам выводит machine name `w<15-sha256-hex>`, проверяет full-prefix collision и никогда не fallback-ится на primary. До первой task AWS mutation он дополнительно требует sealed private-state binding exact schema-v2 cleanup declaration; отсутствие binding закрывает `apply`/`deploy`. Команды не принимают или не печатают static credentials. До AWS mutation entrypoint проверяет identity, region, account-foundation, stack state и renewable stop lease.
 
 ## Создание И Обновление Инфраструктуры
 
 ```bash
-python development_environment_manage.py apply
+python development_environment_manage.py account-foundation-apply
+python development_environment_manage.py apply --environment-name primary
+python development_environment_manage.py apply --git-worktree <common-prefix>
 ```
 
-`apply` проверяет оба шаблона, создаёт и инспектирует change sets data-plane и compute stacks, применяет разрешённые изменения и проверяет outputs, retained-resource identities, Session Manager readiness и host bootstrap. Existing stable data-plane stack обновляется in place; compute stack управляется отдельно. Ordinary compute change set не имеет права неявно заменить instance, retained volume или attachment. Если exact launch input изменился, `apply` включает external guard, доказывает остановку и detach, меняет instance slot, подключает тот же retained state и завершает recovery acceptance только для exact current-format release с тем же host-artifact manifest. Отдельные `replace` и `restore` остаются явными operator recovery commands, а не обязательным продолжением обычного apply.
+`account-foundation-apply` является отдельным primary-only bootstrap/reconciliation шагом: он проверяет exact AWS account/region и clean+pushed `workflow-infrastructure` source, затем создаёт либо обновляет единственного account-global owner без неявного создания EC2 или environment data plane. `--git-worktree` для этой команды запрещён. `apply` для primary также проверяет/reconciles `account-foundation`, затем exact `data-primary` и `compute-primary` templates/change sets и после получения retained-volume ARN повторно reconciles foundation-owned single AWS Backup selection. Task apply не создаёт и не изменяет foundation: он требует уже принятого live state, затем применяет exact `data-<task-environment>` и `compute-<task-environment>`. Команда проверяет outputs, retained-resource identities, Session Manager readiness, SSM-agent-only UserData, active exact numeric bootstrap Command document version/system SHA-256, передачу тех же version/hash в SendCommand, download checksums и Python host bootstrap result. Environment stacks не владеют account-global guards. Ordinary compute change set не имеет права неявно заменить instance, retained volume или attachment. Если exact launch input изменился, `apply` включает external guard, доказывает остановку и detach, меняет instance slot, подключает тот же retained state и завершает recovery acceptance только для exact current-format release с тем же host-artifact manifest. Отдельные `replace` и `restore` остаются явными operator recovery commands, а не обязательным продолжением обычного apply.
 
 Если процесс прерван после успешного создания replacement instance, повторный `apply` распознаёт оставшийся `ReplacementGuardScheduleState=ENABLED`, сначала устанавливает exact control source на уже созданный host и завершает retained Product recovery, затем отключает guard и продолжает с последнего безопасного состояния. Завершённый `UPDATE_ROLLBACK_COMPLETE` является допустимой stable recovery точкой для нового change set; незавершённый rollback и произвольный drift не принимаются.
 
@@ -41,9 +43,9 @@ Data-plane template может превышать inline limit CloudFormation. �
 ## Запуск И Остановка
 
 ```bash
-python development_environment_manage.py start
-python development_environment_manage.py stop
-python development_environment_manage.py status
+python development_environment_manage.py start --environment-name primary
+python development_environment_manage.py stop --environment-name primary
+python development_environment_manage.py status --environment-name primary
 ```
 
 `start` сначала создаёт one-time external stop schedule на два часа и не запускает instance, если schedule не создан. Schedule вызывает stack-owned tag-resolving stop function. CloudFormation create/replacement отдельно защищает stack-owned replacement guard, который включается до instance по dependency и выключается только после readiness и доказанного renewable lease. После start команда ждёт EC2, SSM, успешный cloud-init, exact retained mount, k3s, Kubernetes node и host controller readiness. Внутренние create/replacement flows после cloud-init устанавливают exact проверенный infrastructure source и controller до финального proof; обычный lifecycle-only `start` переиспользует уже установленный controller и не превращается в неявный deploy.
@@ -54,7 +56,7 @@ python development_environment_manage.py status
 разрушающей:
 
 ```bash
-python development_environment_manage.py lifecycle-acceptance
+python development_environment_manage.py lifecycle-acceptance --environment-name primary
 ```
 
 Она допускается только при `WCC activity=idle`, не меняет steady-state development policy
@@ -68,15 +70,15 @@ controller, k3s и Product recovery acceptance. Любая промежуточ�
 ## Подключение
 
 ```bash
-python development_environment_manage.py connect
-python development_environment_manage.py ssh -- <ssh-arguments>
+python development_environment_manage.py connect --environment-name primary
+python development_environment_manage.py ssh --environment-name primary -- <ssh-arguments>
 ```
 
-`connect` держит одну SSM port-forwarding session от remote ingress к `localhost:8080`. Product UI открывается по `http://localhost:8080`; ZITADEL и GlitchTip используют соответствующие `*.localhost:8080` hostnames. Команда является long-running foreground process, чтобы состояние tunnel оставалось видимым.
+`connect` держит одну SSM port-forwarding session от remote ingress. Primary использует persisted local port `8080`; task environment получает deterministic collision-checked persisted port, который `connect` и `status` печатают как exact endpoint. ZITADEL и GlitchTip используют соответствующие `*.localhost:<environment-port>` hostnames. Команда является long-running foreground process, чтобы состояние tunnel оставалось видимым.
 
 `ssh` использует SSH-over-SSM и поддерживает обычные SSH, SCP, rsync и Remote SSH IDE flows без inbound port `22`. Persistent SSH private key или public ingress не создаются.
 
-Idle controller проверяет только наличие Session Manager session для exact instance. Содержимое port-forwarding и SSH-over-SSM не записывается и для idle-решения не требуется; Session Manager не поддерживает content logging этих tunnel sessions. При необходимости ordinary interactive shell logging настраивается отдельно и не становится вторым источником activity truth.
+Idle controller проверяет только наличие Session Manager session для exact instance. Содержимое port-forwarding и SSH-over-SSM не записывается и для idle-решения не требуется; Session Manager не поддерживает content logging этих tunnel sessions. Ordinary Session Manager shell по account-foundation preferences пишет command/output в encrypted CloudWatch log group с retention, но не становится вторым источником activity truth.
 
 Host bootstrap, Product recovery и recovery acceptance выполняются через SSM Run
 Command. Orchestrator опрашивает фактический invocation status до одного часа,
@@ -87,14 +89,15 @@ ID, не отменяя удалённую операцию. Её состоян
 ## Развёртывание Product
 
 ```bash
-python development_environment_manage.py deploy
+python development_environment_manage.py deploy --environment-name primary
+python development_environment_manage.py deploy --git-worktree <common-prefix>
 ```
 
 `deploy`:
 
 1. создаёт либо обновляет stop lease, запускает остановленный idle environment через обычный lifecycle contract и публикует текущий clean infrastructure control source до полной host readiness;
 2. определяет все необходимые source repositories из Product release contract;
-3. проверяет clean worktrees, exact upstream commits и remote URLs;
+3. для task selector проверяет exact same-prefix participating worktrees, для unchanged sources — clean/pushed main, а также exact upstream commits и remote URLs;
 4. передаёт только tracked required files через rsync over SSH-over-SSM;
 5. проверяет content manifest на host и публикует exact source release в retained `release/releases/<release>/`;
 6. из exact infrastructure source атомарно устанавливает checksum-pinned Helm для фактической host architecture;
@@ -112,6 +115,7 @@ Pre-hardening compute/source/runtime contracts не поддерживаются
 
 ```bash
 python development_environment_manage.py deploy \
+  --environment-name primary \
   --reset-product-state \
   --user-email antonov.andrey@gmail.com
 ```
@@ -123,7 +127,7 @@ python development_environment_manage.py deploy \
 ## Диагностика
 
 ```bash
-python development_environment_manage.py diagnose
+python development_environment_manage.py diagnose --environment-name primary
 ```
 
 `diagnose` собирает безопасный снимок CloudFormation, EC2, SSM, stop lease, volume/snapshot, disk pressure, k3s node, namespaces, workloads, events, registry, current/previous release и Product-owned diagnostics. Он не выводит credential process JSON, Kubernetes Secret values, database content, VPN configuration или Product input.
@@ -132,10 +136,20 @@ Host controller пишет transition-aware предупреждения по ro
 
 AWS, infrastructure, cluster и Product findings показываются раздельно. Неуспешный Product smoke не маскируется готовностью instance или k3s.
 
+## Удаление Task Environment
+
+Завершение goal не удаляет environment. Когда пользователь явно просит удалить exact task common prefix и он проходит synchronized-cleanup preconditions, `agent-workflows:goal-delete` вызывает recorded project hook:
+
+```bash
+python development_environment_manage.py destroy --git-worktree <common-prefix>
+```
+
+Не запускайте эту команду вместо `goal-delete` вручную: она отвергает invocation без exact closed JSON stdin request, а resources, worktrees, refs и central task directory должны удаляться одной resumable transaction. Hook закрывает sessions/leases, очищает exact versioned buckets и multipart uploads, удаляет data/compute stacks и retained task volume, удаляет one-time snapshots, затем удаляет KMS alias, disables key и принимает `PendingDeletion` с minimum AWS waiting period. Он возвращает exact machine-readable absence proof, связанный с request operation identity; `git-worktree` tag inventory является leak check, а не blanket deletion selector. Account-foundation, primary и другие task environments сохраняются.
+
 ## Восстановление
 
 ```bash
-python development_environment_manage.py restore --snapshot-id <snapshot-id>
+python development_environment_manage.py restore --environment-name primary --snapshot-id <snapshot-id>
 ```
 
 `restore` создаёт новый encrypted retained volume из exact snapshot, не изменяя
@@ -167,7 +181,7 @@ CloudFormation не обновляет `AWS::EC2::Volume.SnapshotId` in place. S
 Обычная проверка recovery выполняет:
 
 - stop/start того же instance;
-- replacement instance с тем же volume через `python development_environment_manage.py replace`;
+- replacement instance с тем же volume через `python development_environment_manage.py replace --environment-name primary`;
 - replacement instance с новым volume из snapshot.
 
 Каждый сценарий проверяет ZITADEL user/grants, GlitchTip, Product databases по их заявленному lifecycle, registry, WorkflowRun recovery, AWS data plane, UI и current release identity.

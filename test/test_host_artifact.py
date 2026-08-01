@@ -14,16 +14,36 @@ from pathlib import Path
 
 import pytest
 
-from workflow_infrastructure.development_environment.host.manifest import (
+from workflow_infrastructure.development_environment.host.artifact import (
     DOCKER_SIGNING_KEY_FINGERPRINT,
     HOST_ARTIFACT_NAME_SET,
     HOST_ARTIFACT_RESOLVED_SOURCE_NAME_SET,
     HostArtifactIdentity,
     HostArtifactResolution,
     HostArtifactResolutionError,
-    HostArtifactResolver,
     host_artifact_manifest_decode,
     host_artifact_manifest_json_decode,
+)
+from workflow_infrastructure.development_environment.host.artifact import (
+    download as host_artifact_download,
+)
+from workflow_infrastructure.development_environment.host.artifact.download import (
+    HostArtifactDownloader,
+)
+from workflow_infrastructure.development_environment.host.artifact.git_ref import (
+    GitRefResolver,
+)
+from workflow_infrastructure.development_environment.host.artifact.provider.docker import (
+    DockerArtifactProvider,
+)
+from workflow_infrastructure.development_environment.host.artifact.provider.k3s import (
+    K3sArtifactProvider,
+)
+from workflow_infrastructure.development_environment.host.artifact.provider.python import (
+    PythonArtifactProvider,
+)
+from workflow_infrastructure.development_environment.host.artifact.verification import (
+    HostArtifactVerifier,
 )
 
 
@@ -63,7 +83,9 @@ class RunnerFake:
             right = tuple(int(value) for value in re.findall(r"\d+", command_list[4]))
             returncode = 0 if left > right else 1
             if check and returncode:
-                raise AssertionError("test runner received an unexpected checked comparison")
+                raise AssertionError(
+                    "test runner received an unexpected checked comparison"
+                )
             return subprocess.CompletedProcess(command_list, returncode, "", "")
         raise AssertionError(f"unexpected command: {command_list}")
 
@@ -98,13 +120,9 @@ def test_latest_tag_resolution_uses_numeric_stable_version(
     """Numeric stable selection must retain the commit peeled from an annotated tag."""
 
     runner = RunnerFake()
-    resolver = HostArtifactResolver(
-        cache_root_path=tmp_path,
-        runner=runner,
-        trust_root_path=tmp_path,
-    )
+    resolver = GitRefResolver(runner=runner)
 
-    assert resolver._latest_tag_resolve(
+    assert resolver.latest_tag_resolve(
         repository_url="https://example.invalid/repository.git",
         selector="2",
         tag_pattern=re.compile(r"refs/tags/(2\.(\d+)\.(\d+))$"),
@@ -113,7 +131,7 @@ def test_latest_tag_resolution_uses_numeric_stable_version(
         "refs/tags/2.10.0",
         "e" * 40,
     )
-    resolver._git_ref_unchanged_validate(
+    resolver.unchanged_validate(
         repository_url="https://example.invalid/repository.git",
         resolved_ref="refs/tags/2.10.0",
         expected_commit_sha="e" * 40,
@@ -174,17 +192,13 @@ def test_tag_source_identity_requires_exact_commit_object(
             raise AssertionError(f"unexpected command: {command_list}")
 
     runner = GitObjectRunnerFake()
-    resolver = HostArtifactResolver(
-        cache_root_path=tmp_path,
-        runner=runner,
-        trust_root_path=tmp_path,
-    )
+    resolver = GitRefResolver(runner=runner)
 
     with pytest.raises(
         HostArtifactResolutionError,
         match="does not resolve to expected commit",
     ):
-        resolver._git_ref_commit_validate(
+        resolver.commit_validate(
             repository_url="https://example.invalid/repository.git",
             resolved_ref="refs/tags/2.10.0",
             expected_commit_sha="e" * 40,
@@ -225,13 +239,9 @@ def test_tag_source_identity_accepts_exact_commit_object(tmp_path: Path) -> None
                 )
             return subprocess.CompletedProcess(command_list, 0, "", "")
 
-    resolver = HostArtifactResolver(
-        cache_root_path=tmp_path,
-        runner=GitObjectRunnerFake(),
-        trust_root_path=tmp_path,
-    )
+    resolver = GitRefResolver(runner=GitObjectRunnerFake())
 
-    resolver._git_ref_commit_validate(
+    resolver.commit_validate(
         repository_url="https://example.invalid/repository.git",
         resolved_ref="refs/tags/2.10.0",
         expected_commit_sha=expected_sha,
@@ -243,7 +253,9 @@ def test_manifest_round_trip_is_canonical_and_tamper_evident() -> None:
 
     resolution = HostArtifactResolution(
         architecture="arm64",
-        artifact_by_name_map={name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET},
+        artifact_by_name_map={
+            name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET
+        },
         docker_signing_key_fingerprint=DOCKER_SIGNING_KEY_FINGERPRINT,
         python_build="20260718",
     )
@@ -297,7 +309,9 @@ def test_manifest_decode_rejects_any_noncurrent_shape() -> None:
 
     resolution = HostArtifactResolution(
         architecture="arm64",
-        artifact_by_name_map={name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET},
+        artifact_by_name_map={
+            name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET
+        },
         docker_signing_key_fingerprint=DOCKER_SIGNING_KEY_FINGERPRINT,
         python_build="20260718",
     )
@@ -342,7 +356,9 @@ def test_manifest_decode_requires_exact_provenance_shape_by_artifact_owner(
 
     resolution = HostArtifactResolution(
         architecture="arm64",
-        artifact_by_name_map={name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET},
+        artifact_by_name_map={
+            name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET
+        },
         docker_signing_key_fingerprint=DOCKER_SIGNING_KEY_FINGERPRINT,
         python_build="20260718",
     )
@@ -408,7 +424,7 @@ def test_python_selector_chooses_latest_stable_patch_for_target_architecture() -
         },
     }
 
-    payload = HostArtifactResolver._python_download_payload_get(
+    payload = PythonArtifactProvider.download_payload_get(
         architecture="aarch64",
         metadata=metadata,
     )
@@ -439,13 +455,16 @@ def test_k3s_release_requires_exact_repository_owned_trust(
         ),
         encoding="utf-8",
     )
-    resolver = HostArtifactResolver(
-        cache_root_path=tmp_path / "cache",
-        runner=RunnerFake(),
+    downloader = HostArtifactDownloader(cache_root_path=tmp_path / "cache")
+    verifier = HostArtifactVerifier(downloader=downloader, runner=RunnerFake())
+    provider = K3sArtifactProvider(
+        downloader=downloader,
+        git_ref=GitRefResolver(runner=RunnerFake()),
         trust_root_path=tmp_path,
+        verifier=verifier,
     )
 
-    artifact_sha256_by_name_map, trust_sha256 = resolver._k3s_trust_identity_get(
+    artifact_sha256_by_name_map, trust_sha256 = provider.trust_identity_get(
         binary_name="k3s-arm64",
         checksum_name="sha256sum-arm64.txt",
         commit_sha="c" * 40,
@@ -465,7 +484,7 @@ def test_k3s_release_requires_exact_repository_owned_trust(
         HostArtifactResolutionError,
         match="not accepted",
     ):
-        resolver._k3s_trust_identity_get(
+        provider.trust_identity_get(
             binary_name="k3s-arm64",
             checksum_name="sha256sum-arm64.txt",
             commit_sha="d" * 40,
@@ -479,10 +498,12 @@ def test_docker_signed_index_selects_exact_latest_packages(
 ) -> None:
     """Signed metadata owns exact Docker package URL, version, and SHA selection."""
 
-    resolver = HostArtifactResolver(
-        cache_root_path=tmp_path,
-        runner=RunnerFake(),
-        trust_root_path=tmp_path,
+    downloader = HostArtifactDownloader(cache_root_path=tmp_path)
+    runner = RunnerFake()
+    provider = DockerArtifactProvider(
+        downloader=downloader,
+        runner=runner,
+        verifier=HostArtifactVerifier(downloader=downloader, runner=runner),
     )
     index_text = (
         "-----BEGIN PGP SIGNED MESSAGE-----\n"
@@ -491,14 +512,14 @@ def test_docker_signed_index_selects_exact_latest_packages(
         f" {'a' * 64} 100 stable/binary-arm64/Packages.gz\n"
         f" {'b' * 64} 200 stable/binary-amd64/Packages.gz\n"
     )
-    relative_path, sha256 = resolver._docker_packages_index_identity_get(
+    relative_path, sha256 = provider.packages_index_identity_get(
         architecture="arm64",
         inrelease_text=index_text,
     )
     assert relative_path == "stable/binary-arm64/Packages.gz"
     assert sha256 == "a" * 64
 
-    package_payload_list = resolver._debian_package_payload_list_get(
+    package_payload_list = provider.debian_package_payload_list_get(
         "\n\n".join(
             [
                 (
@@ -518,7 +539,7 @@ def test_docker_signed_index_selects_exact_latest_packages(
             ]
         )
     )
-    selected = resolver._latest_debian_package_get(
+    selected = provider.latest_debian_package_get(
         architecture="arm64",
         package_name="docker-ce",
         package_payload_list=package_payload_list,
@@ -549,8 +570,10 @@ def test_docker_trust_anchor_excludes_additional_primary_keys() -> None:
         ]
     )
 
-    assert HostArtifactResolver._primary_key_fingerprint_list_get(one_primary_with_subkey) == [trusted_primary]
-    assert HostArtifactResolver._primary_key_fingerprint_list_get(two_primary_keys) == [
+    assert HostArtifactVerifier.primary_key_fingerprint_list_get(
+        one_primary_with_subkey
+    ) == [trusted_primary]
+    assert HostArtifactVerifier.primary_key_fingerprint_list_get(two_primary_keys) == [
         trusted_primary,
         additional_primary,
     ]
@@ -559,17 +582,13 @@ def test_docker_trust_anchor_excludes_additional_primary_keys() -> None:
 def test_artifact_url_rejects_shell_control_characters(tmp_path: Path) -> None:
     """Release metadata cannot inject commands into CloudFormation UserData."""
 
-    resolver = HostArtifactResolver(
-        cache_root_path=tmp_path,
-        runner=RunnerFake(),
-        trust_root_path=tmp_path,
-    )
+    downloader = HostArtifactDownloader(cache_root_path=tmp_path)
 
     with pytest.raises(
         HostArtifactResolutionError,
         match="shell-safe absolute HTTPS URL",
     ):
-        resolver._artifact_resolve(
+        downloader.identity_resolve(
             name="malicious",
             selector="stable",
             version="1.0.0",
@@ -608,20 +627,16 @@ def test_artifact_download_verifies_stream_and_reuses_exact_cache(
         return ResponseFake(payload)
 
     monkeypatch.setattr("urllib.request.urlopen", urlopen)
-    resolver = HostArtifactResolver(
-        cache_root_path=tmp_path,
-        runner=RunnerFake(),
-        trust_root_path=tmp_path,
-    )
+    downloader = HostArtifactDownloader(cache_root_path=tmp_path)
     artifact_path = tmp_path / "artifact"
     expected_sha256 = hashlib.sha256(payload).hexdigest()
 
-    first = resolver._artifact_download(
+    first = downloader.download(
         artifact_path=artifact_path,
         expected_sha256=expected_sha256,
         url="https://example.invalid/artifact",
     )
-    second = resolver._artifact_download(
+    second = downloader.download(
         artifact_path=artifact_path,
         expected_sha256=expected_sha256,
         url="https://example.invalid/artifact",
@@ -658,20 +673,16 @@ def test_artifact_download_refreshes_one_moving_metadata_url(
         return ResponseFake(payload_list.pop(0))
 
     monkeypatch.setattr("urllib.request.urlopen", urlopen)
-    resolver = HostArtifactResolver(
-        cache_root_path=tmp_path,
-        runner=RunnerFake(),
-        trust_root_path=tmp_path,
-    )
+    downloader = HostArtifactDownloader(cache_root_path=tmp_path)
     artifact_path = tmp_path / "moving-metadata"
 
-    first = resolver._artifact_download(
+    first = downloader.download(
         allow_cache=False,
         artifact_path=artifact_path,
         expected_sha256="",
         url="https://example.invalid/InRelease",
     )
-    second = resolver._artifact_download(
+    second = downloader.download(
         allow_cache=False,
         artifact_path=artifact_path,
         expected_sha256="",
@@ -702,22 +713,19 @@ def test_artifact_download_rejects_oversized_response_before_cache_publication(
             return "https://cdn.example.invalid/oversized"
 
     monkeypatch.setattr(
-        "workflow_infrastructure.development_environment.host.manifest._MAX_HOST_ARTIFACT_SIZE_BYTES",
+        host_artifact_download,
+        "MAX_HOST_ARTIFACT_SIZE_BYTES",
         8,
     )
     monkeypatch.setattr(
         "urllib.request.urlopen",
         lambda request, timeout: ResponseFake(payload),
     )
-    resolver = HostArtifactResolver(
-        cache_root_path=tmp_path,
-        runner=RunnerFake(),
-        trust_root_path=tmp_path,
-    )
+    downloader = HostArtifactDownloader(cache_root_path=tmp_path)
     artifact_path = tmp_path / "oversized"
 
     with pytest.raises(HostArtifactResolutionError, match="download size limit"):
-        resolver._artifact_download(
+        downloader.download(
             artifact_path=artifact_path,
             expected_sha256="",
             url="https://example.invalid/oversized",
@@ -731,7 +739,9 @@ def test_cloudformation_parameters_use_single_canonical_bootstrap_manifest() -> 
 
     resolution = HostArtifactResolution(
         architecture="arm64",
-        artifact_by_name_map={name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET},
+        artifact_by_name_map={
+            name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET
+        },
         docker_signing_key_fingerprint=DOCKER_SIGNING_KEY_FINGERPRINT,
         python_build="20260718",
     )

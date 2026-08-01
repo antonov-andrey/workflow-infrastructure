@@ -10,6 +10,8 @@ Production account ещё не назначен, production resources в рам�
 
 Production разворачивается в отдельном Organizations member account. Deployment principal, runtime workload identities, tenant roles и human operator roles разделены. Static access keys и shared administrator credentials workloads запрещены.
 
+До environment deployment production account получает отдельный account-foundation owner общих account-level guards по `design/environment-model.md`. Production environment stacks только проверяют foundation state и не создают competing S3/Lake Formation/Session Manager owners. Account-local AWS names состоят из resource role и environment identity без project prefix; это правило не переименовывает Kubernetes/Product domain objects.
+
 Изменение production требует отдельного явного разрешения пользователя, проверки caller identity/account/region и предварительного inspection exact change set. Development-account standing authority никогда не переносится автоматически.
 
 ## Compute И Kubernetes

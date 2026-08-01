@@ -229,16 +229,24 @@ class DevelopmentProductDeploymentManager:
         """
 
         if should_reset_product_state and not user_email:
-            raise DevelopmentEnvironmentError("Destructive Product reset requires one preserved ZITADEL user")
+            raise DevelopmentEnvironmentError(
+                "Destructive Product reset requires one preserved ZITADEL user"
+            )
         if not should_reset_product_state and (user_email or expected_role_key_list):
-            raise DevelopmentEnvironmentError("Preserved Product identity inputs require destructive Product reset")
-        self._precondition_validate(should_reset_product_state=should_reset_product_state)
+            raise DevelopmentEnvironmentError(
+                "Preserved Product identity inputs require destructive Product reset"
+            )
+        self._precondition_validate(
+            should_reset_product_state=should_reset_product_state
+        )
         release_name = self._clock.now().strftime("%Y%m%d%H%M%S%f")
         source_manifest_by_repository_name_map: dict[str, dict[str, object]] = {}
         with self._transport.ssh_control_session() as ssh_control_path:
             self._source_publish(
                 release_name=release_name,
-                source_manifest_by_repository_name_map=(source_manifest_by_repository_name_map),
+                source_manifest_by_repository_name_map=(
+                    source_manifest_by_repository_name_map
+                ),
                 ssh_control_path=ssh_control_path,
                 workflow_container_contract_commit=(workflow_container_contract_commit),
             )
@@ -246,7 +254,9 @@ class DevelopmentProductDeploymentManager:
             self._release_manifest_write(
                 release_name=release_name,
                 release_root_path=release_root_path,
-                source_manifest_by_repository_name_map=(source_manifest_by_repository_name_map),
+                source_manifest_by_repository_name_map=(
+                    source_manifest_by_repository_name_map
+                ),
                 ssh_control_path=ssh_control_path,
             )
             self._host_prepare(
@@ -303,8 +313,13 @@ class DevelopmentProductDeploymentManager:
         self._stack.drift_validate(self._identity.compute_stack_name)
         self._compute.online_wait()
         self._compute.launch_template_version_validate(require_latest=True)
-        if self._product_recovery.status_get() == "pending" and not should_reset_product_state:
-            raise DevelopmentEnvironmentError("Pending retained Product recovery must complete before a new deploy")
+        if (
+            self._product_recovery.status_get() == "pending"
+            and not should_reset_product_state
+        ):
+            raise DevelopmentEnvironmentError(
+                "Pending retained Product recovery must complete before a new deploy"
+            )
 
     def _source_publish(
         self,
@@ -325,12 +340,14 @@ class DevelopmentProductDeploymentManager:
                 if repository_name == "workflow-infrastructure"
                 else self._workspace_root_path / repository_name
             )
-            source_manifest_by_repository_name_map[repository_name] = self._source_publisher.archive_publish(
-                repository_name=repository_name,
-                repository_path=repository_path,
-                release_name=release_name,
-                remote_release_root_path=self._identity.host_release_root_path,
-                ssh_control_path=ssh_control_path,
+            source_manifest_by_repository_name_map[repository_name] = (
+                self._source_publisher.archive_publish(
+                    repository_name=repository_name,
+                    repository_path=repository_path,
+                    release_name=release_name,
+                    remote_release_root_path=self._identity.host_release_root_path,
+                    ssh_control_path=ssh_control_path,
+                )
             )
         source_manifest_by_repository_name_map["workflow-container-contract"] = (
             self._source_publisher.moving_archive_publish(
@@ -459,6 +476,11 @@ class DevelopmentProductDeploymentManager:
             ],
             ssh_control_path=ssh_control_path,
         )
+        self._product_release_root_complete(
+            release_name=release_name,
+            release_root_path=release_root_path,
+            ssh_control_path=ssh_control_path,
+        )
         self._transport.ssh_run(
             [
                 "sudo",
@@ -477,6 +499,38 @@ class DevelopmentProductDeploymentManager:
                 "-sfn",
                 str(release_root_path),
                 str(self._identity.host_control_current_source_path),
+            ],
+            ssh_control_path=ssh_control_path,
+        )
+
+    def _product_release_root_complete(
+        self,
+        *,
+        release_name: str,
+        release_root_path: Path,
+        ssh_control_path: Path,
+    ) -> None:
+        """Release Product registry admission after exact retained-pointer proof."""
+
+        self._transport.ssh_run(
+            [
+                "sudo",
+                "env",
+                PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
+                "python3.14",
+                "-B",
+                str(
+                    release_root_path
+                    / "sources"
+                    / "workflow-control-center"
+                    / "tool"
+                    / "development_kubernetes_manage.py"
+                ),
+                "product-release-root-complete",
+                "--release",
+                release_name,
+                "--environment-name",
+                self._identity.environment_name,
             ],
             ssh_control_path=ssh_control_path,
         )

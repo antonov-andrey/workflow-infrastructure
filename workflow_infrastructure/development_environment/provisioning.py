@@ -51,25 +51,33 @@ class EnvironmentIdentityProtocol(Protocol):
     compute_stack_name: str
     data_plane_stack_name: str
     environment_name: str
+    git_worktree: str
     is_primary: bool
-
-
-class HostArtifactResolutionProtocol(Protocol):
-    """Resolved immutable host artifact set."""
-
-    def cloudformation_parameter_by_name_map_get(self) -> dict[str, str]:
-        """Return exact CloudFormation artifact parameters."""
+    local_http_port: int
 
 
 class HostArtifactProtocol(Protocol):
     """Immutable host artifact resolution boundary."""
 
-    def resolution_get(
+    def cloudformation_parameter_by_name_map_get(
         self,
         *,
+        bucket_name: str,
         compute_stack_exists: bool,
-    ) -> HostArtifactResolutionProtocol:
-        """Resolve or reuse the exact host artifact set."""
+    ) -> dict[str, str]:
+        """Publish exact bootstrap objects and return compute parameters."""
+
+
+class FoundationProtocol(Protocol):
+    """Single account-global foundation owner."""
+
+    def ensure(
+        self,
+        *,
+        primary_platform_role_arn: str | None = None,
+        primary_retained_volume_arn: str | None = None,
+    ) -> None:
+        """Apply the primary owner or validate it for a task environment."""
 
 
 class ReplacementProtocol(Protocol):
@@ -171,11 +179,14 @@ class DevelopmentProvisioningManager:
         self,
         *,
         account: AccountVerifierProtocol,
+        aws_account_id: str,
+        aws_region: str,
         compute: ComputeProtocol,
         compute_stable_identity_logical_id_set: Collection[str],
         compute_template_path: Path,
         cost_reviewer: CostReviewerProtocol,
         data_plane_template_path: Path,
+        foundation: FoundationProtocol,
         host_artifact: HostArtifactProtocol,
         identity: EnvironmentIdentityProtocol,
         project_root_path: Path,
@@ -187,11 +198,16 @@ class DevelopmentProvisioningManager:
         """Bind provisioning to one exact environment and two stack templates."""
 
         self._account = account
+        self._aws_account_id = aws_account_id
+        self._aws_region = aws_region
         self._compute = compute
-        self._compute_stable_identity_logical_id_set = frozenset(compute_stable_identity_logical_id_set)
+        self._compute_stable_identity_logical_id_set = frozenset(
+            compute_stable_identity_logical_id_set
+        )
         self._compute_template_path = compute_template_path
         self._cost_reviewer = cost_reviewer
         self._data_plane_template_path = data_plane_template_path
+        self._foundation = foundation
         self._host_artifact = host_artifact
         self._identity = identity
         self._project_root_path = project_root_path
@@ -204,11 +220,25 @@ class DevelopmentProvisioningManager:
         """Validate, plan, apply, and verify the data-plane and compute stacks."""
 
         self._account.local_operator_context_validate()
-        if not self._identity.is_primary:
-            self._account.account_foundation_validate()
-        self._source_publisher.validate_repository(self._project_root_path, "workflow-infrastructure")
+        self._foundation.ensure()
+        self._source_publisher.validate_repository(
+            self._project_root_path, "workflow-infrastructure"
+        )
         self._cost_reviewer.record()
-        self._stack.drift_validate(self._identity.data_plane_stack_name)
+        data_stack_exists = bool(
+            self._stack.payload_get(
+                self._identity.data_plane_stack_name,
+                is_required=False,
+            )
+        )
+        if data_stack_exists:
+            self._stack.drift_validate(self._identity.data_plane_stack_name)
+            self._stack_environment_identity_validate(
+                self._stack.parameter_by_name_map_get(
+                    self._identity.data_plane_stack_name
+                ),
+                owner="Data-plane",
+            )
         compute_stack_exists = bool(
             self._stack.payload_get(
                 self._identity.compute_stack_name,
@@ -219,16 +249,24 @@ class DevelopmentProvisioningManager:
         failed_bootstrap_replacement_is_pending = False
         if compute_stack_exists:
             self._stack.drift_validate(self._identity.compute_stack_name)
-            current_compute_parameter_by_name_map = self._stack.parameter_by_name_map_get(
-                self._identity.compute_stack_name
+            current_compute_parameter_by_name_map = (
+                self._stack.parameter_by_name_map_get(self._identity.compute_stack_name)
             )
-            self.current_compute_stack_contract_validate(current_compute_parameter_by_name_map)
+            self.current_compute_stack_contract_validate(
+                current_compute_parameter_by_name_map
+            )
             replacement_recovery_is_pending = (
-                current_compute_parameter_by_name_map.get("ReplacementGuardScheduleState") == "ENABLED"
+                current_compute_parameter_by_name_map.get(
+                    "ReplacementGuardScheduleState"
+                )
+                == "ENABLED"
             )
-        host_artifact_resolution = self._host_artifact.resolution_get(compute_stack_exists=compute_stack_exists)
-        data_resource_id_by_logical_name_map = self._stack.resource_id_by_logical_name_map_get(
-            self._identity.data_plane_stack_name
+        data_resource_id_by_logical_name_map = (
+            self._stack.resource_id_by_logical_name_map_get(
+                self._identity.data_plane_stack_name
+            )
+            if data_stack_exists
+            else {}
         )
         self._stack.template_validate(self._data_plane_template_path)
         self._stack.template_validate(self._compute_template_path)
@@ -237,44 +275,85 @@ class DevelopmentProvisioningManager:
             template_path=self._data_plane_template_path,
             parameter_by_name_map={
                 "EnvironmentName": self._identity.environment_name,
-                "UiOrigin": "http://localhost:8080",
+                "GitWorktree": self._identity.git_worktree,
+                "UiOrigin": f"http://localhost:{self._identity.local_http_port}",
             },
             must_preserve_resource=True,
         )
         self._account.account_foundation_validate()
         if data_resource_id_by_logical_name_map:
-            current_resource_id_by_logical_name_map = self._stack.resource_id_by_logical_name_map_get(
-                self._identity.data_plane_stack_name
+            current_resource_id_by_logical_name_map = (
+                self._stack.resource_id_by_logical_name_map_get(
+                    self._identity.data_plane_stack_name
+                )
             )
             self._stack.existing_resource_identity_validate(
-                current_resource_id_by_logical_name_map=(current_resource_id_by_logical_name_map),
-                previous_resource_id_by_logical_name_map=(data_resource_id_by_logical_name_map),
+                current_resource_id_by_logical_name_map=(
+                    current_resource_id_by_logical_name_map
+                ),
+                previous_resource_id_by_logical_name_map=(
+                    data_resource_id_by_logical_name_map
+                ),
             )
-        platform_role_arn = self._stack.output_by_name_map_get(self._identity.data_plane_stack_name)["PlatformRoleArn"]
+        platform_role_arn = self._stack.output_by_name_map_get(
+            self._identity.data_plane_stack_name
+        )["PlatformRoleArn"]
+        observability_bucket_name = self._stack.output_by_name_map_get(
+            self._identity.data_plane_stack_name
+        )["ObservabilityBucketName"]
+        host_artifact_parameter_by_name_map = (
+            self._host_artifact.cloudformation_parameter_by_name_map_get(
+                bucket_name=observability_bucket_name,
+                compute_stack_exists=compute_stack_exists,
+            )
+        )
+        if self._identity.is_primary:
+            self._foundation.ensure(primary_platform_role_arn=platform_role_arn)
         platform_role_name = platform_role_arn.rsplit("/", maxsplit=1)[-1]
         if not platform_role_name:
-            raise DevelopmentEnvironmentError("Data-plane platform role output is malformed")
+            raise DevelopmentEnvironmentError(
+                "Data-plane platform role output is malformed"
+            )
         if replacement_recovery_is_pending:
-            failed_bootstrap_replacement_is_pending = self._compute.failed_bootstrap_replacement_is_proven()
+            failed_bootstrap_replacement_is_pending = (
+                self._compute.failed_bootstrap_replacement_is_proven()
+            )
             if not failed_bootstrap_replacement_is_pending:
                 self._replacement.recovery_finish()
         compute_parameter_by_name_map: dict[str, str] = {
             "EnvironmentName": self._identity.environment_name,
+            "GitWorktree": self._identity.git_worktree,
             "PlatformRoleName": platform_role_name,
-            **host_artifact_resolution.cloudformation_parameter_by_name_map_get(),
+            **host_artifact_parameter_by_name_map,
         }
         if compute_stack_exists:
-            compute_parameter_by_name_map["InstanceLaunchTemplateVersion"] = self._compute.launch_template_version_get()
+            compute_parameter_by_name_map["InstanceLaunchTemplateVersion"] = (
+                self._compute.launch_template_version_get()
+            )
         else:
-            compute_parameter_by_name_map.update(self._replacement.guard_parameter_by_name_map_get())
+            compute_parameter_by_name_map.update(
+                self._replacement.guard_parameter_by_name_map_get()
+            )
         self._stack.apply(
             stack_name=self._identity.compute_stack_name,
             template_path=self._compute_template_path,
             parameter_by_name_map=compute_parameter_by_name_map,
             must_preserve_resource=False,
-            protected_identity_logical_id_set=(self._compute_stable_identity_logical_id_set),
+            protected_identity_logical_id_set=(
+                self._compute_stable_identity_logical_id_set
+            ),
         )
         self._retained_volume.attachment_validate()
+        if self._identity.is_primary:
+            retained_volume_id = self._stack.output_by_name_map_get(
+                self._identity.compute_stack_name
+            )["RetainedVolumeId"]
+            self._foundation.ensure(
+                primary_platform_role_arn=platform_role_arn,
+                primary_retained_volume_arn=(
+                    f"arn:aws:ec2:{self._aws_region}:{self._aws_account_id}:volume/{retained_volume_id}"
+                ),
+            )
         self._compute.launch_template_version_validate(require_latest=False)
         if self._compute.launch_template_update_is_pending():
             self._replacement.pending_launch_template_apply(
@@ -282,7 +361,8 @@ class DevelopmentProvisioningManager:
             )
         elif failed_bootstrap_replacement_is_pending:
             raise DevelopmentEnvironmentError(
-                "Failed bootstrap host has no newer launch-template version " "available for replacement"
+                "Failed bootstrap host has no newer launch-template version "
+                "available for replacement"
             )
         else:
             self._replacement.steady_state_finish()
@@ -300,8 +380,7 @@ class DevelopmentProvisioningManager:
         manifest_sha256 = parameter_by_name_map.get("HostArtifactManifestSha256")
         encoded_manifest = parameter_by_name_map.get("HostArtifactManifestGzipBase64")
         if (
-            parameter_by_name_map.get("EnvironmentName") != self._identity.environment_name
-            or not isinstance(manifest_sha256, str)
+            not isinstance(manifest_sha256, str)
             or re.fullmatch(r"[0-9a-f]{64}", manifest_sha256) is None
             or not isinstance(encoded_manifest, str)
             or not encoded_manifest
@@ -309,4 +388,25 @@ class DevelopmentProvisioningManager:
             raise DevelopmentEnvironmentError(
                 "Compute stack does not implement the current host-artifact "
                 "contract; delete and recreate the pre-production compute stack"
+            )
+        self._stack_environment_identity_validate(
+            parameter_by_name_map,
+            owner="Compute",
+        )
+
+    def _stack_environment_identity_validate(
+        self,
+        parameter_by_name_map: Mapping[str, str],
+        *,
+        owner: str,
+    ) -> None:
+        """Reject a short-name collision before changing an existing stack."""
+
+        if (
+            parameter_by_name_map.get("EnvironmentName")
+            != self._identity.environment_name
+            or parameter_by_name_map.get("GitWorktree") != self._identity.git_worktree
+        ):
+            raise DevelopmentEnvironmentError(
+                f"{owner} stack is bound to another full task common prefix"
             )

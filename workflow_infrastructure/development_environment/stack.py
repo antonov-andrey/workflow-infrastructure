@@ -60,6 +60,7 @@ class EnvironmentIdentityProtocol(Protocol):
 
     data_plane_stack_name: str
     environment_name: str
+    git_worktree: str
 
 
 class CommandRunnerProtocol(Protocol):
@@ -146,14 +147,17 @@ class DevelopmentStackManager:
             "--capabilities",
             "CAPABILITY_NAMED_IAM",
             "--tags",
-            "Key=Project,Value=workflow-control-center",
-            "Key=Environment,Value=development",
+            "Key=EnvironmentClass,Value=development",
             f"Key=EnvironmentName,Value={self._identity.environment_name}",
             "Key=ManagedBy,Value=CloudFormation",
         ]
+        if self._identity.git_worktree:
+            command_list.append(f"Key=git-worktree,Value={self._identity.git_worktree}")
         if stack_payload:
             current_parameter_by_name_map = self.parameter_by_name_map_get(stack_name)
-            template_parameter_name_set = self._template_parameter_name_set_get(template_argument_list)
+            template_parameter_name_set = self._template_parameter_name_set_get(
+                template_argument_list
+            )
             current_parameter_by_name_map = {
                 parameter_name: parameter_value
                 for parameter_name, parameter_value in current_parameter_by_name_map.items()
@@ -163,8 +167,13 @@ class DevelopmentStackManager:
             parameter_by_name_map = current_parameter_by_name_map
         if parameter_by_name_map:
             command_list.append("--parameters")
-            for parameter_name, parameter_value in sorted(parameter_by_name_map.items()):
-                command_list.append(f"ParameterKey={parameter_name}," f"ParameterValue={parameter_value}")
+            for parameter_name, parameter_value in sorted(
+                parameter_by_name_map.items()
+            ):
+                command_list.append(
+                    f"ParameterKey={parameter_name},"
+                    f"ParameterValue={parameter_value}"
+                )
         self._aws.run(command_list)
         wait_result = self._aws.run(
             [
@@ -194,15 +203,25 @@ class DevelopmentStackManager:
                 self._change_set_delete(stack_name, change_set_name)
                 print(f"OK: stack {stack_name} has no changes")
                 return
-            raise DevelopmentEnvironmentError(f"Change set {stack_name}/{change_set_name} failed: {reason}")
+            raise DevelopmentEnvironmentError(
+                f"Change set {stack_name}/{change_set_name} failed: {reason}"
+            )
         change_list = change_set_payload.get("Changes", [])
         if not isinstance(change_list, list):
-            raise DevelopmentEnvironmentError(f"Change set {stack_name}/{change_set_name} is malformed")
+            raise DevelopmentEnvironmentError(
+                f"Change set {stack_name}/{change_set_name} is malformed"
+            )
         change_summary_list: list[dict[str, object]] = []
         for change_payload in change_list:
-            resource_change = change_payload.get("ResourceChange") if isinstance(change_payload, dict) else None
+            resource_change = (
+                change_payload.get("ResourceChange")
+                if isinstance(change_payload, dict)
+                else None
+            )
             if not isinstance(resource_change, dict):
-                raise DevelopmentEnvironmentError(f"Change set {stack_name}/{change_set_name} is malformed")
+                raise DevelopmentEnvironmentError(
+                    f"Change set {stack_name}/{change_set_name} is malformed"
+                )
             change_summary_list.append(
                 {
                     "action": resource_change.get("Action"),
@@ -226,11 +245,14 @@ class DevelopmentStackManager:
             )
         )
         if must_preserve_resource:
-            violation_logical_id_list = self._stable_data_change_violation_list_get(change_summary_list)
+            violation_logical_id_list = self._stable_data_change_violation_list_get(
+                change_summary_list
+            )
             if violation_logical_id_list:
                 self._change_set_delete(stack_name, change_set_name)
                 raise DevelopmentEnvironmentError(
-                    "Stable data-plane change would remove or replace " + ", ".join(violation_logical_id_list)
+                    "Stable data-plane change would remove or replace "
+                    + ", ".join(violation_logical_id_list)
                 )
         protected_violation_list = self._protected_identity_change_violation_list_get(
             change_summary_list=change_summary_list,
@@ -239,7 +261,8 @@ class DevelopmentStackManager:
         if protected_violation_list:
             self._change_set_delete(stack_name, change_set_name)
             raise DevelopmentEnvironmentError(
-                "Ordinary compute apply would replace a protected identity: " + ", ".join(protected_violation_list)
+                "Ordinary compute apply would replace a protected identity: "
+                + ", ".join(protected_violation_list)
             )
         self._aws.run(
             [
@@ -251,7 +274,11 @@ class DevelopmentStackManager:
                 change_set_name,
             ]
         )
-        wait_name = "stack-update-complete" if change_set_type == "UPDATE" else "stack-create-complete"
+        wait_name = (
+            "stack-update-complete"
+            if change_set_type == "UPDATE"
+            else "stack-create-complete"
+        )
         self._aws.run(
             [
                 "cloudformation",
@@ -268,16 +295,22 @@ class DevelopmentStackManager:
             "CREATE_COMPLETE",
             "UPDATE_COMPLETE",
         }:
-            raise DevelopmentEnvironmentError(f"Stack {stack_name} did not reach a complete state")
+            raise DevelopmentEnvironmentError(
+                f"Stack {stack_name} did not reach a complete state"
+            )
 
     def drift_validate(self, stack_name: str) -> None:
         """Prove one stable stack is available for recovery and in sync."""
 
         stack_payload = self.payload_get(stack_name, is_required=True)
         if stack_payload.get("StackStatus") not in STACK_DRIFT_CHECKABLE_STATUS_SET:
-            raise DevelopmentEnvironmentError(f"Stack {stack_name} is not in a stable operational state")
+            raise DevelopmentEnvironmentError(
+                f"Stack {stack_name} is not in a stable operational state"
+            )
         if not self.output_by_name_map_get(stack_name):
-            raise DevelopmentEnvironmentError(f"Stack {stack_name} has no validated outputs")
+            raise DevelopmentEnvironmentError(
+                f"Stack {stack_name} has no validated outputs"
+            )
         payload = self._aws.json_get(
             [
                 "cloudformation",
@@ -288,7 +321,9 @@ class DevelopmentStackManager:
         )
         drift_detection_id = payload.get("StackDriftDetectionId")
         if not isinstance(drift_detection_id, str):
-            raise DevelopmentEnvironmentError(f"Stack {stack_name} drift detection ID is missing")
+            raise DevelopmentEnvironmentError(
+                f"Stack {stack_name} drift detection ID is missing"
+            )
         t_deadline = self._clock.monotonic() + STACK_TIMEOUT_SECONDS
         while self._clock.monotonic() < t_deadline:
             status_payload = self._aws.json_get(
@@ -302,13 +337,19 @@ class DevelopmentStackManager:
             detection_status = status_payload.get("DetectionStatus")
             if detection_status == "DETECTION_COMPLETE":
                 if status_payload.get("StackDriftStatus") != "IN_SYNC":
-                    raise DevelopmentEnvironmentError(f"Stack {stack_name} is not IN_SYNC")
+                    raise DevelopmentEnvironmentError(
+                        f"Stack {stack_name} is not IN_SYNC"
+                    )
                 print(f"OK: stack {stack_name} drift is IN_SYNC")
                 return
             if detection_status == "DETECTION_FAILED":
-                raise DevelopmentEnvironmentError(f"Stack {stack_name} drift detection failed")
+                raise DevelopmentEnvironmentError(
+                    f"Stack {stack_name} drift detection failed"
+                )
             self._clock.sleep(STACK_POLL_INTERVAL_SECONDS)
-        raise DevelopmentEnvironmentError(f"Stack {stack_name} drift detection timed out")
+        raise DevelopmentEnvironmentError(
+            f"Stack {stack_name} drift detection timed out"
+        )
 
     def output_by_name_map_get(self, stack_name: str) -> dict[str, str]:
         """Return validated stack outputs keyed by logical output name."""
@@ -316,18 +357,24 @@ class DevelopmentStackManager:
         stack_payload = self.payload_get(stack_name, is_required=True)
         output_list = stack_payload.get("Outputs", [])
         if not isinstance(output_list, list):
-            raise DevelopmentEnvironmentError(f"Stack {stack_name} Outputs are malformed")
+            raise DevelopmentEnvironmentError(
+                f"Stack {stack_name} Outputs are malformed"
+            )
         output_by_name_map: dict[str, str] = {}
         for output_payload in output_list:
             if not isinstance(output_payload, dict):
-                raise DevelopmentEnvironmentError(f"Stack {stack_name} Outputs are malformed")
+                raise DevelopmentEnvironmentError(
+                    f"Stack {stack_name} Outputs are malformed"
+                )
             output_name = output_payload.get("OutputKey")
             output_value = output_payload.get("OutputValue")
             if not isinstance(output_name, str) or not isinstance(
                 output_value,
                 str,
             ):
-                raise DevelopmentEnvironmentError(f"Stack {stack_name} output is malformed")
+                raise DevelopmentEnvironmentError(
+                    f"Stack {stack_name} output is malformed"
+                )
             output_by_name_map[output_name] = output_value
         return output_by_name_map
 
@@ -337,18 +384,24 @@ class DevelopmentStackManager:
         stack_payload = self.payload_get(stack_name, is_required=True)
         parameter_list = stack_payload.get("Parameters", [])
         if not isinstance(parameter_list, list):
-            raise DevelopmentEnvironmentError(f"Stack {stack_name} Parameters are malformed")
+            raise DevelopmentEnvironmentError(
+                f"Stack {stack_name} Parameters are malformed"
+            )
         parameter_by_name_map: dict[str, str] = {}
         for parameter_payload in parameter_list:
             if not isinstance(parameter_payload, dict):
-                raise DevelopmentEnvironmentError(f"Stack {stack_name} Parameters are malformed")
+                raise DevelopmentEnvironmentError(
+                    f"Stack {stack_name} Parameters are malformed"
+                )
             parameter_name = parameter_payload.get("ParameterKey")
             parameter_value = parameter_payload.get("ParameterValue")
             if not isinstance(parameter_name, str) or not isinstance(
                 parameter_value,
                 str,
             ):
-                raise DevelopmentEnvironmentError(f"Stack {stack_name} parameter is malformed")
+                raise DevelopmentEnvironmentError(
+                    f"Stack {stack_name} parameter is malformed"
+                )
             parameter_by_name_map[parameter_name] = parameter_value
         return parameter_by_name_map
 
@@ -375,15 +428,24 @@ class DevelopmentStackManager:
             if not is_required and "does not exist" in result.stderr:
                 return {}
             raise DevelopmentEnvironmentError(
-                f"Unable to describe stack {stack_name}: " f"{(result.stderr or result.stdout).strip()}"
+                f"Unable to describe stack {stack_name}: "
+                f"{(result.stderr or result.stdout).strip()}"
             )
         try:
             payload = json.loads(result.stdout)
         except json.JSONDecodeError as error:
-            raise DevelopmentEnvironmentError(f"Stack {stack_name} response is invalid") from error
+            raise DevelopmentEnvironmentError(
+                f"Stack {stack_name} response is invalid"
+            ) from error
         stack_list = payload.get("Stacks", []) if isinstance(payload, dict) else []
-        if not isinstance(stack_list, list) or len(stack_list) != 1 or not isinstance(stack_list[0], dict):
-            raise DevelopmentEnvironmentError(f"Stack {stack_name} response is malformed")
+        if (
+            not isinstance(stack_list, list)
+            or len(stack_list) != 1
+            or not isinstance(stack_list[0], dict)
+        ):
+            raise DevelopmentEnvironmentError(
+                f"Stack {stack_name} response is malformed"
+            )
         return stack_list[0]
 
     def resource_id_by_logical_name_map_get(
@@ -404,18 +466,24 @@ class DevelopmentStackManager:
         )
         resource_list = payload.get("StackResourceSummaries", [])
         if not isinstance(resource_list, list):
-            raise DevelopmentEnvironmentError(f"Stack {stack_name} resources are malformed")
+            raise DevelopmentEnvironmentError(
+                f"Stack {stack_name} resources are malformed"
+            )
         resource_id_by_logical_name_map: dict[str, str] = {}
         for resource_payload in resource_list:
             if not isinstance(resource_payload, dict):
-                raise DevelopmentEnvironmentError(f"Stack {stack_name} resource is malformed")
+                raise DevelopmentEnvironmentError(
+                    f"Stack {stack_name} resource is malformed"
+                )
             logical_name = resource_payload.get("LogicalResourceId")
             resource_id = resource_payload.get("PhysicalResourceId")
             if not isinstance(logical_name, str) or not isinstance(
                 resource_id,
                 str,
             ):
-                raise DevelopmentEnvironmentError(f"Stack {stack_name} resource identity is malformed")
+                raise DevelopmentEnvironmentError(
+                    f"Stack {stack_name} resource identity is malformed"
+                )
             resource_id_by_logical_name_map[logical_name] = resource_id
         return resource_id_by_logical_name_map
 
@@ -446,12 +514,16 @@ class DevelopmentStackManager:
 
         changed_logical_id_list = sorted(
             logical_id
-            for logical_id, previous_physical_id in (previous_resource_id_by_logical_name_map.items())
-            if current_resource_id_by_logical_name_map.get(logical_id) != previous_physical_id
+            for logical_id, previous_physical_id in (
+                previous_resource_id_by_logical_name_map.items()
+            )
+            if current_resource_id_by_logical_name_map.get(logical_id)
+            != previous_physical_id
         )
         if changed_logical_id_list:
             raise DevelopmentEnvironmentError(
-                "Stable data-plane physical resource identity changed: " + ", ".join(changed_logical_id_list)
+                "Stable data-plane physical resource identity changed: "
+                + ", ".join(changed_logical_id_list)
             )
 
     def _template_argument_list_get(
@@ -465,17 +537,25 @@ class DevelopmentStackManager:
         if template_byte_count <= CLOUDFORMATION_INLINE_TEMPLATE_MAX_BYTE_COUNT:
             return ["--template-body", f"file://{template_path}"]
         if template_byte_count > CLOUDFORMATION_S3_TEMPLATE_MAX_BYTE_COUNT:
-            raise DevelopmentEnvironmentError(f"CloudFormation template {template_path} exceeds the 1 MiB S3 limit")
-        output_by_name_map = self.output_by_name_map_get(self._identity.data_plane_stack_name)
+            raise DevelopmentEnvironmentError(
+                f"CloudFormation template {template_path} exceeds the 1 MiB S3 limit"
+            )
+        output_by_name_map = self.output_by_name_map_get(
+            self._identity.data_plane_stack_name
+        )
         bucket_name = output_by_name_map.get("ObservabilityBucketName")
         if not bucket_name:
             raise DevelopmentEnvironmentError(
-                "Oversized CloudFormation template requires the retained " "Observability artifact bucket"
+                "Oversized CloudFormation template requires the retained "
+                "Observability artifact bucket"
             )
         digest_bytes = hashlib.sha256(template_bytes).digest()
         digest = digest_bytes.hex()
         checksum_sha256 = base64.b64encode(digest_bytes).decode("ascii")
-        object_key = "cloudformation-template/" f"{self._identity.environment_name}/{digest}.yaml"
+        object_key = (
+            "cloudformation-template/"
+            f"{self._identity.environment_name}/{digest}.yaml"
+        )
         head_argument_list = [
             "s3api",
             "head-object",
@@ -491,7 +571,9 @@ class DevelopmentStackManager:
         head_result = self._aws.run(head_argument_list, check=False)
         if head_result.returncode != 0:
             error_text = (head_result.stderr or head_result.stdout).strip()
-            if not any(marker in error_text for marker in ("(404)", "NoSuchKey", "Not Found")):
+            if not any(
+                marker in error_text for marker in ("(404)", "NoSuchKey", "Not Found")
+            ):
                 raise DevelopmentEnvironmentError(
                     "Unable to inspect CloudFormation template artifact: "
                     + (error_text or f"exit {head_result.returncode}")
@@ -522,11 +604,18 @@ class DevelopmentStackManager:
             or not isinstance(metadata, dict)
             or metadata.get("sha256") != digest
         ):
-            raise DevelopmentEnvironmentError("CloudFormation template artifact identity does not match local bytes")
-        template_url = f"https://{bucket_name}.s3.{self._aws_region}.amazonaws.com/" f"{object_key}"
+            raise DevelopmentEnvironmentError(
+                "CloudFormation template artifact identity does not match local bytes"
+            )
+        template_url = (
+            f"https://{bucket_name}.s3.{self._aws_region}.amazonaws.com/"
+            f"{object_key}"
+        )
         return ["--template-url", template_url]
 
-    def _template_parameter_name_set_get(self, template_argument_list: Sequence[str]) -> set[str]:
+    def _template_parameter_name_set_get(
+        self, template_argument_list: Sequence[str]
+    ) -> set[str]:
         """Return the parameter names declared by the submitted template."""
 
         payload = self._aws.json_get(
@@ -538,12 +627,20 @@ class DevelopmentStackManager:
         )
         parameter_list = payload.get("Parameters", [])
         if not isinstance(parameter_list, list):
-            raise DevelopmentEnvironmentError("CloudFormation template Parameters are malformed")
+            raise DevelopmentEnvironmentError(
+                "CloudFormation template Parameters are malformed"
+            )
         parameter_name_set: set[str] = set()
         for parameter_payload in parameter_list:
-            parameter_name = parameter_payload.get("ParameterKey") if isinstance(parameter_payload, Mapping) else None
+            parameter_name = (
+                parameter_payload.get("ParameterKey")
+                if isinstance(parameter_payload, Mapping)
+                else None
+            )
             if not isinstance(parameter_name, str):
-                raise DevelopmentEnvironmentError("CloudFormation template Parameters are malformed")
+                raise DevelopmentEnvironmentError(
+                    "CloudFormation template Parameters are malformed"
+                )
             parameter_name_set.add(parameter_name)
         return parameter_name_set
 
@@ -577,7 +674,10 @@ class DevelopmentStackManager:
             str(summary.get("logical_resource_id"))
             for summary in change_summary_list
             if summary.get("logical_resource_id") in protected_identity_logical_id_set
-            and (summary.get("action") == "Remove" or summary.get("replacement") != "False")
+            and (
+                summary.get("action") == "Remove"
+                or summary.get("replacement") != "False"
+            )
         )
 
     @staticmethod
@@ -587,7 +687,8 @@ class DevelopmentStackManager:
         """Return data-plane changes not proven identity-preserving."""
 
         summary_by_logical_id_map = {
-            str(summary.get("logical_resource_id")): summary for summary in change_summary_list
+            str(summary.get("logical_resource_id")): summary
+            for summary in change_summary_list
         }
         conditional_safety_by_logical_id_map: dict[str, bool] = {}
 
@@ -601,7 +702,11 @@ class DevelopmentStackManager:
                 conditional_safety_by_logical_id_map[logical_resource_id] = False
                 return False
             summary = summary_by_logical_id_map.get(logical_resource_id)
-            if summary is None or summary.get("action") != "Modify" or summary.get("replacement") != "Conditional":
+            if (
+                summary is None
+                or summary.get("action") != "Modify"
+                or summary.get("replacement") != "Conditional"
+            ):
                 return False
             detail_list = summary.get("detail_list")
             if not isinstance(detail_list, list) or not detail_list:
@@ -616,7 +721,8 @@ class DevelopmentStackManager:
                 if not isinstance(detail, dict)
                 or (
                     isinstance(detail.get("Target"), dict)
-                    and detail["Target"].get("RequiresRecreation") in {"Always", "Conditionally"}
+                    and detail["Target"].get("RequiresRecreation")
+                    in {"Always", "Conditionally"}
                 )
             ]
             if not replacement_detail_list:
@@ -627,11 +733,14 @@ class DevelopmentStackManager:
                 if not isinstance(detail, dict):
                     conditional_safety_by_logical_id_map[logical_resource_id] = False
                     return False
-                causing_logical_id = str(detail.get("CausingEntity")).split(".", maxsplit=1)[0]
+                causing_logical_id = str(detail.get("CausingEntity")).split(
+                    ".", maxsplit=1
+                )[0]
                 causing_summary = summary_by_logical_id_map.get(causing_logical_id)
                 if (
                     detail.get("Evaluation") != "Dynamic"
-                    or detail.get("ChangeSource") not in {"ResourceAttribute", "ResourceReference"}
+                    or detail.get("ChangeSource")
+                    not in {"ResourceAttribute", "ResourceReference"}
                     or causing_summary is None
                     or causing_summary.get("action") != "Modify"
                 ):
@@ -657,6 +766,8 @@ class DevelopmentStackManager:
             replacement = summary.get("replacement")
             if action == "Remove" or replacement == "True":
                 violation_logical_id_list.append(logical_resource_id)
-            elif replacement == "Conditional" and not conditional_change_is_safe(logical_resource_id):
+            elif replacement == "Conditional" and not conditional_change_is_safe(
+                logical_resource_id
+            ):
                 violation_logical_id_list.append(logical_resource_id)
         return sorted(set(violation_logical_id_list))
