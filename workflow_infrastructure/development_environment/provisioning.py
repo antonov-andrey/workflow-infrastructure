@@ -314,12 +314,6 @@ class DevelopmentProvisioningManager:
             raise DevelopmentEnvironmentError(
                 "Data-plane platform role output is malformed"
             )
-        if replacement_recovery_is_pending:
-            failed_bootstrap_replacement_is_pending = (
-                self._compute.failed_bootstrap_replacement_is_proven()
-            )
-            if not failed_bootstrap_replacement_is_pending:
-                self._replacement.recovery_finish()
         compute_parameter_by_name_map: dict[str, str] = {
             "EnvironmentName": self._identity.environment_name,
             "GitWorktree": self._identity.git_worktree,
@@ -355,6 +349,14 @@ class DevelopmentProvisioningManager:
                 ),
             )
         self._compute.launch_template_version_validate(require_latest=False)
+        replacement_recovery_finished = False
+        if replacement_recovery_is_pending:
+            failed_bootstrap_replacement_is_pending = (
+                self._compute.failed_bootstrap_replacement_is_proven()
+            )
+            if not failed_bootstrap_replacement_is_pending:
+                self._replacement.recovery_finish()
+                replacement_recovery_finished = True
         if self._compute.launch_template_update_is_pending():
             self._replacement.pending_launch_template_apply(
                 parameter_by_name_map=self._replacement.parameter_by_name_map_get()
@@ -364,7 +366,7 @@ class DevelopmentProvisioningManager:
                 "Failed bootstrap host has no newer launch-template version "
                 "available for replacement"
             )
-        else:
+        elif not replacement_recovery_finished:
             self._replacement.steady_state_finish()
         self._stack.drift_validate(self._identity.data_plane_stack_name)
         self._stack.drift_validate(self._identity.compute_stack_name)

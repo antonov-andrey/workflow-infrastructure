@@ -724,6 +724,7 @@ def test_environment_identity_preserves_primary_and_isolates_nonprimary() -> Non
     assert all("feature1" in identity for identity in alternate_identity_set)
     assert primary.lease_group_name == "scheduler-primary"
     assert alternate.lease_group_name == "scheduler-feature1"
+    assert 18000 <= alternate.local_http_port < 38000
 
 
 @pytest.mark.parametrize(
@@ -1705,6 +1706,150 @@ def test_nonprimary_environment_verifies_primary_owned_account_foundation(
         match="administrators differ from the primary owner",
     ):
         environment._account.account_foundation_validate()
+
+
+def test_pending_recovery_applies_current_compute_contract_before_bootstrap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An interrupted first start can retry with a corrected bootstrap document."""
+
+    environment = _environment_get(tmp_path)
+    operation_list: list[str] = []
+    compute_stack_applied = False
+    monkeypatch.setattr(
+        environment._account,
+        "local_operator_context_validate",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        environment._account,
+        "account_foundation_validate",
+        lambda: None,
+    )
+    monkeypatch.setattr(environment.foundation, "ensure", lambda **kwargs: None)
+    monkeypatch.setattr(
+        environment._source_publisher,
+        "validate_repository",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(environment._cost_reviewer, "record", lambda: None)
+    monkeypatch.setattr(
+        environment._stack,
+        "payload_get",
+        lambda stack_name, *, is_required: {"StackStatus": "CREATE_COMPLETE"},
+    )
+    monkeypatch.setattr(environment._stack, "drift_validate", lambda stack_name: None)
+
+    def parameter_by_name_map_get(stack_name: str) -> dict[str, str]:
+        if stack_name == environment._identity.data_plane_stack_name:
+            return {"EnvironmentName": "primary", "GitWorktree": ""}
+        return {
+            "ComputeArchitecture": "arm64",
+            "EnvironmentName": "primary",
+            "GitWorktree": "",
+            "HostArtifactManifestGzipBase64": "payload",
+            "HostArtifactManifestSha256": "a" * 64,
+            "ReplacementGuardScheduleState": "ENABLED",
+        }
+
+    monkeypatch.setattr(
+        environment._stack,
+        "parameter_by_name_map_get",
+        parameter_by_name_map_get,
+    )
+    monkeypatch.setattr(
+        environment._stack,
+        "resource_id_by_logical_name_map_get",
+        lambda stack_name: {"Stable": "physical"},
+    )
+    monkeypatch.setattr(environment._stack, "template_validate", lambda path: None)
+    monkeypatch.setattr(
+        environment._stack,
+        "existing_resource_identity_validate",
+        lambda **kwargs: None,
+    )
+
+    def stack_apply(**kwargs: object) -> None:
+        nonlocal compute_stack_applied
+        stack_name = str(kwargs["stack_name"])
+        operation_list.append(f"apply:{stack_name}")
+        if stack_name == environment._identity.compute_stack_name:
+            compute_stack_applied = True
+
+    monkeypatch.setattr(environment._stack, "apply", stack_apply)
+    monkeypatch.setattr(
+        environment._stack,
+        "output_by_name_map_get",
+        lambda stack_name: (
+            {
+                "ObservabilityBucketName": "observability-bucket",
+                "PlatformRoleArn": "arn:aws:iam::463564115167:role/platform-primary",
+            }
+            if stack_name == environment._identity.data_plane_stack_name
+            else {"RetainedVolumeId": "vol-0123456789abcdef0"}
+        ),
+    )
+    monkeypatch.setattr(
+        environment.host_artifact,
+        "cloudformation_parameter_by_name_map_get",
+        lambda **kwargs: {"HostBootstrapBundleSha256": "b" * 64},
+    )
+    monkeypatch.setattr(
+        environment.compute,
+        "launch_template_version_get",
+        lambda: "1",
+    )
+    monkeypatch.setattr(
+        environment.compute,
+        "launch_template_version_validate",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        environment.compute,
+        "launch_template_update_is_pending",
+        lambda: False,
+    )
+
+    def failed_bootstrap_replacement_is_proven() -> bool:
+        assert compute_stack_applied
+        operation_list.append("failed-bootstrap-probe")
+        return False
+
+    monkeypatch.setattr(
+        environment.compute,
+        "failed_bootstrap_replacement_is_proven",
+        failed_bootstrap_replacement_is_proven,
+    )
+    monkeypatch.setattr(
+        environment._retained_volume,
+        "attachment_validate",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        environment._retained_volume,
+        "regular_backup_validate",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        environment.replacement,
+        "recovery_finish",
+        lambda: operation_list.append("recovery-finish"),
+    )
+    monkeypatch.setattr(
+        environment.replacement,
+        "steady_state_finish",
+        lambda: pytest.fail("recovered start must not be repeated"),
+    )
+
+    environment.provisioning.apply()
+
+    assert operation_list == [
+        f"apply:{environment._identity.data_plane_stack_name}",
+        f"apply:{environment._identity.compute_stack_name}",
+        "failed-bootstrap-probe",
+        "recovery-finish",
+    ]
 
 
 def test_account_foundation_apply_is_primary_only_and_source_bound(

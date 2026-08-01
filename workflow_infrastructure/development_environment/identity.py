@@ -62,11 +62,9 @@ class DevelopmentEnvironmentIdentity:
             )
         self.environment_name = environment_name
         self.git_worktree = git_worktree
-        self._git_worktree_sha256 = (
-            hashlib.sha256(git_worktree.encode("utf-8")).hexdigest()
-            if git_worktree
-            else ""
-        )
+        self._local_port_seed_sha256 = hashlib.sha256(
+            (git_worktree or environment_name).encode("utf-8")
+        ).hexdigest()
 
     @property
     def is_primary(self) -> bool:
@@ -80,7 +78,7 @@ class DevelopmentEnvironmentIdentity:
 
         if self.is_primary:
             return 8080
-        return 18000 + int(self._git_worktree_sha256[:8], 16) % 20000
+        return 18000 + int(self._local_port_seed_sha256[:8], 16) % 20000
 
     @property
     def data_plane_stack_name(self) -> str:
