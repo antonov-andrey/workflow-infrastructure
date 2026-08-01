@@ -105,6 +105,11 @@ def test_pending_volume_creates_xfs_without_zero_content_assumption(
     assert "blockdev" not in command_name_list
     assert "cmp" not in command_name_list
     assert "mount" in command_name_list
+    findmnt_command = next(
+        command for command in runner.command_list_list if command[0] == "findmnt"
+    )
+    assert "--mountpoint" in findmnt_command
+    assert "--target" not in findmnt_command
     assert " xfs defaults,nofail,x-systemd.device-timeout=30 0 2" in (
         fstab_path.read_text(encoding="utf-8")
     )

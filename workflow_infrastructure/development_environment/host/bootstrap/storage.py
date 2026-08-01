@@ -159,7 +159,7 @@ class HostStorageBootstrap:
                 "--noheadings",
                 "--output",
                 "UUID",
-                "--target",
+                "--mountpoint",
                 str(self._retained_root_path),
             ],
             check=False,
