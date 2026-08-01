@@ -63,17 +63,20 @@ project/
     development-environment.md
     environment-model.md
     production-environment.md
+  development_environment_manage.py
   docs/
     development-environment-operations.md
-  development_environment_manage.py
+  .spec/
   test/
+  tool/
+    venv_create.py
   workflow_infrastructure/
     development_environment/
       composition.py
       host/
       product/
-  tool/
-    venv_create.py
+  .worktree/
+  worktree-bootstrap.toml
 ```
 
 - `AGENTS.md`: repository-root canonical instruction owner.
@@ -85,14 +88,17 @@ project/
 - `design/development-environment.md`: canonical development-environment architecture.
 - `design/environment-model.md`: canonical common environment and Product-release architecture.
 - `design/production-environment.md`: canonical future production-environment architecture.
+- `development_environment_manage.py`: canonical primary orchestration entrypoint.
 - `docs/`: maintained operator documentation.
 - `docs/development-environment-operations.md`: canonical development-environment operations guide.
-- `development_environment_manage.py`: canonical primary orchestration entrypoint.
+- `.spec/`: harness-neutral task-artifact root whose reusable semantics are owned by `agent-workflows:goal-brainstorm`.
 - `test/`: verification code for infrastructure orchestration and templates.
-- `workflow_infrastructure/`: importable `Main project code` package.
-- `workflow_infrastructure/development_environment/`: cohesive development-environment subsystem package; shared primitives and composition live at this level, while host and Product release responsibilities live in their explicit child packages.
 - `tool/`: auxiliary project-maintenance code only.
 - `tool/venv_create.py`: direct Python 3.14 virtual-environment recreation utility.
+- `workflow_infrastructure/`: importable `Main project code` package.
+- `workflow_infrastructure/development_environment/`: cohesive development-environment subsystem package; shared primitives and composition live at this level, while host and Product release responsibilities live in their explicit child packages.
+- `.worktree/`: task-worktree container whose reusable semantics are owned by `agent-workflows:goal-brainstorm`.
+- `worktree-bootstrap.toml`: repository bootstrap-resource binding for the reusable manifest contract owned by `agent-workflows:goal-brainstorm`.
 
 ## AWS Execution Boundary
 
