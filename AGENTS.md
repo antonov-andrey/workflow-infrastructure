@@ -56,8 +56,9 @@
 project/
   AGENTS.md
   cloudformation/
-    workflow-control-center-development-compute.yaml
-    workflow-control-center-development.yaml
+    account-foundation.yaml
+    development-compute.yaml
+    development-data.yaml
   DESIGN.md
   design/
     development-environment.md
@@ -66,7 +67,6 @@ project/
   development_environment_manage.py
   docs/
     development-environment-operations.md
-  .spec/
   test/
   tool/
     venv_create.py
@@ -74,31 +74,38 @@ project/
     development_environment/
       composition.py
       host/
+        artifact/
+          provider/
+        bootstrap/
       product/
   .worktree/
-  worktree-bootstrap.toml
+  worktree-bootstrap.yaml
 ```
 
 - `AGENTS.md`: repository-root canonical instruction owner.
 - `cloudformation/`: declarative AWS stack templates for Workflow Control Center environments.
-- `cloudformation/workflow-control-center-development-compute.yaml`: compute, network, retained-volume, snapshot, instance-profile, and lifecycle stack for the development environment.
-- `cloudformation/workflow-control-center-development.yaml`: stable data-plane stack for the development environment.
+- `cloudformation/account-foundation.yaml`: sole account-global owner for public-access/Lake Formation guards, Session Manager shell logging preferences, and primary-only AWS Backup.
+- `cloudformation/development-compute.yaml`: parameterized compute, network, retained-volume, instance-profile, and lifecycle stack for one development environment.
+- `cloudformation/development-data.yaml`: parameterized data-plane stack for one development environment.
 - `DESIGN.md`: root architecture router.
 - `design/`: stable infrastructure design owners.
 - `design/development-environment.md`: canonical development-environment architecture.
 - `design/environment-model.md`: canonical common environment and Product-release architecture.
 - `design/production-environment.md`: canonical future production-environment architecture.
-- `development_environment_manage.py`: canonical primary orchestration entrypoint.
+- `development_environment_manage.py`: canonical operator orchestration entrypoint for primary and exact task environments.
 - `docs/`: maintained operator documentation.
 - `docs/development-environment-operations.md`: canonical development-environment operations guide.
-- `.spec/`: harness-neutral task-artifact root whose reusable semantics are owned by `agent-workflows:goal-brainstorm`.
 - `test/`: verification code for infrastructure orchestration and templates.
 - `tool/`: auxiliary project-maintenance code only.
 - `tool/venv_create.py`: direct Python 3.14 virtual-environment recreation utility.
 - `workflow_infrastructure/`: importable `Main project code` package.
 - `workflow_infrastructure/development_environment/`: cohesive development-environment subsystem package; shared primitives and composition live at this level, while host and Product release responsibilities live in their explicit child packages.
+- `workflow_infrastructure/development_environment/host/artifact/`: host-artifact subsystem; model, download/cache, Git ref, verification, provider-specific resolution, and facade wiring are separate modules. Provider modules MUST NOT orchestrate other providers, and resolver facade MUST NOT absorb provider implementation.
+- `workflow_infrastructure/development_environment/host/artifact/provider/`: provider-specific artifact resolution implementations; each provider owns one external artifact contract and depends on shared download, cache, verification, and Git-ref primitives without cross-provider orchestration.
+- `workflow_infrastructure/development_environment/host/bootstrap/`: idempotent Python host-bootstrap subsystem; artifacts, storage, network, k3s, services, and sequence manager are separate modules. CloudFormation UserData MUST only ensure the AMI-supported SSM agent. Exact artifact download and the minimal verified launcher belong to one versioned SSM Command document; neither boundary may duplicate bootstrap implementation in embedded shell.
+- `workflow_infrastructure/development_environment/product/`: infrastructure adapter for invoking WCC-owned Product release and lifecycle capabilities; it MUST NOT copy Product release, image, retention, or Kubernetes implementation.
 - `.worktree/`: task-worktree container whose reusable semantics are owned by `agent-workflows:goal-brainstorm`.
-- `worktree-bootstrap.toml`: repository bootstrap-resource binding for the reusable manifest contract owned by `agent-workflows:goal-brainstorm`.
+- `worktree-bootstrap.yaml`: repository bootstrap-resource and external-cleanup-hook binding prepared by `agent-workflows:goal-brainstorm` and consumed for deletion by `agent-workflows:goal-delete`; task artifacts themselves live only in `project-goals`, and the hook delegates exact task-environment deletion to `development_environment_manage.py` without shell evaluation.
 
 ## AWS Execution Boundary
 
@@ -136,7 +143,7 @@ The EC2 host must use its instance profile and standard temporary AWS credential
 - Python tooling uses a reproducible Python 3.14 virtual environment and must also work when invoked through a compatible system Python.
 - Run targeted tests for changed orchestration behavior, `git diff --check`, and semantic reread of every changed owner contract.
 - Run `cfn-lint` and `aws cloudformation validate-template` for each changed template, then inspect the exact change set before execution.
-- Infrastructure acceptance must exercise the real Session Manager path, the exact deployed k3s node, clean-source delivery, immutable image digests, Product readiness, idle-stop lease, and all three retained-state recovery scenarios from `design/development-environment.md`.
+- Infrastructure acceptance must exercise the real Session Manager path, the exact selected environment k3s node, clean exact source delivery, immutable image digests, Product readiness, idle-stop lease, all three primary retained-state recovery scenarios, and task-environment identity/isolation/no-backup/cleanup behavior from `design/development-environment.md`.
 - A successful template validation or stack status does not replace live Product behavior, access-isolation, recovery, or cost-boundary verification.
 
 ## Destructive Change Rules
