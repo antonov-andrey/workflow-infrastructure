@@ -70,8 +70,6 @@ class _Aws:
                     "Name": DOCUMENT_NAME,
                     "Owner": ACCOUNT_ID,
                     "Status": "Active",
-                    "VersionName": "b-"
-                    + PARAMETER_BY_NAME["HostBootstrapBundleSha256"],
                 }
             }
         if argument_list[:2] == ["ssm", "get-document"]:
@@ -82,7 +80,6 @@ class _Aws:
                 "DocumentVersion": DOCUMENT_VERSION,
                 "Name": DOCUMENT_NAME,
                 "Status": "Active",
-                "VersionName": "b-" + PARAMETER_BY_NAME["HostBootstrapBundleSha256"],
             }
         if argument_list[:2] == ["ssm", "send-command"]:
             self.send_argument_list = argument_list

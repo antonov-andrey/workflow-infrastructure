@@ -1316,9 +1316,7 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
     assert bootstrap_document["Type"] == "AWS::SSM::Document"
     assert bootstrap_document["Properties"]["DocumentType"] == "Command"
     assert bootstrap_document["Properties"]["UpdateMethod"] == "NewVersion"
-    assert bootstrap_document["Properties"]["VersionName"] == {
-        "Fn::Sub": "b-${HostBootstrapBundleSha256}"
-    }
+    assert "VersionName" not in bootstrap_document["Properties"]
     step_list = bootstrap_document["Properties"]["Content"]["mainSteps"]
     assert [step["action"] for step in step_list] == [
         "aws:downloadContent",

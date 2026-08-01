@@ -733,7 +733,6 @@ Resources:
       Name: !Sub bootstrap-${EnvironmentName}
       TargetType: /AWS::EC2::Instance
       UpdateMethod: NewVersion
-      VersionName: !Sub b-${HostBootstrapBundleSha256}
       Tags:
         - Key: Name
           Value: !Sub bootstrap-${EnvironmentName}

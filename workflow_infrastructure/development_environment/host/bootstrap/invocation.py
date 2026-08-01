@@ -115,10 +115,6 @@ class DevelopmentHostBootstrapInvocation:
             )
         version = description.get("LatestVersion")
         document_hash = description.get("Hash")
-        expected_version_name = "b-" + self._required_sha256(
-            parameter_by_name,
-            "HostBootstrapBundleSha256",
-        )
         if (
             description.get("Name") != document_name
             or description.get("Owner") != self._account_id
@@ -132,7 +128,7 @@ class DevelopmentHostBootstrapInvocation:
             or description.get("HashType") != "Sha256"
             or not isinstance(document_hash, str)
             or _SHA256_PATTERN.fullmatch(document_hash) is None
-            or description.get("VersionName") != expected_version_name
+            or description.get("VersionName") not in {None, ""}
         ):
             raise DevelopmentEnvironmentError(
                 "Bootstrap document is not the exact active latest/default Command version"
@@ -155,7 +151,7 @@ class DevelopmentHostBootstrapInvocation:
             or document_payload.get("Status") != "Active"
             or document_payload.get("DocumentType") != "Command"
             or document_payload.get("DocumentFormat") != "JSON"
-            or document_payload.get("VersionName") != expected_version_name
+            or document_payload.get("VersionName") not in {None, ""}
         ):
             raise DevelopmentEnvironmentError(
                 "Bootstrap document version response is malformed"
