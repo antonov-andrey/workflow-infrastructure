@@ -680,13 +680,13 @@ Resources:
           - action: aws:downloadContent
             name: downloadPythonRuntime
             inputs:
-              destinationPath: /var/lib/development-bootstrap/download/python
+              destinationPath: /var/lib/development-bootstrap/download/python.tar.gz
               sourceInfo: !Ref HostPythonArtifactSourceInfo
               sourceType: S3
           - action: aws:downloadContent
             name: downloadBootstrapBundle
             inputs:
-              destinationPath: /var/lib/development-bootstrap/download/bundle
+              destinationPath: /var/lib/development-bootstrap/download/bootstrap.tar.gz
               sourceInfo: !Ref HostBootstrapBundleSourceInfo
               sourceType: S3
           - action: aws:runShellScript
@@ -698,8 +698,8 @@ Resources:
                     set -eu
                     umask 077
                     root=/var/lib/development-bootstrap
-                    python_archive="$root/download/python/python.tar.gz"
-                    bundle_archive="$root/download/bundle/bootstrap.tar.gz"
+                    python_archive="$root/download/python.tar.gz"
+                    bundle_archive="$root/download/bootstrap.tar.gz"
                     printf '%s  %s\n' '${HostPythonArtifactSha256}' "$python_archive" | sha256sum --check --strict
                     printf '%s  %s\n' '${HostBootstrapBundleSha256}' "$bundle_archive" | sha256sum --check --strict
                     python_root="/opt/python/bootstrap-${HostPythonArtifactSha256}"

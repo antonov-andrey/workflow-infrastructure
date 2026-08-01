@@ -227,12 +227,12 @@ class DevelopmentHostBootstrapInvocation:
         expected_download_list = (
             (
                 "downloadPythonRuntime",
-                "/var/lib/development-bootstrap/download/python",
+                "/var/lib/development-bootstrap/download/python.tar.gz",
                 self._required_text(parameter_by_name, "HostPythonArtifactSourceInfo"),
             ),
             (
                 "downloadBootstrapBundle",
-                "/var/lib/development-bootstrap/download/bundle",
+                "/var/lib/development-bootstrap/download/bootstrap.tar.gz",
                 self._required_text(parameter_by_name, "HostBootstrapBundleSourceInfo"),
             ),
         )
@@ -306,8 +306,8 @@ class DevelopmentHostBootstrapInvocation:
         return f"""set -eu
 umask 077
 root=/var/lib/development-bootstrap
-python_archive="$root/download/python/python.tar.gz"
-bundle_archive="$root/download/bundle/bootstrap.tar.gz"
+python_archive="$root/download/python.tar.gz"
+bundle_archive="$root/download/bootstrap.tar.gz"
 printf '%s  %s\\n' '{python_sha256}' "$python_archive" | sha256sum --check --strict
 printf '%s  %s\\n' '{bundle_sha256}' "$bundle_archive" | sha256sum --check --strict
 python_root="/opt/python/bootstrap-{python_sha256}"

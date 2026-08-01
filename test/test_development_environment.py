@@ -1325,8 +1325,14 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
         "aws:downloadContent",
         "aws:runShellScript",
     ]
+    assert [step["inputs"].get("destinationPath") for step in step_list[:2]] == [
+        "/var/lib/development-bootstrap/download/python.tar.gz",
+        "/var/lib/development-bootstrap/download/bootstrap.tar.gz",
+    ]
     launcher = step_list[2]["inputs"]["runCommand"][0]["Fn::Sub"]
     assert "sha256sum --check --strict" in launcher
+    assert 'python_archive="$root/download/python.tar.gz"' in launcher
+    assert 'bundle_archive="$root/download/bootstrap.tar.gz"' in launcher
     assert "host_bootstrap.py" in launcher
     assert "apt-get" not in launcher
 
