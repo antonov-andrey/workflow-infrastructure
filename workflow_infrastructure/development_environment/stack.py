@@ -166,14 +166,23 @@ class DevelopmentStackManager:
             current_parameter_by_name_map.update(parameter_by_name_map)
             parameter_by_name_map = current_parameter_by_name_map
         if parameter_by_name_map:
-            command_list.append("--parameters")
-            for parameter_name, parameter_value in sorted(
-                parameter_by_name_map.items()
-            ):
-                command_list.append(
-                    f"ParameterKey={parameter_name},"
-                    f"ParameterValue={parameter_value}"
-                )
+            command_list.extend(
+                [
+                    "--parameters",
+                    json.dumps(
+                        [
+                            {
+                                "ParameterKey": parameter_name,
+                                "ParameterValue": parameter_value,
+                            }
+                            for parameter_name, parameter_value in sorted(
+                                parameter_by_name_map.items()
+                            )
+                        ],
+                        separators=(",", ":"),
+                    ),
+                ]
+            )
         self._aws.run(command_list)
         wait_result = self._aws.run(
             [

@@ -391,19 +391,70 @@ def test_cloudformation_stack_update_drops_parameters_removed_from_template(
     )
 
     create_change_set_command = command_list[0]
-    assert (
-        "ParameterKey=AddedParameter,ParameterValue=added" in create_change_set_command
+    parameter_payload = json.loads(
+        create_change_set_command[create_change_set_command.index("--parameters") + 1]
     )
-    assert (
-        "ParameterKey=CurrentParameter,ParameterValue=new" in create_change_set_command
+    assert parameter_payload == [
+        {"ParameterKey": "AddedParameter", "ParameterValue": "added"},
+        {"ParameterKey": "CurrentParameter", "ParameterValue": "new"},
+        {"ParameterKey": "EnvironmentName", "ParameterValue": "primary"},
+    ]
+
+
+def test_cloudformation_stack_parameters_preserve_json_values(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """JSON-valued parameters are passed through the AWS CLI without shorthand parsing."""
+
+    environment = _environment_get(tmp_path)
+    template_path = tmp_path / "template.yaml"
+    template_path.write_text(
+        "Parameters:\n"
+        "  SourceInfo:\n"
+        "    Type: String\n"
+        "Resources: {}\n",
+        encoding="utf-8",
     )
-    assert (
-        "ParameterKey=EnvironmentName,ParameterValue=primary"
-        in create_change_set_command
+    command_list: list[list[str]] = []
+    stack_payload_iterator = iter([{}, {"StackStatus": "CREATE_COMPLETE"}])
+    monkeypatch.setattr(
+        environment._stack,
+        "payload_get",
+        lambda stack_name, *, is_required: next(stack_payload_iterator),
     )
-    assert not any(
-        "RemovedParameter" in argument for argument in create_change_set_command
+
+    def aws_run(
+        argument_list: list[str],
+        *,
+        check: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
+        del check
+        command_list.append(argument_list)
+        return subprocess.CompletedProcess(argument_list, 0, "{}", "")
+
+    monkeypatch.setattr(environment._aws, "run", aws_run)
+    monkeypatch.setattr(
+        environment._aws,
+        "json_get",
+        lambda argument_list: {"Changes": []},
     )
+
+    source_info = '{"path":"https://example.invalid/bootstrap.tar.gz"}'
+    environment._stack.apply(
+        stack_name="compute-task",
+        template_path=template_path,
+        parameter_by_name_map={"SourceInfo": source_info},
+        must_preserve_resource=False,
+    )
+
+    create_change_set_command = command_list[0]
+    parameter_payload = json.loads(
+        create_change_set_command[create_change_set_command.index("--parameters") + 1]
+    )
+    assert parameter_payload == [
+        {"ParameterKey": "SourceInfo", "ParameterValue": source_info}
+    ]
 
 
 def test_cloudformation_template_parameter_schema_rejects_malformed_response(
