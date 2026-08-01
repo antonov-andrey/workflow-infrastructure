@@ -48,38 +48,59 @@ class HostStorageBootstrap:
     def __init__(
         self,
         *,
+        initialization_allowed: bool,
         retained_root_path: Path,
         retained_volume_id: str,
         runner: CommandRunnerProtocol,
         clock: ClockProtocol | None = None,
+        device_by_id_root_path: Path = Path("/dev/disk/by-id"),
         device_wait_timeout_seconds: int = 360,
+        fstab_path: Path = Path("/etc/fstab"),
     ) -> None:
         """Bind storage setup to one exact EBS volume.
 
         Args:
             retained_root_path: Environment-exclusive mount root.
             retained_volume_id: Exact attached EBS volume identity.
+            initialization_allowed: Explicit one-time control-plane permission
+                to create XFS on a new base volume.
             runner: Checked process boundary.
+            device_by_id_root_path: Linux persistent block-device identity root.
+            fstab_path: Persistent mount table path.
         """
 
         if re.fullmatch(r"vol-[0-9a-f]+", retained_volume_id) is None:
             raise DevelopmentEnvironmentError("Retained EBS volume identity is invalid")
+        if not isinstance(initialization_allowed, bool):
+            raise DevelopmentEnvironmentError(
+                "Retained EBS initialization authorization is invalid"
+            )
         if not retained_root_path.is_absolute():
             raise DevelopmentEnvironmentError("Retained root must be absolute")
+        if not device_by_id_root_path.is_absolute() or not fstab_path.is_absolute():
+            raise DevelopmentEnvironmentError(
+                "Retained storage system paths must be absolute"
+            )
         if device_wait_timeout_seconds <= 0:
             raise DevelopmentEnvironmentError("Device wait timeout must be positive")
         self._retained_root_path = retained_root_path
         self._retained_volume_id = retained_volume_id
+        self._initialization_allowed = initialization_allowed
         self._runner = runner
         self._clock = StorageClock() if clock is None else clock
+        self._device_by_id_root_path = device_by_id_root_path
         self._device_wait_timeout_seconds = device_wait_timeout_seconds
+        self._fstab_path = fstab_path
 
     def mount(self) -> None:
         """Create or validate XFS and mount the exact retained volume."""
 
         device_path = Path(
-            "/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_"
-            + self._retained_volume_id.replace("-", "")
+            self._device_by_id_root_path
+            / (
+                "nvme-Amazon_Elastic_Block_Store_"
+                + self._retained_volume_id.replace("-", "")
+            )
         )
         t_deadline = self._clock.monotonic() + self._device_wait_timeout_seconds
         while not device_path.exists() and self._clock.monotonic() < t_deadline:
@@ -88,26 +109,24 @@ class HostStorageBootstrap:
             raise DevelopmentEnvironmentError(
                 "Retained EBS device did not appear within the bounded wait"
             )
-        probe = self._runner.run(["blkid", str(device_path)], check=False)
-        if probe.returncode != 0:
-            size_result = self._runner.run(
-                ["blockdev", "--getsize64", str(device_path)]
-            )
-            try:
-                size = int(size_result.stdout.strip())
-            except ValueError as error:
+        filesystem_type_result = self._runner.run(
+            ["blkid", "-s", "TYPE", "-o", "value", str(device_path)],
+            check=False,
+        )
+        if filesystem_type_result.returncode != 0:
+            if not self._initialization_allowed:
                 raise DevelopmentEnvironmentError(
-                    "Retained EBS device size is invalid"
-                ) from error
-            blank_result = self._runner.run(
-                ["cmp", "--silent", f"--bytes={size}", str(device_path), "/dev/zero"],
-                check=False,
-            )
-            if blank_result.returncode != 0:
-                raise DevelopmentEnvironmentError(
-                    "Retained EBS device has data but no recognized filesystem"
+                    "Retained EBS device has no recognized filesystem and "
+                    "initialization is not authorized"
                 )
             self._runner.run(["mkfs.xfs", str(device_path)])
+            filesystem_type_result = self._runner.run(
+                ["blkid", "-s", "TYPE", "-o", "value", str(device_path)]
+            )
+        if filesystem_type_result.stdout.strip() != "xfs":
+            raise DevelopmentEnvironmentError(
+                "Retained EBS device does not contain the required XFS filesystem"
+            )
         uuid_result = self._runner.run(
             ["blkid", "-s", "UUID", "-o", "value", str(device_path)]
         )
@@ -115,7 +134,7 @@ class HostStorageBootstrap:
         if re.fullmatch(r"[0-9a-fA-F-]+", volume_uuid) is None:
             raise DevelopmentEnvironmentError("Retained filesystem UUID is invalid")
         self._retained_root_path.mkdir(mode=0o755, parents=True, exist_ok=True)
-        fstab_path = Path("/etc/fstab")
+        fstab_path = self._fstab_path
         fstab_line = f"UUID={volume_uuid} {self._retained_root_path} xfs defaults,nofail,x-systemd.device-timeout=30 0 2"
         fstab_line_list = fstab_path.read_text(encoding="utf-8").splitlines()
         target_entry_list = [

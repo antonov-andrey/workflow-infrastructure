@@ -205,6 +205,7 @@ class DevelopmentRetainedVolumeManager:
             source_volume_id=source_volume_id,
         )
         return source_volume_id, {
+            "RetainedVolumeFilesystemState": "complete",
             "RetainedVolumeSlot": next_slot,
             "RetainedVolumeSnapshotId": snapshot_id,
         }

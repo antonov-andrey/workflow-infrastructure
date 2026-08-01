@@ -43,6 +43,7 @@ class DevelopmentHostBootstrapManager:
         python_runtime_path: Path,
         retained_root_path: Path,
         retained_volume_id: str,
+        retained_volume_initialization_allowed: bool,
         runner: HostBootstrapCommandRunner,
     ) -> None:
         """Validate and wire all bootstrap collaborators.
@@ -55,6 +56,8 @@ class DevelopmentHostBootstrapManager:
             python_runtime_path: Extracted Python runtime root.
             retained_root_path: Environment-exclusive retained mount root.
             retained_volume_id: Exact retained EBS volume identity.
+            retained_volume_initialization_allowed: Whether the control plane
+                authorizes first-time XFS creation.
             runner: Checked process boundary.
         """
 
@@ -75,6 +78,7 @@ class DevelopmentHostBootstrapManager:
             runner=runner,
         )
         self._storage = HostStorageBootstrap(
+            initialization_allowed=retained_volume_initialization_allowed,
             retained_root_path=retained_root_path,
             retained_volume_id=retained_volume_id,
             runner=runner,

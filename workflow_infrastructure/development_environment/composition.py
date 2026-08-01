@@ -49,6 +49,9 @@ from workflow_infrastructure.development_environment.host.bootstrap.invocation i
 from workflow_infrastructure.development_environment.host.status import (
     DevelopmentHostStatus,
 )
+from workflow_infrastructure.development_environment.host.storage import (
+    DevelopmentHostStorageInitialization,
+)
 from workflow_infrastructure.development_environment.lifecycle import (
     LEASE_DURATION,
     DevelopmentLifecycleManager,
@@ -273,6 +276,17 @@ class DevelopmentEnvironment:
             runner=runner,
             stack=self._stack,
         )
+        self._host_storage_initialization = DevelopmentHostStorageInitialization(
+            aws=self._aws,
+            compute_stable_identity_logical_id_set=(
+                COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET
+            ),
+            compute_template_path=(
+                project_root_path / "cloudformation/development-compute.yaml"
+            ),
+            identity=self._identity,
+            stack=self._stack,
+        )
         self._host_bootstrap = DevelopmentHostBootstrapInvocation(
             account_id=AWS_ACCOUNT_ID,
             aws=self._aws,
@@ -280,6 +294,7 @@ class DevelopmentEnvironment:
             compute_stack_name=self._identity.compute_stack_name,
             identity=self._identity,
             stack=self._stack,
+            storage_initialization=self._host_storage_initialization,
         )
         self.host = DevelopmentHostManager(
             aws_region=AWS_REGION,

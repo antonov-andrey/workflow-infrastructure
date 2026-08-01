@@ -114,6 +114,14 @@ Parameters:
     AllowedPattern: '(^$|^snap-[0-9a-f]+$)'
     Description: Optional exact snapshot used to create a replacement retained volume.
 
+  RetainedVolumeFilesystemState:
+    Type: String
+    Default: pending
+    AllowedValues:
+      - complete
+      - pending
+    Description: Monotonic authorization state for the retained XFS filesystem.
+
   ReplacementGuardScheduleExpression:
     Type: String
     Default: at(2099-01-01T00:00:00)
@@ -154,6 +162,13 @@ Rules:
                 - !Not [!Equals [!Ref RetainedVolumeSlot, base]]
                 - !Not [!Equals [!Ref RetainedVolumeSnapshotId, '']]
         AssertDescription: The base slot has no snapshot and restored slots require one exact snapshot.
+  RetainedVolumeFilesystemStateIsConsistent:
+    Assertions:
+      - Assert:
+          Fn::Or:
+            - !Equals [!Ref RetainedVolumeSlot, base]
+            - !Equals [!Ref RetainedVolumeFilesystemState, complete]
+        AssertDescription: Restored retained volumes must already contain a complete filesystem.
 
 Conditions:
   HasGitWorktree: !Not [!Equals [!Ref GitWorktree, '']]
@@ -350,6 +365,8 @@ Resources:
           Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
+        - Key: FilesystemState
+          Value: !Ref RetainedVolumeFilesystemState
         - !If
           - HasGitWorktree
           - Key: git-worktree
@@ -381,6 +398,8 @@ Resources:
           Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
+        - Key: FilesystemState
+          Value: !Ref RetainedVolumeFilesystemState
         - !If
           - HasGitWorktree
           - Key: git-worktree
@@ -412,6 +431,8 @@ Resources:
           Value: !Ref EnvironmentName
         - Key: ManagedBy
           Value: CloudFormation
+        - Key: FilesystemState
+          Value: !Ref RetainedVolumeFilesystemState
         - !If
           - HasGitWorktree
           - Key: git-worktree
@@ -676,6 +697,9 @@ Resources:
           RetainedVolumeId:
             type: String
             allowedPattern: '^vol-[0-9a-f]+$'
+          RetainedVolumeInitializationAllowed:
+            type: String
+            allowedPattern: '^(false|true)$'
         mainSteps:
           - action: aws:downloadContent
             name: downloadPythonRuntime
@@ -727,7 +751,8 @@ Resources:
                       --environment-name '{{ EnvironmentName }}' \
                       --python-runtime "$python_root" \
                       --retained-root '{{ RetainedRootPath }}' \
-                      --retained-volume-id '{{ RetainedVolumeId }}'
+                      --retained-volume-id '{{ RetainedVolumeId }}' \
+                      --retained-volume-initialization-allowed '{{ RetainedVolumeInitializationAllowed }}'
       DocumentFormat: YAML
       DocumentType: Command
       Name: !Sub bootstrap-${EnvironmentName}
@@ -897,6 +922,8 @@ Outputs:
         - UseRetainedVolumeRestoreA
         - !Ref RetainedVolumeRestoreA
         - !Ref RetainedVolumeRestoreB
+  RetainedVolumeFilesystemState:
+    Value: !Ref RetainedVolumeFilesystemState
   RetainedVolumeSlot:
     Value: !Ref RetainedVolumeSlot
   RetainedVolumeSourceSnapshotId:

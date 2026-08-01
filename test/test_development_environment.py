@@ -410,10 +410,7 @@ def test_cloudformation_stack_parameters_preserve_json_values(
     environment = _environment_get(tmp_path)
     template_path = tmp_path / "template.yaml"
     template_path.write_text(
-        "Parameters:\n"
-        "  SourceInfo:\n"
-        "    Type: String\n"
-        "Resources: {}\n",
+        "Parameters:\n" "  SourceInfo:\n" "    Type: String\n" "Resources: {}\n",
         encoding="utf-8",
     )
     command_list: list[list[str]] = []
@@ -739,6 +736,7 @@ def test_environment_identity_preserves_primary_and_isolates_nonprimary() -> Non
             "EnvironmentName": "other",
             "HostArtifactManifestGzipBase64": "encoded",
             "HostArtifactManifestSha256": "a" * 64,
+            "RetainedVolumeFilesystemState": "complete",
         },
     ],
 )
@@ -773,6 +771,7 @@ def test_existing_compute_stack_accepts_exact_current_contract(tmp_path: Path) -
             "GitWorktree": "",
             "HostArtifactManifestGzipBase64": "encoded",
             "HostArtifactManifestSha256": "a" * 64,
+            "RetainedVolumeFilesystemState": "complete",
         }
     )
 
@@ -1211,6 +1210,32 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
             }
         ]
     }
+    assert template["Rules"]["RetainedVolumeFilesystemStateIsConsistent"] == {
+        "Assertions": [
+            {
+                "Assert": {
+                    "Fn::Or": [
+                        {
+                            "Fn::Equals": [
+                                {"Ref": "RetainedVolumeSlot"},
+                                "base",
+                            ]
+                        },
+                        {
+                            "Fn::Equals": [
+                                {"Ref": "RetainedVolumeFilesystemState"},
+                                "complete",
+                            ]
+                        },
+                    ]
+                },
+                "AssertDescription": (
+                    "Restored retained volumes must already contain a complete "
+                    "filesystem."
+                ),
+            }
+        ]
+    }
 
     resource_type_set = {
         resource["Type"]
@@ -1242,6 +1267,10 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
         assert retained_volume["UpdateReplacePolicy"] == "Retain"
         assert retained_volume["Properties"]["Encrypted"] is True
         assert retained_volume["Properties"]["VolumeType"] == "gp3"
+        assert {
+            "Key": "FilesystemState",
+            "Value": {"Ref": "RetainedVolumeFilesystemState"},
+        } in retained_volume["Properties"]["Tags"]
     assert retained_volume_by_name_map["RetainedVolume"]["Condition"] == (
         "UseRetainedVolumeBase"
     )
@@ -1444,6 +1473,9 @@ def test_compute_bootstrap_is_syntactically_valid_and_fits_ec2_user_data() -> No
     )
     rendered_launcher = rendered_launcher.replace(
         "{{ RetainedVolumeId }}", "vol-0123456789abcdef0"
+    )
+    rendered_launcher = rendered_launcher.replace(
+        "{{ RetainedVolumeInitializationAllowed }}", "true"
     )
     assert "${" not in rendered_launcher
     assert "{{" not in rendered_launcher
@@ -1750,6 +1782,7 @@ def test_pending_recovery_applies_current_compute_contract_before_bootstrap(
             "GitWorktree": "",
             "HostArtifactManifestGzipBase64": "payload",
             "HostArtifactManifestSha256": "a" * 64,
+            "RetainedVolumeFilesystemState": "pending",
             "ReplacementGuardScheduleState": "ENABLED",
         }
 
@@ -3280,6 +3313,7 @@ def test_restore_plan_alternates_declarative_retained_volume_resources(
     ) == (
         "vol-source",
         {
+            "RetainedVolumeFilesystemState": "complete",
             "RetainedVolumeSlot": next_slot,
             "RetainedVolumeSnapshotId": "snap-0123456789abcdef0",
         },

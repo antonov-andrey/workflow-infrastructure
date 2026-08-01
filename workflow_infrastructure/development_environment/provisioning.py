@@ -325,6 +325,7 @@ class DevelopmentProvisioningManager:
                 self._compute.launch_template_version_get()
             )
         else:
+            compute_parameter_by_name_map["RetainedVolumeFilesystemState"] = "pending"
             compute_parameter_by_name_map.update(
                 self._replacement.guard_parameter_by_name_map_get()
             )
@@ -386,6 +387,8 @@ class DevelopmentProvisioningManager:
             or re.fullmatch(r"[0-9a-f]{64}", manifest_sha256) is None
             or not isinstance(encoded_manifest, str)
             or not encoded_manifest
+            or parameter_by_name_map.get("RetainedVolumeFilesystemState")
+            not in {"complete", "pending"}
         ):
             raise DevelopmentEnvironmentError(
                 "Compute stack does not implement the current host-artifact "

@@ -51,6 +51,19 @@ class _Stack:
         return PARAMETER_BY_NAME
 
 
+class _StorageInitialization:
+    """Record one authorization and completion transition."""
+
+    def __init__(self) -> None:
+        self.complete_count = 0
+
+    def initialization_allowed_get(self) -> bool:
+        return True
+
+    def complete(self) -> None:
+        self.complete_count += 1
+
+
 class _Aws:
     def __init__(self, content: dict[str, object]) -> None:
         self.content = content
@@ -122,7 +135,10 @@ def _content_get() -> dict[str, object]:
     return resolved
 
 
-def _invocation_get(aws: _Aws) -> DevelopmentHostBootstrapInvocation:
+def _invocation_get(
+    aws: _Aws,
+    storage_initialization: _StorageInitialization,
+) -> DevelopmentHostBootstrapInvocation:
     return DevelopmentHostBootstrapInvocation(
         account_id=ACCOUNT_ID,
         aws=aws,
@@ -130,6 +146,7 @@ def _invocation_get(aws: _Aws) -> DevelopmentHostBootstrapInvocation:
         compute_stack_name="compute-primary",
         identity=DevelopmentEnvironmentIdentity(),
         stack=_Stack(),
+        storage_initialization=storage_initialization,
     )
 
 
@@ -137,7 +154,8 @@ def test_bootstrap_uses_exact_numeric_version_and_system_hash() -> None:
     """SendCommand is bound to the content-validated latest/default document."""
 
     aws = _Aws(_content_get())
-    _invocation_get(aws).run()
+    storage_initialization = _StorageInitialization()
+    _invocation_get(aws, storage_initialization).run()
     assert aws.send_argument_list[:2] == ["ssm", "send-command"]
     assert (
         aws.send_argument_list[aws.send_argument_list.index("--document-version") + 1]
@@ -159,7 +177,9 @@ def test_bootstrap_uses_exact_numeric_version_and_system_hash() -> None:
         "EnvironmentName": ["primary"],
         "RetainedRootPath": ["/srv/workflow-control-center"],
         "RetainedVolumeId": ["vol-0123456789abcdef0"],
+        "RetainedVolumeInitializationAllowed": ["true"],
     }
+    assert storage_initialization.complete_count == 1
 
 
 def test_bootstrap_rejects_any_launcher_drift_before_send_command() -> None:
@@ -168,9 +188,11 @@ def test_bootstrap_rejects_any_launcher_drift_before_send_command() -> None:
     content = _content_get()
     content["mainSteps"][2]["inputs"]["runCommand"][0] += "echo unexpected\n"
     aws = _Aws(content)
+    storage_initialization = _StorageInitialization()
     with pytest.raises(
         DevelopmentEnvironmentError,
         match="launcher differs",
     ):
-        _invocation_get(aws).run()
+        _invocation_get(aws, storage_initialization).run()
     assert aws.send_argument_list == []
+    assert storage_initialization.complete_count == 0

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 from pathlib import Path
 import sys
 
@@ -38,6 +39,11 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
     parser.add_argument("--python-runtime", type=Path, required=True)
     parser.add_argument("--retained-root", type=Path, required=True)
     parser.add_argument("--retained-volume-id", required=True)
+    parser.add_argument(
+        "--retained-volume-initialization-allowed",
+        choices=("false", "true"),
+        required=True,
+    )
     return parser.parse_args(argv_list)
 
 
@@ -53,16 +59,22 @@ def main(argv_list: list[str]) -> int:
 
     args = _args_parse(argv_list)
     try:
-        DevelopmentHostBootstrapManager(
-            architecture=args.architecture,
-            bundle_root_path=args.bundle_root,
-            bundle_manifest_sha256=args.bundle_manifest_sha256,
-            environment_name=args.environment_name,
-            python_runtime_path=args.python_runtime,
-            retained_root_path=args.retained_root,
-            retained_volume_id=args.retained_volume_id,
-            runner=HostBootstrapCommandRunner(),
-        ).run()
+        lock_path = Path("/run/lock/workflow-infrastructure-host-bootstrap.lock")
+        with lock_path.open("a+", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            DevelopmentHostBootstrapManager(
+                architecture=args.architecture,
+                bundle_root_path=args.bundle_root,
+                bundle_manifest_sha256=args.bundle_manifest_sha256,
+                environment_name=args.environment_name,
+                python_runtime_path=args.python_runtime,
+                retained_root_path=args.retained_root,
+                retained_volume_id=args.retained_volume_id,
+                retained_volume_initialization_allowed=(
+                    args.retained_volume_initialization_allowed == "true"
+                ),
+                runner=HostBootstrapCommandRunner(),
+            ).run()
     except DevelopmentEnvironmentError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1

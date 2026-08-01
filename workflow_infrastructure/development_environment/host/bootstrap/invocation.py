@@ -54,6 +54,16 @@ class StackManagerProtocol(Protocol):
         """Return exact stack parameters."""
 
 
+class StorageInitializationProtocol(Protocol):
+    """Monotonic retained-volume filesystem authorization."""
+
+    def complete(self) -> None:
+        """Advance a successfully mounted pending volume to complete."""
+
+    def initialization_allowed_get(self) -> bool:
+        """Return whether this exact volume may receive first-time XFS."""
+
+
 class DevelopmentHostBootstrapInvocation:
     """Own document verification, exact SendCommand, and completion proof."""
 
@@ -66,6 +76,7 @@ class DevelopmentHostBootstrapInvocation:
         compute_stack_name: str,
         identity: EnvironmentIdentityProtocol,
         stack: StackManagerProtocol,
+        storage_initialization: StorageInitializationProtocol,
     ) -> None:
         """Bind invocation to one environment compute stack."""
 
@@ -75,6 +86,7 @@ class DevelopmentHostBootstrapInvocation:
         self._compute_stack_name = compute_stack_name
         self._identity = identity
         self._stack = stack
+        self._storage_initialization = storage_initialization
 
     def run(self) -> None:
         """Validate and run the exact current document on the current instance."""
@@ -89,6 +101,9 @@ class DevelopmentHostBootstrapInvocation:
         )
         command_id = self._command_start(
             document_identity=document_identity,
+            initialization_allowed=(
+                self._storage_initialization.initialization_allowed_get()
+            ),
             output_by_name=output_by_name,
             parameter_by_name=parameter_by_name,
         )
@@ -96,6 +111,7 @@ class DevelopmentHostBootstrapInvocation:
             command_id=command_id,
             instance_id=self._required_text(output_by_name, "InstanceId"),
         )
+        self._storage_initialization.complete()
 
     def _document_identity_validate(
         self,
@@ -210,6 +226,10 @@ class DevelopmentHostBootstrapInvocation:
             "RetainedVolumeId": {
                 "type": "String",
                 "allowedPattern": "^vol-[0-9a-f]+$",
+            },
+            "RetainedVolumeInitializationAllowed": {
+                "type": "String",
+                "allowedPattern": "^(false|true)$",
             },
         }:
             raise DevelopmentEnvironmentError(
@@ -331,13 +351,15 @@ exec "$python_root/bin/python3.14" -B "$bundle_root/host_bootstrap.py" \\
   --environment-name '{{{{ EnvironmentName }}}}' \\
   --python-runtime "$python_root" \\
   --retained-root '{{{{ RetainedRootPath }}}}' \\
-  --retained-volume-id '{{{{ RetainedVolumeId }}}}'
+  --retained-volume-id '{{{{ RetainedVolumeId }}}}' \\
+  --retained-volume-initialization-allowed '{{{{ RetainedVolumeInitializationAllowed }}}}'
 """
 
     def _command_start(
         self,
         *,
         document_identity: tuple[str, str, str],
+        initialization_allowed: bool,
         output_by_name: Mapping[str, str],
         parameter_by_name: Mapping[str, str],
     ) -> str:
@@ -376,6 +398,9 @@ exec "$python_root/bin/python3.14" -B "$bundle_root/host_bootstrap.py" \\
                             str(self._identity.host_retained_root_path)
                         ],
                         "RetainedVolumeId": [retained_volume_id],
+                        "RetainedVolumeInitializationAllowed": [
+                            "true" if initialization_allowed else "false"
+                        ],
                     },
                     separators=(",", ":"),
                     sort_keys=True,
