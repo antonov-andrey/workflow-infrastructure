@@ -26,7 +26,7 @@ HOST_RETAINED_CURRENT_RELEASE_PATH = HOST_RETAINED_RELEASE_ROOT_PATH / "current"
 HOST_RELEASE_ROOT_PATH = HOST_RETAINED_RELEASE_ROOT_PATH / "releases"
 HOST_STATE_ROOT_PATH = Path("/var/lib/workflow-infrastructure")
 INSTANCE_NAME = "compute-primary"
-LEASE_GROUP_NAME = "lifecycle-primary"
+LEASE_GROUP_NAME = "scheduler-primary"
 LEASE_NAME = "stop-primary"
 _ENVIRONMENT_NAME_PATTERN = re.compile(r"[a-z][a-z0-9]{0,15}")
 _GIT_WORKTREE_PATTERN = re.compile(r"20[0-9]{2}-[0-9]{2}-[0-9]{2}-[a-z0-9][a-z0-9-]*")
@@ -112,7 +112,7 @@ class DevelopmentEnvironmentIdentity:
 
         if self.is_primary:
             return LEASE_GROUP_NAME
-        return f"lifecycle-{self.environment_name}"
+        return f"scheduler-{self.environment_name}"
 
     @property
     def lease_name(self) -> str:

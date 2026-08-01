@@ -722,6 +722,8 @@ def test_environment_identity_preserves_primary_and_isolates_nonprimary() -> Non
     }
     assert primary_identity_set.isdisjoint(alternate_identity_set)
     assert all("feature1" in identity for identity in alternate_identity_set)
+    assert primary.lease_group_name == "scheduler-primary"
+    assert alternate.lease_group_name == "scheduler-feature1"
 
 
 @pytest.mark.parametrize(
@@ -1218,6 +1220,13 @@ def test_compute_template_owns_isolated_retained_recoverable_host() -> None:
     assert "AWS::EC2::NatGateway" not in resource_type_set
     security_group = resource_by_name_map["DevelopmentSecurityGroup"]
     assert "SecurityGroupIngress" not in security_group["Properties"]
+    assert resource_by_name_map["SchedulerGroup"]["Properties"]["Name"] == {
+        "Fn::If": [
+            "IsPrimaryEnvironment",
+            development_environment_identity.LEASE_GROUP_NAME,
+            {"Fn::Sub": "scheduler-${EnvironmentName}"},
+        ]
+    }
 
     retained_volume_by_name_map = {
         name: resource_by_name_map[name]
