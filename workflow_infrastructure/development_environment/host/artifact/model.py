@@ -9,6 +9,8 @@ import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import PurePosixPath
+import urllib.parse
 
 DOCKER_SIGNING_KEY_FINGERPRINT = "9DC858229FC7DD38854AE2D88D81803C0EBFCD88"
 PYTHON_SELECTOR = "3.14"
@@ -87,6 +89,15 @@ _IDENTITY_FIELD_NAME_SET = frozenset(
 _RESOLVED_IDENTITY_FIELD_NAME_SET = frozenset(
     {*_IDENTITY_FIELD_NAME_SET, "resolved_ref", "source_commit_sha"}
 )
+_BUNDLE_REQUIRED_FILENAME_SUFFIX_BY_NAME_MAP = {
+    "aws-cli": ".zip",
+    "containerd.io": ".deb",
+    "docker-buildx-plugin": ".deb",
+    "docker-ce": ".deb",
+    "docker-ce-cli": ".deb",
+    "helm": ".tar.gz",
+    "uv": ".tar.gz",
+}
 
 
 class HostArtifactResolutionError(RuntimeError):
@@ -107,6 +118,26 @@ class HostArtifactIdentity:
     verification_identity: str
     resolved_ref: str = ""
     source_commit_sha: str = ""
+
+    def bundle_relative_path_get(self) -> PurePosixPath:
+        """Return one safe source-filename-preserving bundle path.
+
+        Artifact bytes stay under their canonical logical owner while retaining
+        the real filename required by native consumers such as ``apt-get``.
+        """
+
+        encoded_filename = urllib.parse.urlsplit(self.url).path.rsplit("/", 1)[-1]
+        filename = urllib.parse.unquote(encoded_filename)
+        required_suffix = _BUNDLE_REQUIRED_FILENAME_SUFFIX_BY_NAME_MAP.get(self.name)
+        if (
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+~-]{0,255}", filename) is None
+            or re.fullmatch(r"[a-z0-9][a-z0-9.-]*", self.name) is None
+            or (required_suffix is not None and not filename.endswith(required_suffix))
+        ):
+            raise HostArtifactResolutionError(
+                f"host artifact {self.name} has no safe source filename"
+            )
+        return PurePosixPath("artifact") / self.name / filename
 
     def manifest_payload_get(self) -> dict[str, object]:
         """Return the canonical serializable identity."""

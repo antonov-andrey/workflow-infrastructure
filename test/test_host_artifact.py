@@ -9,6 +9,7 @@ import io
 import json
 import re
 import subprocess
+import tarfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -41,6 +42,9 @@ from workflow_infrastructure.development_environment.host.artifact.provider.k3s 
 )
 from workflow_infrastructure.development_environment.host.artifact.provider.python import (
     PythonArtifactProvider,
+)
+from workflow_infrastructure.development_environment.host.artifact.publication import (
+    HostBootstrapObjectPublisher,
 )
 from workflow_infrastructure.development_environment.host.artifact.verification import (
     HostArtifactVerifier,
@@ -112,6 +116,131 @@ def _artifact_get(name: str) -> HostArtifactIdentity:
         verification_identity=f"test:{name}",
         **resolved_source_kwargs,
     )
+
+
+_BUNDLE_FILENAME_BY_ARTIFACT_NAME_MAP = {
+    "aws-cli": "awscliv2.zip",
+    "aws-cli-signature": "awscliv2.zip.sig",
+    "containerd.io": "containerd.io_1_arm64.deb",
+    "docker-buildx-plugin": "docker-buildx-plugin_1_arm64.deb",
+    "docker-ce": "docker-ce_1_arm64.deb",
+    "docker-ce-cli": "docker-ce-cli_1_arm64.deb",
+    "docker-inrelease": "InRelease",
+    "docker-packages-index": "Packages.gz",
+    "docker-signing-key": "gpg",
+    "helm": "helm-v4.0.0-linux-arm64.tar.gz",
+    "helm-signature": "helm-v4.0.0-linux-arm64.tar.gz.asc",
+    "k3s-binary": "k3s-arm64",
+    "k3s-checksums": "sha256sum-arm64.txt",
+    "python": "cpython-3.14.5-linux-aarch64.tar.zst",
+    "uv": "uv-aarch64-unknown-linux-gnu.tar.gz",
+    "uv-python-metadata": "download-metadata.json",
+}
+
+
+def _bundle_artifact_get(name: str) -> HostArtifactIdentity:
+    """Return a realistic filename-bearing bootstrap artifact."""
+
+    payload = name.encode()
+    resolved_source_kwargs = (
+        {
+            "resolved_ref": "refs/tags/v1.2.3",
+            "source_commit_sha": "a" * 40,
+        }
+        if name in HOST_ARTIFACT_RESOLVED_SOURCE_NAME_SET
+        else {}
+    )
+    return HostArtifactIdentity(
+        name=name,
+        selector="stable",
+        version="3.14.5" if name == "python" else "1.2.3",
+        url=(
+            "https://example.invalid/" f"{_BUNDLE_FILENAME_BY_ARTIFACT_NAME_MAP[name]}"
+        ),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        size=len(payload),
+        verification="test-proof",
+        verification_identity=f"test:{name}",
+        **resolved_source_kwargs,
+    )
+
+
+def test_bundle_paths_preserve_real_safe_filenames(tmp_path: Path) -> None:
+    """Native package consumers receive filenames with their required suffixes."""
+
+    cache_root_path = tmp_path / "cache"
+    resolution = HostArtifactResolution(
+        architecture="arm64",
+        artifact_by_name_map={
+            name: _bundle_artifact_get(name) for name in HOST_ARTIFACT_NAME_SET
+        },
+        docker_signing_key_fingerprint=DOCKER_SIGNING_KEY_FINGERPRINT,
+        python_build="20260718",
+    )
+    publisher = HostBootstrapObjectPublisher(
+        aws=object(),
+        aws_region="us-east-1",
+        cache_root_path=cache_root_path,
+        project_root_path=Path(__file__).resolve().parents[1],
+    )
+    for name, artifact in resolution.artifact_by_name_map.items():
+        if name != "python":
+            publisher._downloader.cache_path_get(artifact.url).write_bytes(
+                name.encode()
+            )
+    bundle_path = tmp_path / "bootstrap.tar.gz"
+
+    bootstrap_manifest_sha256 = publisher._bundle_write(
+        bundle_path=bundle_path,
+        resolution=resolution,
+    )
+
+    with tarfile.open(bundle_path, "r:gz") as archive:
+        manifest_file = archive.extractfile("bootstrap-manifest.json")
+        assert manifest_file is not None
+        manifest_bytes = manifest_file.read()
+        manifest = json.loads(manifest_bytes)
+        assert hashlib.sha256(manifest_bytes).hexdigest() == bootstrap_manifest_sha256
+        archive_name_set = set(archive.getnames())
+    for name, artifact_payload in manifest["artifact_by_name_map"].items():
+        expected_path = f"artifact/{name}/{_BUNDLE_FILENAME_BY_ARTIFACT_NAME_MAP[name]}"
+        assert artifact_payload["path"] == expected_path
+        assert expected_path in archive_name_set
+    for package_name in (
+        "containerd.io",
+        "docker-buildx-plugin",
+        "docker-ce",
+        "docker-ce-cli",
+    ):
+        assert manifest["artifact_by_name_map"][package_name]["path"].endswith(".deb")
+
+
+@pytest.mark.parametrize(
+    ("name", "url"),
+    [
+        ("docker-ce", "https://example.invalid/docker-ce"),
+        ("helm", "https://example.invalid/%2e%2e%2fhelm.tar.gz"),
+    ],
+)
+def test_bundle_path_rejects_missing_or_unsafe_source_filename(
+    name: str,
+    url: str,
+) -> None:
+    """Bundle paths reject consumer-breaking suffix drift and decoded separators."""
+
+    artifact = HostArtifactIdentity(
+        name=name,
+        selector="stable",
+        version="1",
+        url=url,
+        sha256="a" * 64,
+        size=1,
+        verification="test-proof",
+        verification_identity="test",
+    )
+
+    with pytest.raises(HostArtifactResolutionError, match="safe source filename"):
+        artifact.bundle_relative_path_get()
 
 
 def test_latest_tag_resolution_uses_numeric_stable_version(

@@ -159,6 +159,7 @@ class HostBootstrapObjectPublisher:
         for name, artifact in sorted(resolution.artifact_by_name_map.items()):
             if name == "python":
                 continue
+            bundle_relative_path = artifact.bundle_relative_path_get()
             artifact_path = self._downloader.cache_path_get(artifact.url)
             artifact_bytes = artifact_path.read_bytes()
             if (
@@ -169,7 +170,7 @@ class HostBootstrapObjectPublisher:
                     f"Verified host artifact cache is unavailable for {name}"
                 )
             artifact_by_name_map[name] = {
-                "path": f"artifact/{name}",
+                "path": bundle_relative_path.as_posix(),
                 "sha256": artifact.sha256,
                 "size": artifact.size,
                 "version": artifact.version,
@@ -204,7 +205,7 @@ class HostBootstrapObjectPublisher:
             )
         for name, artifact in sorted(resolution.artifact_by_name_map.items()):
             if name != "python":
-                archive_entry_by_path_map[PurePosixPath("artifact") / name] = (
+                archive_entry_by_path_map[artifact.bundle_relative_path_get()] = (
                     self._downloader.cache_path_get(artifact.url).read_bytes()
                 )
         with bundle_path.open("wb") as file:
