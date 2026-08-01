@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import re
 import shutil
 import tarfile
 import tempfile
@@ -136,7 +137,7 @@ class HostArtifactBootstrap:
             shutil.copyfile(candidate_path_list[0], destination_path)
             os.chmod(destination_path, 0o755)
         result = self._runner.run([str(destination_path), "--version"])
-        if result.stdout.strip() != f"uv {self._bundle.artifact_version_get('uv')}":
+        if _uv_version_get(result.stdout) != self._bundle.artifact_version_get("uv"):
             raise DevelopmentEnvironmentError(
                 "Installed uv version differs from the bundle"
             )
@@ -213,3 +214,15 @@ def _zip_archive_extract(*, archive: zipfile.ZipFile, destination_path: Path) ->
         with archive.open(info) as source, target_path.open("xb") as destination:
             shutil.copyfileobj(source, destination)
         os.chmod(target_path, mode & 0o777 or 0o644)
+
+
+def _uv_version_get(output: str) -> str:
+    """Parse the stable uv version while permitting its target annotation."""
+
+    match = re.fullmatch(
+        r"uv (?P<version>[0-9]+\.[0-9]+\.[0-9]+)(?: \([^\r\n()]+\))?\s*",
+        output,
+    )
+    if match is None:
+        raise DevelopmentEnvironmentError("Installed uv version output is malformed")
+    return match.group("version")
