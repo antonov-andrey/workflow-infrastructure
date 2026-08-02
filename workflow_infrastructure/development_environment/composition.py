@@ -139,7 +139,9 @@ class DevelopmentEnvironment:
         """
 
         self._clock = clock
-        self._identity = DevelopmentEnvironmentIdentity(environment_name, git_worktree=git_worktree)
+        self._identity = DevelopmentEnvironmentIdentity(
+            environment_name, git_worktree=git_worktree
+        )
         self.cleanup_binding = TaskCleanupBinding(project_root_path=project_root_path)
         self._is_host = project_root_path.is_relative_to(
             self._identity.host_control_release_root_path
@@ -237,7 +239,9 @@ class DevelopmentEnvironment:
             identity=self._identity,
             is_host_get=lambda: self._is_host,
             pointer=product_release_pointer,
-            python_bytecode_environment_assignment=(PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT),
+            python_bytecode_environment_assignment=(
+                PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT
+            ),
             recovery=product_release_recovery,
             reset=RetainedProductReleaseReset(
                 identity=self._identity,
@@ -281,8 +285,12 @@ class DevelopmentEnvironment:
         )
         self._host_storage_initialization = DevelopmentHostStorageInitialization(
             aws=self._aws,
-            compute_stable_identity_logical_id_set=(COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET),
-            compute_template_path=(project_root_path / "cloudformation/development-compute.yaml"),
+            compute_stable_identity_logical_id_set=(
+                COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET
+            ),
+            compute_template_path=(
+                project_root_path / "cloudformation/development-compute.yaml"
+            ),
             identity=self._identity,
             stack=self._stack,
         )
@@ -363,7 +371,9 @@ class DevelopmentEnvironment:
             account=self._account,
             clock=clock,
             compute=self.compute,
-            compute_template_path=(project_root_path / "cloudformation/development-compute.yaml"),
+            compute_template_path=(
+                project_root_path / "cloudformation/development-compute.yaml"
+            ),
             identity=self._identity,
             lease_duration=LEASE_DURATION,
             lifecycle=self.lifecycle,
@@ -379,10 +389,16 @@ class DevelopmentEnvironment:
             aws_account_id=AWS_ACCOUNT_ID,
             aws_region=AWS_REGION,
             compute=self.compute,
-            compute_stable_identity_logical_id_set=(COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET),
-            compute_template_path=(project_root_path / "cloudformation/development-compute.yaml"),
+            compute_stable_identity_logical_id_set=(
+                COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET
+            ),
+            compute_template_path=(
+                project_root_path / "cloudformation/development-compute.yaml"
+            ),
             cost_reviewer=self._cost_reviewer,
-            data_plane_template_path=(project_root_path / "cloudformation/development-data.yaml"),
+            data_plane_template_path=(
+                project_root_path / "cloudformation/development-data.yaml"
+            ),
             foundation=self.foundation,
             host_artifact=self.host_artifact,
             identity=self._identity,
@@ -411,7 +427,9 @@ class DevelopmentEnvironment:
         """Create or reconcile the sole account-global development owner."""
 
         if not self._identity.is_primary:
-            raise DevelopmentEnvironmentError("Account foundation can be applied only by the primary environment")
+            raise DevelopmentEnvironmentError(
+                "Account foundation can be applied only by the primary environment"
+            )
         self._account.local_operator_context_validate()
         self._source_publisher.validate_repository(
             self._project_root_path,

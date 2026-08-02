@@ -59,7 +59,9 @@ class DevelopmentSourceCheckoutResolver:
             return self._project_root_path
         canonical_path = self._workspace_root_path_get() / repository_name
         if not canonical_path.is_dir():
-            raise DevelopmentEnvironmentError(f"Canonical source repository is missing: {canonical_path}")
+            raise DevelopmentEnvironmentError(
+                f"Canonical source repository is missing: {canonical_path}"
+            )
         if not self._git_worktree:
             self._branch_require(
                 repository_name=repository_name,
@@ -75,7 +77,9 @@ class DevelopmentSourceCheckoutResolver:
         )
         if task_path.exists():
             if not task_path.is_dir():
-                raise DevelopmentEnvironmentError(f"Task source path is not a directory: {task_path}")
+                raise DevelopmentEnvironmentError(
+                    f"Task source path is not a directory: {task_path}"
+                )
             self._branch_require(
                 repository_name=repository_name,
                 repository_path=task_path,
@@ -114,7 +118,10 @@ class DevelopmentSourceCheckoutResolver:
         )
         common_directory = Path(result.stdout.strip()).resolve()
         canonical_repository_path = common_directory.parent
-        if common_directory.name != ".git" or canonical_repository_path.name != "workflow-infrastructure":
+        if (
+            common_directory.name != ".git"
+            or canonical_repository_path.name != "workflow-infrastructure"
+        ):
             raise DevelopmentEnvironmentError(
                 "Infrastructure Git common directory does not identify the canonical workspace"
             )
@@ -130,9 +137,13 @@ class DevelopmentSourceCheckoutResolver:
     ) -> None:
         """Require one checkout to be attached to the exact expected branch."""
 
-        result = self._runner.run(["git", "-C", str(repository_path), "branch", "--show-current"])
+        result = self._runner.run(
+            ["git", "-C", str(repository_path), "branch", "--show-current"]
+        )
         if result.stdout.strip() != required_branch:
-            raise DevelopmentEnvironmentError(f"{repository_name} source must use branch {required_branch}")
+            raise DevelopmentEnvironmentError(
+                f"{repository_name} source must use branch {required_branch}"
+            )
 
     def _remote_branch_exists(self, *, repository_path: Path, branch_name: str) -> bool:
         """Return whether origin advertises one exact task branch."""
@@ -152,8 +163,12 @@ class DevelopmentSourceCheckoutResolver:
         if result.returncode == 0:
             field_list = result.stdout.strip().split()
             if len(field_list) != 2 or field_list[1] != f"refs/heads/{branch_name}":
-                raise DevelopmentEnvironmentError(f"{repository_path.name} task branch lookup is malformed")
+                raise DevelopmentEnvironmentError(
+                    f"{repository_path.name} task branch lookup is malformed"
+                )
             return True
         if result.returncode == 2:
             return False
-        raise DevelopmentEnvironmentError(f"{repository_path.name} task branch lookup failed")
+        raise DevelopmentEnvironmentError(
+            f"{repository_path.name} task branch lookup failed"
+        )
