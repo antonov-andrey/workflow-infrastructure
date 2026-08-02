@@ -70,6 +70,7 @@ class EnvironmentIdentityProtocol(Protocol):
     compute_stack_name: str
     data_plane_stack_name: str
     environment_name: str
+    local_http_port: int
     host_control_entrypoint_path: Path
     host_control_current_source_path: Path
     host_control_release_root_path: Path
@@ -449,6 +450,8 @@ class DevelopmentProductDeploymentManager:
                 platform,
                 "--environment-name",
                 self._identity.environment_name,
+                "--public-http-port",
+                str(self._identity.local_http_port),
             ],
             ssh_control_path=ssh_control_path,
             should_capture=False,
@@ -534,6 +537,8 @@ class DevelopmentProductDeploymentManager:
                 release_name,
                 "--environment-name",
                 self._identity.environment_name,
+                "--public-http-port",
+                str(self._identity.local_http_port),
             ],
             ssh_control_path=ssh_control_path,
         )
@@ -558,6 +563,8 @@ class DevelopmentProductDeploymentManager:
                 "host-install",
                 "--environment-name",
                 self._identity.environment_name,
+                "--public-http-port",
+                str(self._identity.local_http_port),
             ],
             ssh_control_path=ssh_control_path,
         )

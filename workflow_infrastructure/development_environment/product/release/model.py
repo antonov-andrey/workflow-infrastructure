@@ -10,6 +10,7 @@ class RetainedProductReleaseHostIdentity(Protocol):
     """Host paths and identity required by retained Product release lifecycle."""
 
     environment_name: str
+    local_http_port: int
     host_current_source_path: Path
     host_product_recovery_marker_path: Path
     host_release_root_path: Path

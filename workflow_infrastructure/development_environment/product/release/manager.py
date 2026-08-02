@@ -82,6 +82,8 @@ class DevelopmentRetainedProductReleaseManager:
             command,
             "--environment-name",
             self._identity.environment_name,
+            "--public-http-port",
+            str(self._identity.local_http_port),
             *argument_list,
         ]
 

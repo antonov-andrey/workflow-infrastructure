@@ -74,7 +74,7 @@ python development_environment_manage.py connect --environment-name primary
 python development_environment_manage.py ssh --environment-name primary -- <ssh-arguments>
 ```
 
-`connect` держит одну SSM port-forwarding session от remote ingress. Primary использует persisted local port `8080`; task environment получает deterministic collision-checked persisted port, который `connect` и `status` печатают как exact endpoint. ZITADEL и GlitchTip используют соответствующие `*.localhost:<environment-port>` hostnames. Команда является long-running foreground process, чтобы состояние tunnel оставалось видимым.
+`connect` держит одну SSM port-forwarding session от remote ingress. Primary использует persisted local port `8080`; task environment получает deterministic collision-checked persisted port, который `connect` и `status` печатают как exact endpoint. Инфраструктура передаёт этот exact port во все WCC Product lifecycle commands; task deployment без него отклоняется. UI build, backend issuer/Host, ZITADEL callbacks/issuer, GlitchTip public URL и ingress CORS используют соответствующие `*.localhost:<environment-port>` origins, а SSM remote port и host-side readiness остаются на внутреннем ingress port `8080`. Команда является long-running foreground process, чтобы состояние tunnel оставалось видимым.
 
 `ssh` использует SSH-over-SSM и поддерживает обычные SSH, SCP, rsync и Remote SSH IDE flows без inbound port `22`. Persistent SSH private key или public ingress не создаются.
 

@@ -61,11 +61,17 @@ class DevelopmentProductResetManager:
             "python3.14",
             "-B",
             str(
-                release_root_path / "sources" / "workflow-control-center" / "tool" / "development_kubernetes_manage.py"
+                release_root_path
+                / "sources"
+                / "workflow-control-center"
+                / "tool"
+                / "development_kubernetes_manage.py"
             ),
             "product-state-reset",
             "--environment-name",
             self._identity.environment_name,
+            "--public-http-port",
+            str(self._identity.local_http_port),
             "--release",
             release_name,
             "--source-root",
@@ -76,7 +82,9 @@ class DevelopmentProductResetManager:
             user_email,
         ]
         for expected_role_key in expected_role_key_list:
-            product_reset_command_list.extend(["--expected-role-key", expected_role_key])
+            product_reset_command_list.extend(
+                ["--expected-role-key", expected_role_key]
+            )
         self._transport.ssh_run(
             product_reset_command_list,
             ssh_control_path=ssh_control_path,
@@ -98,13 +106,16 @@ class DevelopmentProductResetManager:
             ],
             ssh_control_path=ssh_control_path,
         )
-        print(f"OK: disposable Product state reset before candidate release {release_name}")
+        print(
+            f"OK: disposable Product state reset before candidate release {release_name}"
+        )
 
 
 class EnvironmentIdentityProtocol(Protocol):
     """Host identities required by candidate Product reset."""
 
     environment_name: str
+    local_http_port: int
 
 
 class SsmTransportProtocol(Protocol):

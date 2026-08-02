@@ -856,6 +856,8 @@ def test_current_product_tool_calls_preserve_nonprimary_environment(
             "activity",
             "--environment-name",
             "feature1",
+            "--public-http-port",
+            str(environment._identity.local_http_port),
         ],
         [
             "env",
@@ -866,6 +868,8 @@ def test_current_product_tool_calls_preserve_nonprimary_environment(
             "shutdown",
             "--environment-name",
             "feature1",
+            "--public-http-port",
+            str(environment._identity.local_http_port),
         ],
     ]
     ssm_command_text = "\n".join(
@@ -873,7 +877,8 @@ def test_current_product_tool_calls_preserve_nonprimary_environment(
     )
     for command in ("diagnose", "host-install", "recover", "recovery-acceptance"):
         assert (
-            f"{product_tool_path} {command} --environment-name feature1"
+            f"{product_tool_path} {command} --environment-name feature1 "
+            f"--public-http-port {environment._identity.local_http_port}"
             in ssm_command_text
         )
     assert ssm_command_text.index(
@@ -893,7 +898,13 @@ def test_current_primary_product_tool_calls_include_exact_environment(
         "activity"
     )
 
-    assert command_list[-3:] == ["activity", "--environment-name", "primary"]
+    assert command_list[-5:] == [
+        "activity",
+        "--environment-name",
+        "primary",
+        "--public-http-port",
+        "8080",
+    ]
     assert command_list[:4] == [
         "env",
         development_host.PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
