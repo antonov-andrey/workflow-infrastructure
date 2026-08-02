@@ -40,6 +40,7 @@ class EnvironmentIdentityProtocol(Protocol):
     """Stable environment identities required by source publication."""
 
     environment_name: str
+    git_worktree: str
     host_control_entrypoint_path: Path
     host_control_current_source_path: Path
     host_control_release_root_path: Path
@@ -479,7 +480,55 @@ class DevelopmentSourcePublisher:
                     f"{repository_name}/{submodule_path_text} origin is "
                     f"{actual_submodule_url}, expected {expected_submodule_url}"
                 )
-            remote_result = self._runner.run(
+            self._submodule_commit_publication_validate(
+                commit_sha=submodule_payload["commit_sha"],
+                repository_name=repository_name,
+                submodule_path=submodule_path,
+                submodule_path_text=submodule_path_text,
+            )
+
+    def _submodule_commit_publication_validate(
+        self,
+        *,
+        commit_sha: str,
+        repository_name: str,
+        submodule_path: Path,
+        submodule_path_text: str,
+    ) -> None:
+        """Prove one gitlink on canonical main or the exact task branch."""
+
+        main_result = self._runner.run(
+            [
+                "git",
+                "-C",
+                str(submodule_path),
+                "ls-remote",
+                "--exit-code",
+                "origin",
+                "refs/heads/main",
+            ]
+        )
+        main_field_list = main_result.stdout.strip().split()
+        if len(main_field_list) != 2:
+            raise DevelopmentEnvironmentError(
+                f"{repository_name}/{submodule_path_text} origin/main lookup is malformed"
+            )
+        main_ancestor_result = self._runner.run(
+            [
+                "git",
+                "-C",
+                str(submodule_path),
+                "merge-base",
+                "--is-ancestor",
+                commit_sha,
+                main_field_list[0],
+            ],
+            check=False,
+        )
+        if main_ancestor_result.returncode == 0:
+            return
+        if self._identity.git_worktree:
+            task_result = self._runner.run(
                 [
                     "git",
                     "-C",
@@ -487,30 +536,21 @@ class DevelopmentSourcePublisher:
                     "ls-remote",
                     "--exit-code",
                     "origin",
-                    "refs/heads/main",
-                ]
-            )
-            remote_field_list = remote_result.stdout.strip().split()
-            if len(remote_field_list) != 2:
-                raise DevelopmentEnvironmentError(
-                    f"{repository_name}/{submodule_path_text} origin/main " "lookup is malformed"
-                )
-            ancestor_result = self._runner.run(
-                [
-                    "git",
-                    "-C",
-                    str(submodule_path),
-                    "merge-base",
-                    "--is-ancestor",
-                    str(submodule_payload["commit_sha"]),
-                    remote_field_list[0],
+                    f"refs/heads/{self._identity.git_worktree}",
                 ],
                 check=False,
             )
-            if ancestor_result.returncode != 0:
-                raise DevelopmentEnvironmentError(
-                    f"{repository_name}/{submodule_path_text} commit is not " "published on origin/main"
-                )
+            task_field_list = task_result.stdout.strip().split()
+            if (
+                task_result.returncode == 0
+                and len(task_field_list) == 2
+                and task_field_list[0] == commit_sha
+            ):
+                return
+        raise DevelopmentEnvironmentError(
+            f"{repository_name}/{submodule_path_text} commit is not published on "
+            "origin/main or the exact environment task branch"
+        )
 
     def _archive_transfer(
         self,

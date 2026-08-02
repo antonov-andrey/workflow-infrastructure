@@ -114,6 +114,7 @@ def _environment_get(
     project_root_path: Path,
     *,
     environment_name: str = "primary",
+    git_worktree: str = "",
 ) -> DevelopmentEnvironment:
     """Create one development environment with real commands and deterministic time.
 
@@ -128,6 +129,7 @@ def _environment_get(
     return DevelopmentEnvironment(
         clock=ClockFixed(),
         environment_name=environment_name,
+        git_worktree=git_worktree,
         project_root_path=project_root_path,
         runner=CommandRunner(),
     )
@@ -2911,6 +2913,62 @@ def test_source_repository_requires_clean_exact_published_head(
     with pytest.raises(DevelopmentEnvironmentError, match="not exact origin/main"):
         environment._source_publisher.validate_repository(
             repository_path, "workflow-infrastructure"
+        )
+
+
+def test_task_environment_accepts_only_exact_task_branch_submodule_commit(
+    tmp_path: Path,
+) -> None:
+    """A task gitlink may precede goal-merge but must be the published task head."""
+
+    task_name = "2026-08-01-workflow-platform-hardening"
+    remote_path = tmp_path / "submodule.git"
+    subprocess.run(
+        ["git", "init", "--bare", "--initial-branch=main", str(remote_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    submodule_path = tmp_path / "submodule"
+    subprocess.run(
+        ["git", "clone", str(remote_path), str(submodule_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    _git_run(submodule_path, ["config", "user.email", "test@example.com"])
+    _git_run(submodule_path, ["config", "user.name", "Test"])
+    (submodule_path / "provider.py").write_text("VERSION = 1\n", encoding="utf-8")
+    _git_run(submodule_path, ["add", "provider.py"])
+    _git_run(submodule_path, ["commit", "-m", "initial"])
+    _git_run(submodule_path, ["push", "-u", "origin", "main"])
+    _git_run(submodule_path, ["switch", "-c", task_name])
+    (submodule_path / "provider.py").write_text("VERSION = 2\n", encoding="utf-8")
+    _git_run(submodule_path, ["add", "provider.py"])
+    _git_run(submodule_path, ["commit", "-m", "task"])
+    _git_run(submodule_path, ["push", "-u", "origin", task_name])
+    task_commit_sha = subprocess.run(
+        ["git", "-C", str(submodule_path), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    task_environment = _environment_get(tmp_path, git_worktree=task_name)
+    task_environment._source_publisher._submodule_commit_publication_validate(
+        commit_sha=task_commit_sha,
+        repository_name="consumer",
+        submodule_path=submodule_path,
+        submodule_path_text="provider",
+    )
+
+    primary_environment = _environment_get(tmp_path)
+    with pytest.raises(DevelopmentEnvironmentError, match="exact environment task branch"):
+        primary_environment._source_publisher._submodule_commit_publication_validate(
+            commit_sha=task_commit_sha,
+            repository_name="consumer",
+            submodule_path=submodule_path,
+            submodule_path_text="provider",
         )
 
 
