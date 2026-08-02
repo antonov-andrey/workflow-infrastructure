@@ -81,6 +81,9 @@ from workflow_infrastructure.development_environment.retained_volume import (
 from workflow_infrastructure.development_environment.source import (
     DevelopmentSourcePublisher,
 )
+from workflow_infrastructure.development_environment.source_checkout import (
+    DevelopmentSourceCheckoutResolver,
+)
 from workflow_infrastructure.development_environment.stack import (
     DevelopmentStackManager,
 )
@@ -136,16 +139,13 @@ class DevelopmentEnvironment:
         """
 
         self._clock = clock
-        self._identity = DevelopmentEnvironmentIdentity(
-            environment_name, git_worktree=git_worktree
-        )
+        self._identity = DevelopmentEnvironmentIdentity(environment_name, git_worktree=git_worktree)
         self.cleanup_binding = TaskCleanupBinding(project_root_path=project_root_path)
         self._is_host = project_root_path.is_relative_to(
             self._identity.host_control_release_root_path
         ) or project_root_path.is_relative_to(self._identity.host_release_root_path)
         self._project_root_path = project_root_path
         self._runner = runner
-        self._workspace_root_path = project_root_path.parent
         self._aws = DevelopmentAwsClient(
             is_host=self._is_host,
             profile=AWS_PROFILE,
@@ -215,6 +215,11 @@ class DevelopmentEnvironment:
             runner=runner,
             transport=self._transport,
         )
+        self._source_checkout = DevelopmentSourceCheckoutResolver(
+            git_worktree=git_worktree,
+            project_root_path=project_root_path,
+            runner=runner,
+        )
         product_release_validator = RetainedProductReleaseValidator(self._identity)
         product_release_pointer = RetainedProductReleasePointerStore(
             identity=self._identity,
@@ -232,9 +237,7 @@ class DevelopmentEnvironment:
             identity=self._identity,
             is_host_get=lambda: self._is_host,
             pointer=product_release_pointer,
-            python_bytecode_environment_assignment=(
-                PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT
-            ),
+            python_bytecode_environment_assignment=(PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT),
             recovery=product_release_recovery,
             reset=RetainedProductReleaseReset(
                 identity=self._identity,
@@ -278,12 +281,8 @@ class DevelopmentEnvironment:
         )
         self._host_storage_initialization = DevelopmentHostStorageInitialization(
             aws=self._aws,
-            compute_stable_identity_logical_id_set=(
-                COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET
-            ),
-            compute_template_path=(
-                project_root_path / "cloudformation/development-compute.yaml"
-            ),
+            compute_stable_identity_logical_id_set=(COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET),
+            compute_template_path=(project_root_path / "cloudformation/development-compute.yaml"),
             identity=self._identity,
             stack=self._stack,
         )
@@ -340,10 +339,10 @@ class DevelopmentEnvironment:
             product_reset=self.product_reset,
             project_root_path=project_root_path,
             public_ecr_auth=self._public_ecr_auth,
+            source_checkout=self._source_checkout,
             source_publisher=self._source_publisher,
             stack=self._stack,
             transport=self._transport,
-            workspace_root_path=self._workspace_root_path,
         )
         self.lifecycle = DevelopmentLifecycleManager(
             account=self._account,
@@ -364,9 +363,7 @@ class DevelopmentEnvironment:
             account=self._account,
             clock=clock,
             compute=self.compute,
-            compute_template_path=(
-                project_root_path / "cloudformation/development-compute.yaml"
-            ),
+            compute_template_path=(project_root_path / "cloudformation/development-compute.yaml"),
             identity=self._identity,
             lease_duration=LEASE_DURATION,
             lifecycle=self.lifecycle,
@@ -382,16 +379,10 @@ class DevelopmentEnvironment:
             aws_account_id=AWS_ACCOUNT_ID,
             aws_region=AWS_REGION,
             compute=self.compute,
-            compute_stable_identity_logical_id_set=(
-                COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET
-            ),
-            compute_template_path=(
-                project_root_path / "cloudformation/development-compute.yaml"
-            ),
+            compute_stable_identity_logical_id_set=(COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET),
+            compute_template_path=(project_root_path / "cloudformation/development-compute.yaml"),
             cost_reviewer=self._cost_reviewer,
-            data_plane_template_path=(
-                project_root_path / "cloudformation/development-data.yaml"
-            ),
+            data_plane_template_path=(project_root_path / "cloudformation/development-data.yaml"),
             foundation=self.foundation,
             host_artifact=self.host_artifact,
             identity=self._identity,
@@ -420,9 +411,7 @@ class DevelopmentEnvironment:
         """Create or reconcile the sole account-global development owner."""
 
         if not self._identity.is_primary:
-            raise DevelopmentEnvironmentError(
-                "Account foundation can be applied only by the primary environment"
-            )
+            raise DevelopmentEnvironmentError("Account foundation can be applied only by the primary environment")
         self._account.local_operator_context_validate()
         self._source_publisher.validate_repository(
             self._project_root_path,
