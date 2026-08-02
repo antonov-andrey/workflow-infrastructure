@@ -32,13 +32,9 @@ class RetainedProductCandidateLedgerValidator:
         relative_path = Path("image-candidate") / logical_name / "candidate-ledger.json"
         ledger_path = release_root_path / relative_path
         try:
-            if (
-                ledger_path.is_symlink()
-                or ledger_path.resolve(strict=True).parent
-                != (release_root_path / "image-candidate" / logical_name).resolve(
-                    strict=True
-                )
-            ):
+            if ledger_path.is_symlink() or ledger_path.resolve(strict=True).parent != (
+                release_root_path / "image-candidate" / logical_name
+            ).resolve(strict=True):
                 raise OSError("unsafe ledger path")
             ledger_bytes = ledger_path.read_bytes()
             ledger = json.loads(ledger_bytes)
@@ -103,8 +99,7 @@ class RetainedProductCandidateLedgerValidator:
             ledger.get("completed_manifest_digest_list")
             != graph.get("publication_manifest_digest_list")
             or set(ledger.get("completed_blob_digest_list", [])) != blob_digest_set
-            or len(ledger.get("completed_blob_digest_list", []))
-            != len(blob_digest_set)
+            or len(ledger.get("completed_blob_digest_list", [])) != len(blob_digest_set)
             or set(ledger.get("completed_manifest_digest_list", []))
             != manifest_digest_set
         ):
@@ -170,7 +165,10 @@ class RetainedProductCandidateLedgerValidator:
         manifest_digest_set = set(manifest_map)
         blob_digest_set = set(blob_map)
         if (
-            any(not isinstance(value, str) for value in manifest_digest_set | blob_digest_set)
+            any(
+                not isinstance(value, str)
+                for value in manifest_digest_set | blob_digest_set
+            )
             or manifest_digest_set & blob_digest_set
             or root_digest not in manifest_digest_set
             or len(publication_list) != len(set(publication_list))
@@ -207,7 +205,9 @@ class RetainedProductCandidateLedgerValidator:
                     f"Retained Product image {logical_name} manifest edges are invalid"
                 )
             child_by_parent[digest] = child_list
-        order_by_digest = {digest: index for index, digest in enumerate(publication_list)}
+        order_by_digest = {
+            digest: index for index, digest in enumerate(publication_list)
+        }
         if any(
             order_by_digest[child] >= order_by_digest[parent]
             for parent, child_list in child_by_parent.items()

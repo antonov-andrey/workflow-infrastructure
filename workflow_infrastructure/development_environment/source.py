@@ -109,7 +109,9 @@ class DevelopmentSourcePublisher:
                 repository_name="workflow-infrastructure",
                 repository_path=self._project_root_path,
                 release_name=release_name,
-                remote_release_root_path=(self._identity.host_control_release_root_path),
+                remote_release_root_path=(
+                    self._identity.host_control_release_root_path
+                ),
                 ssh_control_path=ssh_control_path,
             )
             self._transport.ssh_run(
@@ -119,7 +121,11 @@ class DevelopmentSourcePublisher:
                     "-d",
                     "-m",
                     "0755",
-                    str(self._identity.host_control_release_root_path / release_name / "sources"),
+                    str(
+                        self._identity.host_control_release_root_path
+                        / release_name
+                        / "sources"
+                    ),
                 ],
                 ssh_control_path=ssh_control_path,
             )
@@ -191,12 +197,18 @@ class DevelopmentSourcePublisher:
         """Resolve one moving source and export its immutable archive."""
 
         repository_url = REPOSITORY_URL_BY_NAME_MAP[repository_name]
-        if exact_override_commit and re.fullmatch(r"[0-9a-f]{40}", exact_override_commit) is None:
+        if (
+            exact_override_commit
+            and re.fullmatch(r"[0-9a-f]{40}", exact_override_commit) is None
+        ):
             raise DevelopmentEnvironmentError(
-                "workflow-container-contract override must be one lowercase " "40-character commit SHA"
+                "workflow-container-contract override must be one lowercase "
+                "40-character commit SHA"
             )
         for _attempt_index in range(MOVING_SOURCE_RESOLUTION_ATTEMPT_COUNT):
-            remote_head_by_field_map = self._moving_source_head_by_field_map_get(repository_url=repository_url)
+            remote_head_by_field_map = self._moving_source_head_by_field_map_get(
+                repository_url=repository_url
+            )
             resolved_ref = remote_head_by_field_map["resolved_ref"]
             commit_sha = exact_override_commit or remote_head_by_field_map["commit_sha"]
             with tempfile.TemporaryDirectory() as temporary_directory:
@@ -221,7 +233,8 @@ class DevelopmentSourcePublisher:
                 if fetched_commit_sha != commit_sha:
                     if exact_override_commit:
                         raise DevelopmentEnvironmentError(
-                            "workflow-container-contract override resolved to " "another commit"
+                            "workflow-container-contract override resolved to "
+                            "another commit"
                         )
                     continue
                 if (
@@ -231,12 +244,17 @@ class DevelopmentSourcePublisher:
                     )
                     != "commit"
                 ):
-                    raise DevelopmentEnvironmentError("workflow-container-contract source identity is not a commit")
-                remote_head_after_by_field_map = self._moving_source_head_by_field_map_get(
-                    repository_url=repository_url
+                    raise DevelopmentEnvironmentError(
+                        "workflow-container-contract source identity is not a commit"
+                    )
+                remote_head_after_by_field_map = (
+                    self._moving_source_head_by_field_map_get(
+                        repository_url=repository_url
+                    )
                 )
                 if remote_head_after_by_field_map["resolved_ref"] != resolved_ref or (
-                    not exact_override_commit and remote_head_after_by_field_map["commit_sha"] != commit_sha
+                    not exact_override_commit
+                    and remote_head_after_by_field_map["commit_sha"] != commit_sha
                 ):
                     continue
                 tree_result = self._runner.run(
@@ -250,9 +268,13 @@ class DevelopmentSourcePublisher:
                         commit_sha,
                     ]
                 )
-                if any(line.startswith("160000 ") for line in tree_result.stdout.splitlines()):
+                if any(
+                    line.startswith("160000 ")
+                    for line in tree_result.stdout.splitlines()
+                ):
                     raise DevelopmentEnvironmentError(
-                        "workflow-container-contract moving source must not " "contain submodules"
+                        "workflow-container-contract moving source must not "
+                        "contain submodules"
                     )
                 pyproject_result = self._runner.run(
                     [
@@ -270,14 +292,18 @@ class DevelopmentSourcePublisher:
                         "workflow-container-contract pyproject.toml is malformed"
                     ) from error
                 project = pyproject.get("project")
-                package_version = project.get("version") if isinstance(project, dict) else None
+                package_version = (
+                    project.get("version") if isinstance(project, dict) else None
+                )
                 if (
                     not isinstance(project, dict)
                     or project.get("name") != "workflow-container-contract"
                     or not isinstance(package_version, str)
                     or not package_version
                 ):
-                    raise DevelopmentEnvironmentError("workflow-container-contract package identity is malformed")
+                    raise DevelopmentEnvironmentError(
+                        "workflow-container-contract package identity is malformed"
+                    )
                 self._runner.run(
                     [
                         "git",
@@ -292,7 +318,9 @@ class DevelopmentSourcePublisher:
             manifest: dict[str, object] = {
                 "archive_sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
                 "commit_sha": commit_sha,
-                "file_sha256_by_path_map": (self._source_file_sha256_by_path_map_get(archive_path=archive_path)),
+                "file_sha256_by_path_map": (
+                    self._source_file_sha256_by_path_map_get(archive_path=archive_path)
+                ),
                 "package_version": package_version,
                 "repository_url": repository_url,
                 "requested_selector": MOVING_SOURCE_SELECTOR,
@@ -313,7 +341,8 @@ class DevelopmentSourcePublisher:
             )
             return manifest
         raise DevelopmentEnvironmentError(
-            "workflow-container-contract default branch changed during every " "bounded resolution attempt"
+            "workflow-container-contract default branch changed during every "
+            "bounded resolution attempt"
         )
 
     def archive_publish(
@@ -382,7 +411,9 @@ class DevelopmentSourcePublisher:
                         archive_info,
                         fileobj=io.BytesIO(payload),
                     )
-                file_sha256_by_path_map[relative_path.as_posix()] = hashlib.sha256(payload).hexdigest()
+                file_sha256_by_path_map[relative_path.as_posix()] = hashlib.sha256(
+                    payload
+                ).hexdigest()
         manifest: dict[str, object] = {
             "archive_sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
             "commit_sha": self._git_stdout_get(
@@ -413,7 +444,9 @@ class DevelopmentSourcePublisher:
             ["remote", "get-url", "origin"],
         )
         if actual_url != expected_url:
-            raise DevelopmentEnvironmentError(f"{repository_name} origin is {actual_url}, expected {expected_url}")
+            raise DevelopmentEnvironmentError(
+                f"{repository_name} origin is {actual_url}, expected {expected_url}"
+            )
         status = self._git_stdout_get(
             repository_path,
             [
@@ -424,7 +457,9 @@ class DevelopmentSourcePublisher:
             ],
         )
         if status:
-            raise DevelopmentEnvironmentError(f"{repository_name} worktree is not clean")
+            raise DevelopmentEnvironmentError(
+                f"{repository_name} worktree is not clean"
+            )
         head_sha = self._git_stdout_get(
             repository_path,
             ["rev-parse", "HEAD"],
@@ -448,7 +483,9 @@ class DevelopmentSourcePublisher:
         )
         remote_field_list = remote_result.stdout.strip().split()
         if len(remote_field_list) != 2 or remote_field_list[0] != head_sha:
-            raise DevelopmentEnvironmentError(f"{repository_name} HEAD is not exact origin/{branch_name}")
+            raise DevelopmentEnvironmentError(
+                f"{repository_name} HEAD is not exact origin/{branch_name}"
+            )
         submodule_result = self._runner.run(
             [
                 "git",
@@ -461,10 +498,14 @@ class DevelopmentSourcePublisher:
             check=False,
         )
         if submodule_result.returncode != 0:
-            raise DevelopmentEnvironmentError(f"{repository_name} submodule status failed")
+            raise DevelopmentEnvironmentError(
+                f"{repository_name} submodule status failed"
+            )
         for status_line in submodule_result.stdout.splitlines():
             if status_line[:1] != " ":
-                raise DevelopmentEnvironmentError(f"{repository_name} has a non-exact submodule: {status_line}")
+                raise DevelopmentEnvironmentError(
+                    f"{repository_name} has a non-exact submodule: {status_line}"
+                )
         for (
             submodule_path_text,
             submodule_payload,
@@ -578,7 +619,9 @@ class DevelopmentSourcePublisher:
                 f"{self._identity.instance_name}:{remote_staging_path}/",
             ]
         )
-        remote_release_path = remote_release_root_path / release_name / "sources" / repository_name
+        remote_release_path = (
+            remote_release_root_path / release_name / "sources" / repository_name
+        )
         verification_code = f"""\
 import hashlib
 import json
@@ -653,7 +696,8 @@ shutil.rmtree(root_path)
                 commit_sha = field_list[0]
         if not resolved_ref or not commit_sha:
             raise DevelopmentEnvironmentError(
-                "workflow-container-contract remote HEAD has no advertised " "symbolic branch and exact commit"
+                "workflow-container-contract remote HEAD has no advertised "
+                "symbolic branch and exact commit"
             )
         return {"commit_sha": commit_sha, "resolved_ref": resolved_ref}
 
@@ -675,11 +719,15 @@ shutil.rmtree(root_path)
                         not normalized_member_name
                         or relative_path.is_absolute()
                         or relative_path.as_posix() != normalized_member_name
-                        or any(path_part in {"", ".", ".."} for path_part in relative_path.parts)
+                        or any(
+                            path_part in {"", ".", ".."}
+                            for path_part in relative_path.parts
+                        )
                         or normalized_member_name in member_name_set
                     ):
                         raise DevelopmentEnvironmentError(
-                            "workflow-container-contract archive contains an " "unsafe or duplicate path"
+                            "workflow-container-contract archive contains an "
+                            "unsafe or duplicate path"
                         )
                     member_name_set.add(normalized_member_name)
                     if member.isdir():
@@ -690,16 +738,22 @@ shutil.rmtree(root_path)
                         source_file = archive.extractfile(member)
                         if source_file is None:
                             raise DevelopmentEnvironmentError(
-                                "workflow-container-contract archive file " "cannot be read"
+                                "workflow-container-contract archive file "
+                                "cannot be read"
                             )
                         payload = source_file.read()
                     else:
                         raise DevelopmentEnvironmentError(
-                            "workflow-container-contract archive contains an " "unsupported entry"
+                            "workflow-container-contract archive contains an "
+                            "unsupported entry"
                         )
-                    file_sha256_by_path_map[normalized_member_name] = hashlib.sha256(payload).hexdigest()
+                    file_sha256_by_path_map[normalized_member_name] = hashlib.sha256(
+                        payload
+                    ).hexdigest()
         except (OSError, tarfile.TarError) as error:
-            raise DevelopmentEnvironmentError("workflow-container-contract archive is malformed") from error
+            raise DevelopmentEnvironmentError(
+                "workflow-container-contract archive is malformed"
+            ) from error
         return file_sha256_by_path_map
 
     def _submodule_by_path_map_get(
@@ -725,12 +779,16 @@ shutil.rmtree(root_path)
             check=False,
         )
         if result.returncode not in {0, 1}:
-            raise DevelopmentEnvironmentError(f"{repository_path.name} .gitmodules lookup failed")
+            raise DevelopmentEnvironmentError(
+                f"{repository_path.name} .gitmodules lookup failed"
+            )
         submodule_by_path_map: dict[str, dict[str, str]] = {}
         for line in result.stdout.splitlines():
             field_list = line.split(maxsplit=1)
             if len(field_list) != 2:
-                raise DevelopmentEnvironmentError(f"{repository_path.name} .gitmodules path is malformed")
+                raise DevelopmentEnvironmentError(
+                    f"{repository_path.name} .gitmodules path is malformed"
+                )
             path_key, submodule_path = field_list
             name = path_key.removeprefix("submodule.").removesuffix(".path")
             repository_url = self._git_stdout_get(
@@ -776,5 +834,7 @@ shutil.rmtree(root_path)
     ) -> str:
         """Run Git in one repository and return stripped output."""
 
-        result = self._runner.run(["git", "-C", str(repository_path), *git_argument_list])
+        result = self._runner.run(
+            ["git", "-C", str(repository_path), *git_argument_list]
+        )
         return result.stdout.strip()
