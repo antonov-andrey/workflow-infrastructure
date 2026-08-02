@@ -106,7 +106,7 @@ class DevelopmentAccessManager:
                 json.dumps(
                     {
                         "localPortNumber": [str(self._identity.local_http_port)],
-                        "portNumber": ["8080"],
+                        "portNumber": [str(self._identity.local_http_port)],
                     },
                     separators=(",", ":"),
                 ),

@@ -2963,7 +2963,9 @@ def test_task_environment_accepts_only_exact_task_branch_submodule_commit(
     )
 
     primary_environment = _environment_get(tmp_path)
-    with pytest.raises(DevelopmentEnvironmentError, match="exact environment task branch"):
+    with pytest.raises(
+        DevelopmentEnvironmentError, match="exact environment task branch"
+    ):
         primary_environment._source_publisher._submodule_commit_publication_validate(
             commit_sha=task_commit_sha,
             repository_name="consumer",
@@ -4635,13 +4637,22 @@ def test_stop_lease_uses_renewable_tag_resolving_target(
     assert json.loads(target_payload["Input"]) == {}
 
 
-def test_connect_forwards_the_remote_ingress_port_to_local_8080(
+@pytest.mark.parametrize(
+    ("git_worktree", "expected_port"),
+    [
+        ("", "8080"),
+        ("2026-08-01-workflow-platform-hardening", "21822"),
+    ],
+)
+def test_connect_forwards_the_environment_canonical_ingress_port(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    git_worktree: str,
+    expected_port: str,
 ) -> None:
-    """Session Manager must target the actual hostPort without public ingress."""
+    """Both ends of Session Manager use the environment's exact hostPort."""
 
-    environment = _environment_get(tmp_path)
+    environment = _environment_get(tmp_path, git_worktree=git_worktree)
     command_list: list[str] = []
 
     def run(
@@ -4668,8 +4679,8 @@ def test_connect_forwards_the_remote_ingress_port_to_local_8080(
     assert environment.access.connect() == 0
     parameter_payload = json.loads(command_list[command_list.index("--parameters") + 1])
     assert parameter_payload == {
-        "localPortNumber": ["8080"],
-        "portNumber": ["8080"],
+        "localPortNumber": [expected_port],
+        "portNumber": [expected_port],
     }
 
 
