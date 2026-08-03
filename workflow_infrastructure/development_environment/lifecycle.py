@@ -28,6 +28,9 @@ LIFECYCLE_ACCEPTANCE_STOP_GRACE = timedelta(minutes=5)
 class AccountVerifierProtocol(Protocol):
     """Local AWS operator boundary required by host lifecycle."""
 
+    def account_foundation_validate(self) -> None:
+        """Validate the exact account-global development foundation."""
+
     def local_operator_context_validate(self) -> None:
         """Validate the exact development account and region."""
 
@@ -417,6 +420,7 @@ class DevelopmentLifecycleManager:
         """
 
         self._account.local_operator_context_validate()
+        self._account.account_foundation_validate()
         self._stack.drift_validate(self._identity.compute_stack_name)
         if should_validate_source:
             self._source_publisher.validate_repository(self._project_root_path, "workflow-infrastructure")

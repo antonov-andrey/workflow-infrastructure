@@ -4502,6 +4502,11 @@ def test_start_creates_stop_lease_before_ec2_start(
 
     monkeypatch.setattr(environment._account, "local_operator_context_validate", lambda: None)
     monkeypatch.setattr(
+        environment._account,
+        "account_foundation_validate",
+        lambda: operation_list.append("foundation"),
+    )
+    monkeypatch.setattr(
         environment._stack,
         "drift_validate",
         lambda stack_name: operation_list.append("drift"),
@@ -4542,11 +4547,12 @@ def test_start_creates_stop_lease_before_ec2_start(
     monkeypatch.setattr(environment._aws, "run", aws_run)
 
     environment.lifecycle.start(should_publish_infrastructure_source=True)
-    assert operation_list[0] == "drift"
-    assert operation_list[1] == "validate-source"
-    assert operation_list[2] == "lease"
-    assert operation_list[3].startswith("ec2 start-instances")
-    assert operation_list[4:] == [
+    assert operation_list[0] == "foundation"
+    assert operation_list[1] == "drift"
+    assert operation_list[2] == "validate-source"
+    assert operation_list[3] == "lease"
+    assert operation_list[4].startswith("ec2 start-instances")
+    assert operation_list[5:] == [
         "online",
         "cloud-init",
         "bootstrap",
@@ -4569,6 +4575,11 @@ def test_ordinary_start_reuses_installed_controller_without_source_delivery(
     environment = _environment_get(tmp_path)
     operation_list: list[str] = []
     monkeypatch.setattr(environment._account, "local_operator_context_validate", lambda: None)
+    monkeypatch.setattr(
+        environment._account,
+        "account_foundation_validate",
+        lambda: operation_list.append("foundation"),
+    )
     monkeypatch.setattr(
         environment._stack,
         "drift_validate",
@@ -4615,6 +4626,7 @@ def test_ordinary_start_reuses_installed_controller_without_source_delivery(
     environment.lifecycle.start()
 
     assert operation_list == [
+        "foundation",
         "drift",
         "lease",
         "online",
@@ -7411,6 +7423,7 @@ def test_start_never_calls_ec2_when_initial_stop_lease_fails(
 
     environment = _environment_get(tmp_path)
     monkeypatch.setattr(environment._account, "local_operator_context_validate", lambda: None)
+    monkeypatch.setattr(environment._account, "account_foundation_validate", lambda: None)
     monkeypatch.setattr(
         environment._stack,
         "drift_validate",
