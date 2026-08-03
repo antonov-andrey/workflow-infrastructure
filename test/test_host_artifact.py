@@ -165,6 +165,25 @@ def _bundle_artifact_get(name: str) -> HostArtifactIdentity:
     )
 
 
+def test_host_artifact_resolution_detaches_and_freezes_its_mapping() -> None:
+    """Mutating a caller-owned mapping cannot change one resolved artifact graph."""
+
+    artifact = _bundle_artifact_get("python")
+    artifact_by_name_map = {"python": artifact}
+    resolution = HostArtifactResolution(
+        architecture="arm64",
+        artifact_by_name_map=artifact_by_name_map,
+        docker_signing_key_fingerprint=DOCKER_SIGNING_KEY_FINGERPRINT,
+        python_build="20260718",
+    )
+
+    artifact_by_name_map.clear()
+
+    assert resolution.artifact_by_name_map == {"python": artifact}
+    with pytest.raises(TypeError):
+        resolution.artifact_by_name_map["other"] = artifact  # type: ignore[index]
+
+
 def test_bundle_paths_preserve_real_safe_filenames(tmp_path: Path) -> None:
     """Native package consumers receive filenames with their required suffixes."""
 

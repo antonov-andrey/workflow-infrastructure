@@ -141,7 +141,7 @@ class DevelopmentHostLifecycle:
             print(f"WARNING: development volume pressure observation failed: {error}")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class VolumePressure:
     """Describe one filesystem's bounded capacity observation."""
 

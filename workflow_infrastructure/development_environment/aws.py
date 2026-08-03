@@ -20,7 +20,7 @@ _AWS_CLI_ERROR_PATTERN = re.compile(
 )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class AwsCliError:
     """One unambiguous structured AWS CLI service error."""
 

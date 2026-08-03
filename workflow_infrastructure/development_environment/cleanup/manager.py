@@ -86,7 +86,7 @@ class DevelopmentEnvironmentCleanupManager:
         journal_path, journal = self._journal.load_or_create(request)
         inventory = CleanupInventory.from_payload(journal["inventory"])
         while journal["phase"] != "complete":
-            self._phase_run(str(journal["phase"]), inventory)
+            self._phase_run(journal["phase"], inventory)
             self._journal.advance(journal_path, journal)
         self._verifier.validate(inventory)
         return {**request.payload_get(), "external_resources_absent": True}
