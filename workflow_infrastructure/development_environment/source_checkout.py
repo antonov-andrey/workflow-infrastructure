@@ -8,6 +8,9 @@ from typing import Protocol, Sequence
 from workflow_infrastructure.development_environment.error import (
     DevelopmentEnvironmentError,
 )
+from workflow_infrastructure.development_environment.git_remote import (
+    git_remote_command_run,
+)
 
 
 class CommandResultProtocol(Protocol):
@@ -26,6 +29,7 @@ class CommandRunnerProtocol(Protocol):
         *,
         check: bool = True,
         should_capture: bool = True,
+        timeout_seconds: float | None = None,
     ) -> CommandResultProtocol:
         """Run one Git command.
 
@@ -33,6 +37,7 @@ class CommandRunnerProtocol(Protocol):
             command_list: Ordered command values.
             check: Whether a nonzero command exit raises an error.
             should_capture: Whether stdout and stderr should be captured.
+            timeout_seconds: Optional complete-process deadline in seconds.
 
         Returns:
             Resulting command result protocol.
@@ -127,7 +132,8 @@ class DevelopmentSourceCheckoutResolver:
 
         if self._workspace_root_path is not None:
             return self._workspace_root_path
-        result = self._runner.run(
+        result = git_remote_command_run(
+            self._runner,
             [
                 "git",
                 "-C",
@@ -135,7 +141,7 @@ class DevelopmentSourceCheckoutResolver:
                 "rev-parse",
                 "--path-format=absolute",
                 "--git-common-dir",
-            ]
+            ],
         )
         common_directory = Path(result.stdout.strip()).resolve()
         canonical_repository_path = common_directory.parent

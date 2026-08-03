@@ -70,6 +70,7 @@ class RunnerFake:
         check: bool = True,
         input_text: str | None = None,
         should_capture: bool = True,
+        timeout_seconds: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Return deterministic command output.
 
@@ -78,12 +79,13 @@ class RunnerFake:
             check: Whether a nonzero command exit raises an error.
             input_text: Input text.
             should_capture: Whether stdout and stderr should be captured.
+            timeout_seconds: Optional complete-process deadline in seconds.
 
         Returns:
             The deterministic command output.
         """
 
-        del input_text, should_capture
+        del input_text, should_capture, timeout_seconds
         self.command_list_list.append(command_list)
         if command_list[:3] == ["git", "ls-remote", "--tags"]:
             output = "\n".join(
@@ -358,6 +360,7 @@ def test_tag_source_identity_requires_exact_commit_object(
             check: bool = True,
             input_text: str | None = None,
             should_capture: bool = True,
+            timeout_seconds: float | None = None,
         ) -> subprocess.CompletedProcess[str]:
             """Return the selected rev-parse result.
 
@@ -366,12 +369,13 @@ def test_tag_source_identity_requires_exact_commit_object(
                 check: Whether a nonzero command exit raises an error.
                 input_text: Input text.
                 should_capture: Whether stdout and stderr should be captured.
+                timeout_seconds: Optional complete-process deadline in seconds.
 
             Returns:
                 The selected rev-parse result.
             """
 
-            del input_text, should_capture
+            del input_text, should_capture, timeout_seconds
             self.command_list_list.append(command_list)
             if command_list[:3] == ["git", "init", "--quiet"]:
                 return subprocess.CompletedProcess(command_list, 0, "", "")
@@ -427,6 +431,7 @@ def test_tag_source_identity_accepts_exact_commit_object(tmp_path: Path) -> None
             check: bool = True,
             input_text: str | None = None,
             should_capture: bool = True,
+            timeout_seconds: float | None = None,
         ) -> subprocess.CompletedProcess[str]:
             """Model the bounded Git proof.
 
@@ -435,12 +440,13 @@ def test_tag_source_identity_accepts_exact_commit_object(tmp_path: Path) -> None
                 check: Whether a nonzero command exit raises an error.
                 input_text: Input text.
                 should_capture: Whether stdout and stderr should be captured.
+                timeout_seconds: Optional complete-process deadline in seconds.
 
             Returns:
                 Completed text-mode subprocess result.
             """
 
-            del check, input_text, should_capture
+            del check, input_text, should_capture, timeout_seconds
             if len(command_list) > 3 and command_list[3] == "rev-parse":
                 return subprocess.CompletedProcess(
                     command_list,

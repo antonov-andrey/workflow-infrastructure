@@ -10,6 +10,9 @@ from typing import Protocol
 from workflow_infrastructure.development_environment.host.artifact.model import (
     HostArtifactResolutionError,
 )
+from workflow_infrastructure.development_environment.git_remote import (
+    git_remote_command_run,
+)
 
 
 class CommandResultProtocol(Protocol):
@@ -27,12 +30,14 @@ class CommandRunnerProtocol(Protocol):
         command_list: Sequence[str],
         *,
         check: bool = True,
+        timeout_seconds: float | None = None,
     ) -> CommandResultProtocol:
         """Run one local command.
 
         Args:
             command_list: Ordered command values.
             check: Whether a nonzero command exit raises an error.
+            timeout_seconds: Optional complete-process deadline in seconds.
 
         Returns:
             Resulting command result protocol.
@@ -93,7 +98,7 @@ class GitRefResolver:
             The numerically latest stable tag accepted by one selector.
         """
 
-        result = self._runner.run(["git", "ls-remote", "--tags", repository_url])
+        result = git_remote_command_run(self._runner, ["git", "ls-remote", "--tags", repository_url])
         commit_sha_by_ref = _tag_commit_sha_by_ref_map_get(result.stdout)
         candidate_list: list[tuple[tuple[int, ...], str, str, str]] = []
         for resolved_ref, commit_sha in commit_sha_by_ref.items():
@@ -123,7 +128,8 @@ class GitRefResolver:
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             self._runner.run(["git", "init", "--quiet", temporary_directory])
-            self._runner.run(
+            git_remote_command_run(
+                self._runner,
                 [
                     "git",
                     "-C",
@@ -134,7 +140,7 @@ class GitRefResolver:
                     "--no-tags",
                     repository_url,
                     resolved_ref,
-                ]
+                ],
             )
             result = self._runner.run(
                 [
@@ -159,7 +165,8 @@ class GitRefResolver:
             expected_commit_sha: Expected commit sha.
         """
 
-        result = self._runner.run(
+        result = git_remote_command_run(
+            self._runner,
             [
                 "git",
                 "ls-remote",
@@ -167,7 +174,7 @@ class GitRefResolver:
                 repository_url,
                 resolved_ref,
                 f"{resolved_ref}^{{}}",
-            ]
+            ],
         )
         if _tag_commit_sha_by_ref_map_get(result.stdout).get(resolved_ref) != expected_commit_sha:
             raise HostArtifactResolutionError(f"moving artifact ref changed during resolution: {resolved_ref}")

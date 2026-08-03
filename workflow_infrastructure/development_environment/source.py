@@ -20,6 +20,9 @@ import tomllib
 from workflow_infrastructure.development_environment.error import (
     DevelopmentEnvironmentError,
 )
+from workflow_infrastructure.development_environment.git_remote import (
+    git_remote_command_run,
+)
 from workflow_infrastructure.development_environment.product.release import (
     MOVING_SOURCE_SELECTOR,
     REPOSITORY_URL_BY_NAME_MAP,
@@ -60,6 +63,7 @@ class CommandRunnerProtocol(Protocol):
         *,
         check: bool = True,
         should_capture: bool = True,
+        timeout_seconds: float | None = None,
     ) -> subprocess.CompletedProcess[str]:
         """Run one command.
 
@@ -67,6 +71,7 @@ class CommandRunnerProtocol(Protocol):
             command_list: Ordered command values.
             check: Whether a nonzero command exit raises an error.
             should_capture: Whether stdout and stderr should be captured.
+            timeout_seconds: Optional complete-process deadline in seconds.
 
         Returns:
             Completed text-mode subprocess result.
@@ -308,7 +313,8 @@ class DevelopmentSourcePublisher:
             with tempfile.TemporaryDirectory() as temporary_directory:
                 repository_path = Path(temporary_directory) / repository_name
                 self._runner.run(["git", "init", "--quiet", str(repository_path)])
-                self._runner.run(
+                git_remote_command_run(
+                    self._runner,
                     [
                         "git",
                         "-C",
@@ -318,7 +324,7 @@ class DevelopmentSourcePublisher:
                         "--no-tags",
                         repository_url,
                         (commit_sha if exact_override_commit else resolved_ref),
-                    ]
+                    ],
                 )
                 fetched_commit_sha = self._git_stdout_get(
                     repository_path,
@@ -567,7 +573,8 @@ class DevelopmentSourcePublisher:
         )
         if not branch_name:
             raise DevelopmentEnvironmentError(f"{repository_name} is detached")
-        remote_result = self._runner.run(
+        remote_result = git_remote_command_run(
+            self._runner,
             [
                 "git",
                 "-C",
@@ -576,7 +583,7 @@ class DevelopmentSourcePublisher:
                 "--exit-code",
                 "origin",
                 f"refs/heads/{branch_name}",
-            ]
+            ],
         )
         remote_field_list = remote_result.stdout.strip().split()
         if len(remote_field_list) != 2 or remote_field_list[0] != head_sha:
@@ -636,7 +643,8 @@ class DevelopmentSourcePublisher:
             submodule_path_text: Submodule path text.
         """
 
-        self._runner.run(
+        git_remote_command_run(
+            self._runner,
             [
                 "git",
                 "-C",
@@ -646,7 +654,7 @@ class DevelopmentSourcePublisher:
                 "--quiet",
                 "origin",
                 "+refs/heads/main:refs/remotes/origin/main",
-            ]
+            ],
         )
         main_ancestor_result = self._runner.run(
             [
@@ -663,7 +671,8 @@ class DevelopmentSourcePublisher:
         if main_ancestor_result.returncode == 0:
             return
         if self._identity.git_worktree:
-            task_result = self._runner.run(
+            task_result = git_remote_command_run(
+                self._runner,
                 [
                     "git",
                     "-C",
@@ -776,14 +785,15 @@ shutil.rmtree(root_path)
             The advertised symbolic remote HEAD and exact commit.
         """
 
-        result = self._runner.run(
+        result = git_remote_command_run(
+            self._runner,
             [
                 "git",
                 "ls-remote",
                 "--symref",
                 repository_url,
                 MOVING_SOURCE_SELECTOR,
-            ]
+            ],
         )
         resolved_ref = ""
         commit_sha = ""
