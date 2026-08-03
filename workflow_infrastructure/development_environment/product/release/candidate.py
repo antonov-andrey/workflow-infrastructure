@@ -106,6 +106,9 @@ class RetainedProductCandidateLedgerValidator:
             "candidate_identity",
             "completed_blob_digest_list",
             "completed_manifest_digest_list",
+            "deletion_generation_candidate_identity_list",
+            "deletion_generation_identity",
+            "deletion_generation_is_ready",
             "deleted_manifest_digest_list",
             "deletion_manifest_digest_list",
             "graph",
@@ -128,6 +131,9 @@ class RetainedProductCandidateLedgerValidator:
             or ledger.get("schema_version") != 1
             or ledger.get("target_platform") != target_platform
             or ledger.get("temporary_tag") != expected_temporary_tag
+            or ledger.get("deletion_generation_candidate_identity_list") != []
+            or ledger.get("deletion_generation_identity") != ""
+            or ledger.get("deletion_generation_is_ready") is not False
             or ledger.get("deletion_manifest_digest_list") != []
             or ledger.get("deleted_manifest_digest_list") != []
         ):
