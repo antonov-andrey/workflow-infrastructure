@@ -251,6 +251,18 @@ def test_aws_absence_errors_require_exact_code_and_operation() -> None:
         code_set=frozenset({"InvalidVolume.NotFound"}),
         operation="DescribeVolumes",
     )
+    current_cli = subprocess.CompletedProcess(
+        [],
+        255,
+        "",
+        "\naws: [ERROR]: An error occurred (ResourceNotFoundException) when calling the "
+        "GetSchedule operation: Schedule group does not exist.\n",
+    )
+    assert aws_cli_error_matches(
+        current_cli,
+        code_set=frozenset({"ResourceNotFoundException"}),
+        operation="GetSchedule",
+    )
     for diagnostic in (
         "404 Not Found",
         "AccessDenied: the requested object does not exist",

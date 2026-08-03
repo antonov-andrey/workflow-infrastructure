@@ -14,7 +14,8 @@ from workflow_infrastructure.development_environment.error import (
 )
 
 _AWS_CLI_ERROR_PATTERN = re.compile(
-    r"^An error occurred \((?P<code>[A-Za-z0-9][A-Za-z0-9._-]*)\) "
+    r"^(?:aws: \[ERROR\]: )?"
+    r"An error occurred \((?P<code>[A-Za-z0-9][A-Za-z0-9._-]*)\) "
     r"when calling the (?P<operation>[A-Za-z0-9]+) operation"
     r"(?: \([^\r\n]*\))?: (?P<message>.+)$"
 )
