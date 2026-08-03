@@ -407,7 +407,7 @@ class DevelopmentProductDeploymentManager:
         """Validate operator, source, stack, host, and recovery preconditions.
 
         Args:
-            should_reset_product_state: Whether pending legacy recovery will be destroyed.
+            should_reset_product_state: Whether pending retained Product state will be reset.
         """
 
         self._account.local_operator_context_validate()
