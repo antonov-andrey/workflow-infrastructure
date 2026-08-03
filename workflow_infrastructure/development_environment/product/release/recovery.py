@@ -29,12 +29,24 @@ class RetainedProductRecoveryStore:
         pointer: RetainedProductReleasePointerStore,
         runner: RetainedProductReleaseCommandRunner,
     ) -> None:
+        """Initialize the retained product recovery store dependencies.
+
+        Args:
+            identity: Identity.
+            pointer: Pointer.
+            runner: Explicit command execution boundary.
+        """
+
         self._identity = identity
         self._pointer = pointer
         self._runner = runner
 
     def status_get(self) -> str:
-        """Return absent, pending, or ready for the retained Product state."""
+        """Return absent, pending, or ready for the retained Product state.
+
+        Returns:
+            The absent, pending, or ready for the retained Product state.
+        """
 
         retained_current_path = self._identity.host_retained_current_release_path
         marker_path = self._identity.host_product_recovery_marker_path
@@ -47,26 +59,24 @@ class RetainedProductRecoveryStore:
                 or product_current_path.exists()
                 or product_current_path.is_symlink()
             ):
-                raise DevelopmentEnvironmentError(
-                    "Product recovery state exists without a retained current release"
-                )
+                raise DevelopmentEnvironmentError("Product recovery state exists without a retained current release")
             return "absent"
         release_root_path = self._pointer.current_release_path_get()
-        marker_exists = self.marker_validate(
-            expected_release_name=release_root_path.name
-        )
+        marker_exists = self.marker_validate(expected_release_name=release_root_path.name)
         try:
-            current_link_is_exact = product_current_path.is_symlink() and os.readlink(
-                product_current_path
-            ) == str(retained_current_path)
+            current_link_is_exact = product_current_path.is_symlink() and os.readlink(product_current_path) == str(
+                retained_current_path
+            )
         except OSError as error:
-            raise DevelopmentEnvironmentError(
-                "Product recovery current-source link is unavailable"
-            ) from error
+            raise DevelopmentEnvironmentError("Product recovery current-source link is unavailable") from error
         return "pending" if marker_exists or not current_link_is_exact else "ready"
 
     def begin(self) -> str:
-        """Persist the exact pending recovery savepoint and return its release."""
+        """Persist the exact pending recovery savepoint and return its release.
+
+        Returns:
+            Resulting text value.
+        """
 
         release_root_path = self._pointer.current_release_path_get()
         if self.marker_validate(expected_release_name=release_root_path.name):
@@ -90,33 +100,27 @@ class RetainedProductRecoveryStore:
         return release_root_path.name
 
     def complete(self) -> str:
-        """Remove one exact pending savepoint after current-source restoration."""
+        """Remove one exact pending savepoint after current-source restoration.
+
+        Returns:
+            Resulting text value.
+        """
 
         release_root_path = self._pointer.current_release_path_get()
         if not self.marker_validate(expected_release_name=release_root_path.name):
-            raise DevelopmentEnvironmentError(
-                "Product recovery cannot complete without its pending savepoint"
-            )
+            raise DevelopmentEnvironmentError("Product recovery cannot complete without its pending savepoint")
         try:
-            current_link_is_exact = (
-                self._identity.host_current_source_path.is_symlink()
-                and os.readlink(self._identity.host_current_source_path)
-                == str(self._identity.host_retained_current_release_path)
-            )
+            current_link_is_exact = self._identity.host_current_source_path.is_symlink() and os.readlink(
+                self._identity.host_current_source_path
+            ) == str(self._identity.host_retained_current_release_path)
         except OSError as error:
-            raise DevelopmentEnvironmentError(
-                "Product recovery current-source link is unavailable"
-            ) from error
+            raise DevelopmentEnvironmentError("Product recovery current-source link is unavailable") from error
         if not current_link_is_exact:
-            raise DevelopmentEnvironmentError(
-                "Product recovery current-source link is not restored"
-            )
+            raise DevelopmentEnvironmentError("Product recovery current-source link is not restored")
         try:
             self._identity.host_product_recovery_marker_path.unlink()
         except OSError as error:
-            raise DevelopmentEnvironmentError(
-                "Product recovery savepoint could not be completed"
-            ) from error
+            raise DevelopmentEnvironmentError("Product recovery savepoint could not be completed") from error
         self._runner.run(
             [
                 "sync",
@@ -127,41 +131,46 @@ class RetainedProductRecoveryStore:
         return release_root_path.name
 
     def marker_validate(self, *, expected_release_name: str) -> bool:
-        """Validate an optional retained recovery marker."""
+        """Validate an optional retained recovery marker.
+
+        Args:
+            expected_release_name: Expected release name.
+
+        Returns:
+            Whether the retained marker matches the expected release.
+        """
 
         marker_path = self._identity.host_product_recovery_marker_path
         if not marker_path.parent.is_dir() or marker_path.parent.is_symlink():
-            raise DevelopmentEnvironmentError(
-                "Retained Product recovery marker parent is invalid"
-            )
+            raise DevelopmentEnvironmentError("Retained Product recovery marker parent is invalid")
         if marker_path.is_symlink():
-            raise DevelopmentEnvironmentError(
-                "Retained Product recovery marker must not be a symlink"
-            )
+            raise DevelopmentEnvironmentError("Retained Product recovery marker must not be a symlink")
         if not marker_path.exists():
             return False
         if not marker_path.is_file():
-            raise DevelopmentEnvironmentError(
-                "Retained Product recovery marker is not a regular file"
-            )
+            raise DevelopmentEnvironmentError("Retained Product recovery marker is not a regular file")
         try:
             marker_payload = json.loads(marker_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as error:
-            raise DevelopmentEnvironmentError(
-                "Retained Product recovery marker is unavailable or malformed"
-            ) from error
+            raise DevelopmentEnvironmentError("Retained Product recovery marker is unavailable or malformed") from error
         expected_payload = {
             "environment_name": self._identity.environment_name,
             "release": expected_release_name,
             "state": "pending",
         }
         if marker_payload != expected_payload:
-            raise DevelopmentEnvironmentError(
-                "Retained Product recovery marker has an inconsistent identity"
-            )
+            raise DevelopmentEnvironmentError("Retained Product recovery marker has an inconsistent identity")
         return True
 
     def _atomic_text_file_replace(self, *, mode: int, path: Path, text: str) -> None:
+        """Atomically replace one retained UTF-8 release-state file and fsync its parent.
+
+        Args:
+            mode: Mode.
+            path: Exact filesystem path.
+            text: Text.
+        """
+
         path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
         temporary_path: Path | None = None
         try:
@@ -182,9 +191,7 @@ class RetainedProductRecoveryStore:
             os.replace(temporary_path, path)
             self._runner.run(["sync", "-f", str(path.parent)])
         except OSError as error:
-            raise DevelopmentEnvironmentError(
-                "Product recovery savepoint could not be persisted"
-            ) from error
+            raise DevelopmentEnvironmentError("Product recovery savepoint could not be persisted") from error
         finally:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)

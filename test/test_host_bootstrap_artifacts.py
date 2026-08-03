@@ -23,7 +23,12 @@ def test_uv_version_accepts_current_machine_annotation(
     output: str,
     expected_version: str,
 ) -> None:
-    """A verified uv binary may append its build target to the stable version."""
+    """A verified uv binary may append its build target to the stable version.
+
+    Args:
+        output: Output.
+        expected_version: Expected version.
+    """
 
     assert _uv_version_get(output) == expected_version
 
@@ -37,7 +42,11 @@ def test_uv_version_accepts_current_machine_annotation(
     ],
 )
 def test_uv_version_rejects_ambiguous_output(output: str) -> None:
-    """Version verification remains strict when uv output cannot be parsed exactly."""
+    """Version verification remains strict when uv output cannot be parsed exactly.
+
+    Args:
+        output: Output.
+    """
 
     with pytest.raises(DevelopmentEnvironmentError, match="output is malformed"):
         _uv_version_get(output)

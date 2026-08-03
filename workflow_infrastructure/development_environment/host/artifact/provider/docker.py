@@ -32,7 +32,15 @@ DOCKER_SIGNING_KEY_URL = f"{DOCKER_APT_ROOT_URL}/gpg"
 
 
 def docker_packages_index_identity_get(*, architecture: str, inrelease_text: str) -> tuple[str, str]:
-    """Return signed Packages path and SHA-256 for one architecture."""
+    """Return signed Packages path and SHA-256 for one architecture.
+
+    Args:
+        architecture: Architecture.
+        inrelease_text: Inrelease text.
+
+    Returns:
+        The signed Packages path and SHA-256 for one architecture.
+    """
 
     section_match = re.search(r"(?:^|\n)SHA256:\n(?P<body>(?: [^\n]+\n)+)", inrelease_text)
     if section_match is None:
@@ -51,7 +59,14 @@ def docker_packages_index_identity_get(*, architecture: str, inrelease_text: str
 
 
 def debian_package_payload_list_get(packages_text: str) -> list[dict[str, str]]:
-    """Parse Debian control paragraphs without interpreting package scripts."""
+    """Parse Debian control paragraphs without interpreting package scripts.
+
+    Args:
+        packages_text: Packages text.
+
+    Returns:
+        The debian control paragraphs without interpreting package scripts.
+    """
 
     payload_list: list[dict[str, str]] = []
     for paragraph in re.split(r"\n\s*\n", packages_text):
@@ -71,12 +86,24 @@ def debian_package_payload_list_get(packages_text: str) -> list[dict[str, str]]:
 
 
 class CommandResultProtocol(Protocol):
+    """Declare the command result interface."""
+
     returncode: int
 
 
 class CommandRunnerProtocol(Protocol):
+    """Declare the command runner interface."""
+
     def run(self, command_list: Sequence[str], *, check: bool = True) -> CommandResultProtocol:
-        """Run one local command."""
+        """Run one local command.
+
+        Args:
+            command_list: Ordered command values.
+            check: Whether a nonzero command exit raises an error.
+
+        Returns:
+            Resulting command result protocol.
+        """
 
 
 class DockerArtifactProvider:
@@ -89,12 +116,27 @@ class DockerArtifactProvider:
         runner: CommandRunnerProtocol,
         verifier: HostArtifactVerifier,
     ) -> None:
+        """Initialize the docker artifact provider dependencies.
+
+        Args:
+            downloader: Downloader.
+            runner: Explicit command execution boundary.
+            verifier: Verifier.
+        """
+
         self._downloader = downloader
         self._runner = runner
         self._verifier = verifier
 
     def resolve(self, architecture: str) -> dict[str, HostArtifactIdentity]:
-        """Return exact signed repository metadata and package identities."""
+        """Return exact signed repository metadata and package identities.
+
+        Args:
+            architecture: Architecture.
+
+        Returns:
+            The exact signed repository metadata and package identities.
+        """
 
         signing_key = self._downloader.identity_resolve(
             allow_cache=False,
@@ -174,7 +216,16 @@ class DockerArtifactProvider:
         package_name: str,
         package_payload_list: list[dict[str, str]],
     ) -> dict[str, str]:
-        """Use dpkg ordering to select the latest exact matching package."""
+        """Use dpkg ordering to select the latest exact matching package.
+
+        Args:
+            architecture: Architecture.
+            package_name: Package name.
+            package_payload_list: Ordered package payload values.
+
+        Returns:
+            Metadata for the latest matching Debian package.
+        """
 
         candidate_list = [
             payload

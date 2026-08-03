@@ -17,7 +17,12 @@ from workflow_infrastructure.development_environment.product.release.recovery_co
 
 
 def atomic_symlink_replace(*, link_path: Path, target_path: Path) -> None:
-    """Durably replace one host symlink without a missing-current gap."""
+    """Durably replace one host symlink without a missing-current gap.
+
+    Args:
+        link_path: Exact filesystem path for link.
+        target_path: Exact filesystem path for target.
+    """
 
     link_path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     temporary_link_path = link_path.with_name(f".{link_path.name}.tmp-{os.getpid()}")
@@ -43,11 +48,22 @@ class RetainedProductReleasePointerStore:
         identity: RetainedProductReleaseHostIdentity,
         validator: RetainedProductReleaseValidator,
     ) -> None:
+        """Initialize the retained product release pointer store dependencies.
+
+        Args:
+            identity: Identity.
+            validator: Validator.
+        """
+
         self._identity = identity
         self._validator = validator
 
     def current_release_path_get(self) -> Path:
-        """Return the exact retained current release or fail closed."""
+        """Return the exact retained current release or fail closed.
+
+        Returns:
+            The exact retained current release or fail closed.
+        """
 
         current_release_path = self._identity.host_retained_current_release_path
         if not current_release_path.is_symlink():
@@ -69,7 +85,11 @@ class RetainedProductReleasePointerStore:
         return release_root_path
 
     def previous_release_path_get(self) -> Path | None:
-        """Return the validated predecessor that may become rollback."""
+        """Return the validated predecessor that may become rollback.
+
+        Returns:
+            The validated predecessor that may become rollback.
+        """
 
         current_link_path = self._identity.host_retained_current_release_path
         if not current_link_path.exists() and not current_link_path.is_symlink():
@@ -86,7 +106,11 @@ class RetainedProductReleasePointerStore:
         return release_root_path
 
     def activate(self, release_root_path: Path) -> None:
-        """Atomically install rollback, retained-current, and root-current pointers."""
+        """Atomically install rollback, retained-current, and root-current pointers.
+
+        Args:
+            release_root_path: Exact filesystem path for release root.
+        """
 
         previous_release_root_path = self.previous_release_path_get()
         if previous_release_root_path is not None and previous_release_root_path != release_root_path:

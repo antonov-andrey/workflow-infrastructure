@@ -36,27 +36,54 @@ class AwsClientProtocol(Protocol):
     """AWS operations required by host lifecycle."""
 
     def run(self, argument_list: Sequence[str], *, check: bool = True) -> object:
-        """Run one AWS CLI operation."""
+        """Run one AWS CLI operation.
+
+        Args:
+            argument_list: Exact command arguments.
+            check: Whether a nonzero command exit raises an error.
+
+        Returns:
+            Provider-specific AWS CLI result object.
+        """
 
 
 class ClockProtocol(Protocol):
     """Controlled UTC and wait boundary required by acceptance."""
 
     def now(self) -> datetime:
-        """Return the current UTC instant."""
+        """Return the current UTC instant.
+
+        Returns:
+            The current UTC instant.
+        """
 
     def sleep(self, delay_seconds: float) -> None:
-        """Wait for a bounded duration."""
+        """Wait for a bounded duration.
+
+        Args:
+            delay_seconds: Delay in seconds.
+        """
 
 
 class ComputeProtocol(Protocol):
     """EC2 and host-readiness surface required by lifecycle."""
 
     def instance_id_get(self) -> str:
-        """Return the exact current instance identity."""
+        """Return the exact current instance identity.
+
+        Returns:
+            The exact current instance identity.
+        """
 
     def state_get(self, instance_id: str) -> str:
-        """Return the current EC2 state."""
+        """Return the current EC2 state.
+
+        Args:
+            instance_id: Exact instance identity.
+
+        Returns:
+            The current EC2 state.
+        """
 
     def online_wait(self) -> None:
         """Wait for the instance and SSM to become online."""
@@ -84,7 +111,14 @@ class HostStatusProtocol(Protocol):
     """Safe Product activity observation required by acceptance."""
 
     def payload_get(self, *, retained_volume_id: str) -> dict[str, object]:
-        """Return current safe host status."""
+        """Return current safe host status.
+
+        Args:
+            retained_volume_id: Exact retained volume identity.
+
+        Returns:
+            The current safe host status.
+        """
 
 
 class ProductRecoveryProtocol(Protocol):
@@ -98,7 +132,12 @@ class SourcePublisherProtocol(Protocol):
     """Exact infrastructure source validation and publication."""
 
     def validate_repository(self, repository_path: Path, repository_name: str) -> None:
-        """Validate one clean exact repository source."""
+        """Validate one clean exact repository source.
+
+        Args:
+            repository_path: Exact filesystem path for repository.
+            repository_name: Repository name.
+        """
 
     def infrastructure_publish(self) -> None:
         """Publish and activate exact infrastructure control source."""
@@ -108,39 +147,78 @@ class StackManagerProtocol(Protocol):
     """CloudFormation state required by lifecycle."""
 
     def drift_validate(self, stack_name: str) -> None:
-        """Prove the stack has no drift."""
+        """Prove the stack has no drift.
+
+        Args:
+            stack_name: Stack name.
+        """
 
     def output_by_name_map_get(self, stack_name: str) -> dict[str, str]:
-        """Return exact stack outputs."""
+        """Return exact stack outputs.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            The exact stack outputs.
+        """
 
 
 class StopLeaseProtocol(Protocol):
     """External fail-safe stop lease behavior."""
 
     def absence_wait(self, *, t_deadline: datetime) -> None:
-        """Wait for schedule deletion."""
+        """Wait for schedule deletion.
+
+        Args:
+            t_deadline: T deadline.
+        """
 
     def delete(self) -> None:
         """Delete the current lease if present."""
 
     def instance_stopped_wait(self, *, instance_id: str, t_deadline: datetime) -> None:
-        """Wait for lease-triggered EC2 stop."""
+        """Wait for lease-triggered EC2 stop.
+
+        Args:
+            instance_id: Exact instance identity.
+            t_deadline: T deadline.
+        """
 
     def payload_get(self) -> dict[str, object]:
-        """Return safe lease state."""
+        """Return safe lease state.
+
+        Returns:
+            The safe lease state.
+        """
 
     def upsert(self, *, lease_duration: timedelta | None = None) -> None:
-        """Create or renew the lease."""
+        """Create or renew the lease.
+
+        Args:
+            lease_duration: Lease duration.
+        """
 
     def wait_until(self, t_deadline: datetime) -> None:
-        """Wait until an exact UTC boundary."""
+        """Wait until an exact UTC boundary.
+
+        Args:
+            t_deadline: T deadline.
+        """
 
 
 class SsmTransportProtocol(Protocol):
     """Session Manager operations required by lifecycle."""
 
     def ssm_command_start(self, command_list: Sequence[str]) -> str:
-        """Start one remote command and return its identity."""
+        """Start one remote command and return its identity.
+
+        Args:
+            command_list: Ordered command values.
+
+        Returns:
+            Resulting text value.
+        """
 
     def ssm_shell_result_get(
         self,
@@ -148,10 +226,22 @@ class SsmTransportProtocol(Protocol):
         *,
         timeout_seconds: int,
     ) -> dict[str, object]:
-        """Run bounded remote shell commands."""
+        """Run bounded remote shell commands.
+
+        Args:
+            command_list: Ordered command values.
+            timeout_seconds: Timeout in seconds.
+
+        Returns:
+            Successful bounded SSM command invocation payload.
+        """
 
     def ssm_shell_run(self, command_list: Sequence[str]) -> None:
-        """Run remote shell commands."""
+        """Run remote shell commands.
+
+        Args:
+            command_list: Ordered command values.
+        """
 
 
 class DevelopmentLifecycleManager:
@@ -174,7 +264,23 @@ class DevelopmentLifecycleManager:
         stop_lease: StopLeaseProtocol,
         transport: SsmTransportProtocol,
     ) -> None:
-        """Bind lifecycle behavior to one exact environment."""
+        """Bind lifecycle behavior to one exact environment.
+
+        Args:
+            account: Account.
+            aws: Aws.
+            clock: Clock.
+            compute: Compute.
+            host_status: Host status.
+            host_bootstrap: Host bootstrap.
+            identity: Identity.
+            product_recovery: Product recovery.
+            project_root_path: Exact filesystem path for project root.
+            source_publisher: Source publisher.
+            stack: Stack.
+            stop_lease: Stop lease.
+            transport: Transport.
+        """
 
         self._account = account
         self._aws = aws
@@ -195,7 +301,11 @@ class DevelopmentLifecycleManager:
         *,
         should_publish_infrastructure_source: bool = False,
     ) -> None:
-        """Start EC2 under a fail-safe lease and prove complete host readiness."""
+        """Start EC2 under a fail-safe lease and prove complete host readiness.
+
+        Args:
+            should_publish_infrastructure_source: Should publish infrastructure source.
+        """
 
         self._start_foundation(
             should_validate_source=should_publish_infrastructure_source,
@@ -207,7 +317,11 @@ class DevelopmentLifecycleManager:
         print(f"OK: development instance {instance_id} is ready")
 
     def stop(self, *, should_validate_drift: bool = True) -> None:
-        """Run graceful remote shutdown, prove EC2 stop, and remove its lease."""
+        """Run graceful remote shutdown, prove EC2 stop, and remove its lease.
+
+        Args:
+            should_validate_drift: Should validate drift.
+        """
 
         self._account.local_operator_context_validate()
         if should_validate_drift:
@@ -219,9 +333,7 @@ class DevelopmentLifecycleManager:
             print(f"OK: development instance {instance_id} is already stopped")
             return
         if state != "running":
-            raise DevelopmentEnvironmentError(
-                f"Instance cannot stop gracefully from state {state}"
-            )
+            raise DevelopmentEnvironmentError(f"Instance cannot stop gracefully from state {state}")
         command_id = self._transport.ssm_command_start(
             [
                 (
@@ -234,9 +346,7 @@ class DevelopmentLifecycleManager:
             ]
         )
         print(f"OK: graceful shutdown command {command_id} started")
-        self._aws.run(
-            ["ec2", "wait", "instance-stopped", "--instance-ids", instance_id]
-        )
+        self._aws.run(["ec2", "wait", "instance-stopped", "--instance-ids", instance_id])
         self._stop_lease.delete()
         print(f"OK: development instance {instance_id} stopped")
 
@@ -244,75 +354,46 @@ class DevelopmentLifecycleManager:
         """Prove stop-lease renewal, fail-safe stop, and environment restoration."""
 
         self._account.local_operator_context_validate()
-        self._source_publisher.validate_repository(
-            self._project_root_path, "workflow-infrastructure"
-        )
+        self._source_publisher.validate_repository(self._project_root_path, "workflow-infrastructure")
         self._stack.drift_validate(self._identity.compute_stack_name)
         instance_id = self._compute.instance_id_get()
         if self._compute.state_get(instance_id) != "running":
-            raise DevelopmentEnvironmentError(
-                "Lifecycle acceptance requires the development instance to be running"
-            )
+            raise DevelopmentEnvironmentError("Lifecycle acceptance requires the development instance to be running")
         host_status_payload = self._host_status.payload_get(
-            retained_volume_id=self._stack.output_by_name_map_get(
-                self._identity.compute_stack_name
-            )["RetainedVolumeId"]
+            retained_volume_id=self._stack.output_by_name_map_get(self._identity.compute_stack_name)["RetainedVolumeId"]
         )
         if host_status_payload.get("wcc_activity") != "idle":
-            raise DevelopmentEnvironmentError(
-                "Lifecycle acceptance requires an idle Product"
-            )
+            raise DevelopmentEnvironmentError("Lifecycle acceptance requires an idle Product")
 
         is_environment_restored = False
         try:
             self._transport.ssm_shell_run(
                 [
                     "sudo systemctl stop workflow-control-center-host-controller",
-                    (
-                        'test "$(systemctl is-active '
-                        'workflow-control-center-host-controller || true)" = inactive'
-                    ),
+                    ('test "$(systemctl is-active ' 'workflow-control-center-host-controller || true)" = inactive'),
                 ]
             )
             t_initial_lease = self._clock.now()
-            self._stop_lease.upsert(
-                lease_duration=LIFECYCLE_ACCEPTANCE_INITIAL_LEASE_DURATION
-            )
-            initial_expression = self._stop_lease.payload_get().get(
-                "schedule_expression"
-            )
+            self._stop_lease.upsert(lease_duration=LIFECYCLE_ACCEPTANCE_INITIAL_LEASE_DURATION)
+            initial_expression = self._stop_lease.payload_get().get("schedule_expression")
             self._clock.sleep(LIFECYCLE_ACCEPTANCE_RENEW_DELAY_SECONDS)
 
             t_renewed_lease = self._clock.now()
-            self._stop_lease.upsert(
-                lease_duration=LIFECYCLE_ACCEPTANCE_RENEWED_LEASE_DURATION
-            )
-            renewed_expression = self._stop_lease.payload_get().get(
-                "schedule_expression"
-            )
+            self._stop_lease.upsert(lease_duration=LIFECYCLE_ACCEPTANCE_RENEWED_LEASE_DURATION)
+            renewed_expression = self._stop_lease.payload_get().get("schedule_expression")
             if initial_expression == renewed_expression:
-                raise DevelopmentEnvironmentError(
-                    "Lifecycle acceptance lease renewal did not change its deadline"
-                )
+                raise DevelopmentEnvironmentError("Lifecycle acceptance lease renewal did not change its deadline")
 
-            self._stop_lease.wait_until(
-                t_initial_lease + LIFECYCLE_ACCEPTANCE_RENEWAL_PROOF_DELAY
-            )
+            self._stop_lease.wait_until(t_initial_lease + LIFECYCLE_ACCEPTANCE_RENEWAL_PROOF_DELAY)
             if self._compute.state_get(instance_id) != "running":
-                raise DevelopmentEnvironmentError(
-                    "Lifecycle acceptance instance stopped at the superseded deadline"
-                )
+                raise DevelopmentEnvironmentError("Lifecycle acceptance instance stopped at the superseded deadline")
             self._stop_lease.instance_stopped_wait(
                 instance_id=instance_id,
                 t_deadline=(
-                    t_renewed_lease
-                    + LIFECYCLE_ACCEPTANCE_RENEWED_LEASE_DURATION
-                    + LIFECYCLE_ACCEPTANCE_STOP_GRACE
+                    t_renewed_lease + LIFECYCLE_ACCEPTANCE_RENEWED_LEASE_DURATION + LIFECYCLE_ACCEPTANCE_STOP_GRACE
                 ),
             )
-            self._stop_lease.absence_wait(
-                t_deadline=self._clock.now() + LIFECYCLE_ACCEPTANCE_STOP_GRACE
-            )
+            self._stop_lease.absence_wait(t_deadline=self._clock.now() + LIFECYCLE_ACCEPTANCE_STOP_GRACE)
             self.start()
             self._product_recovery.acceptance_run()
             is_environment_restored = True
@@ -329,23 +410,23 @@ class DevelopmentLifecycleManager:
         *,
         should_validate_source: bool,
     ) -> None:
-        """Start EC2 and await cloud-init without changing installed control source."""
+        """Start EC2 and await cloud-init without changing installed control source.
+
+        Args:
+            should_validate_source: Should validate source.
+        """
 
         self._account.local_operator_context_validate()
         self._stack.drift_validate(self._identity.compute_stack_name)
         if should_validate_source:
-            self._source_publisher.validate_repository(
-                self._project_root_path, "workflow-infrastructure"
-            )
+            self._source_publisher.validate_repository(self._project_root_path, "workflow-infrastructure")
         instance_id = self._compute.instance_id_get()
         self._stop_lease.upsert()
         state = self._compute.state_get(instance_id)
         if state == "stopped":
             self._aws.run(["ec2", "start-instances", "--instance-ids", instance_id])
         elif state not in {"pending", "running"}:
-            raise DevelopmentEnvironmentError(
-                f"Instance cannot start from state {state}"
-            )
+            raise DevelopmentEnvironmentError(f"Instance cannot start from state {state}")
         self._compute.online_wait()
         self._transport.ssm_shell_result_get(
             ["cloud-init status --wait"],
@@ -354,7 +435,11 @@ class DevelopmentLifecycleManager:
         self._host_bootstrap.run()
 
     def _acceptance_environment_restore(self, instance_id: str) -> None:
-        """Best-effort restore of the ordinary controller and two-hour lease."""
+        """Best-effort restore of the ordinary controller and two-hour lease.
+
+        Args:
+            instance_id: Exact instance identity.
+        """
 
         state = self._compute.state_get(instance_id)
         if state == "pending":
@@ -362,20 +447,15 @@ class DevelopmentLifecycleManager:
             state = "running"
         if state == "running":
             self._stop_lease.upsert()
-            self._transport.ssm_shell_run(
-                ["sudo systemctl start workflow-control-center-host-controller"]
-            )
+            self._transport.ssm_shell_run(["sudo systemctl start workflow-control-center-host-controller"])
             self._compute.readiness_wait()
             return
         if state == "stopping":
-            self._aws.run(
-                ["ec2", "wait", "instance-stopped", "--instance-ids", instance_id]
-            )
+            self._aws.run(["ec2", "wait", "instance-stopped", "--instance-ids", instance_id])
             state = "stopped"
         if state == "stopped":
             self.start()
             return
         raise DevelopmentEnvironmentError(
-            "Lifecycle acceptance could not restore the environment from "
-            f"instance state {state}"
+            "Lifecycle acceptance could not restore the environment from " f"instance state {state}"
         )

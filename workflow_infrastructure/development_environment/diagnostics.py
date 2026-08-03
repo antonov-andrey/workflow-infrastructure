@@ -23,16 +23,41 @@ class ComputeProtocol(Protocol):
     """Safe EC2 and Session Manager observations."""
 
     def active_session_count_get(self, instance_id: str) -> int:
-        """Return active Session Manager session count."""
+        """Return active Session Manager session count.
+
+        Args:
+            instance_id: Exact instance identity.
+
+        Returns:
+            The active Session Manager session count.
+        """
 
     def instance_id_get(self) -> str:
-        """Return the exact current instance identity."""
+        """Return the exact current instance identity.
+
+        Returns:
+            The exact current instance identity.
+        """
 
     def ssm_ping_status_get(self, instance_id: str) -> str:
-        """Return current SSM managed-instance status."""
+        """Return current SSM managed-instance status.
+
+        Args:
+            instance_id: Exact instance identity.
+
+        Returns:
+            The current SSM managed-instance status.
+        """
 
     def state_get(self, instance_id: str) -> str:
-        """Return current EC2 state."""
+        """Return current EC2 state.
+
+        Args:
+            instance_id: Exact instance identity.
+
+        Returns:
+            The current EC2 state.
+        """
 
 
 class EnvironmentIdentityProtocol(Protocol):
@@ -47,10 +72,21 @@ class HostStatusProtocol(Protocol):
     """Safe host-status collection boundary."""
 
     def payload_get(self, *, retained_volume_id: str) -> dict[str, object]:
-        """Return complete current safe host status."""
+        """Return complete current safe host status.
+
+        Args:
+            retained_volume_id: Exact retained volume identity.
+
+        Returns:
+            The complete current safe host status.
+        """
 
     def unavailable_payload_get(self) -> dict[str, object]:
-        """Return normalized unavailable host status."""
+        """Return normalized unavailable host status.
+
+        Returns:
+            The normalized unavailable host status.
+        """
 
 
 class ProductToolProtocol(Protocol):
@@ -61,24 +97,50 @@ class ProductToolProtocol(Protocol):
         command: str,
         *argument_list: str,
     ) -> list[str]:
-        """Return one exact Product tool command."""
+        """Return one exact Product tool command.
+
+        Args:
+            command: Command.
+            *argument_list: Exact command arguments.
+
+        Returns:
+            One exact Product tool command.
+        """
 
 
 class RetainedVolumeProtocol(Protocol):
     """Retained-volume status and backup boundary."""
 
     def latest_snapshot_id_get(self, volume_id: str) -> str | None:
-        """Return latest snapshot for one retained volume."""
+        """Return latest snapshot for one retained volume.
+
+        Args:
+            volume_id: Exact volume identity.
+
+        Returns:
+            The latest snapshot for one retained volume.
+        """
 
     def regular_backup_status_get(self) -> dict[str, object]:
-        """Return safe primary-only backup policy status."""
+        """Return safe primary-only backup policy status.
+
+        Returns:
+            The safe primary-only backup policy status.
+        """
 
 
 class StackManagerProtocol(Protocol):
     """CloudFormation state required by status."""
 
     def output_by_name_map_get(self, stack_name: str) -> dict[str, str]:
-        """Return exact stack outputs."""
+        """Return exact stack outputs.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            The exact stack outputs.
+        """
 
     def payload_get(
         self,
@@ -86,21 +148,37 @@ class StackManagerProtocol(Protocol):
         *,
         is_required: bool,
     ) -> dict[str, object]:
-        """Return current stack payload or an empty mapping."""
+        """Return current stack payload or an empty mapping.
+
+        Args:
+            stack_name: Stack name.
+            is_required: Whether required.
+
+        Returns:
+            The current stack payload or an empty mapping.
+        """
 
 
 class StopLeaseProtocol(Protocol):
     """Safe stop-lease status boundary."""
 
     def payload_get(self) -> dict[str, object]:
-        """Return safe current lease state."""
+        """Return safe current lease state.
+
+        Returns:
+            The safe current lease state.
+        """
 
 
 class SsmTransportProtocol(Protocol):
     """Bounded remote diagnostics boundary."""
 
     def ssm_shell_run(self, command_list: list[str]) -> None:
-        """Run remote shell commands."""
+        """Run remote shell commands.
+
+        Args:
+            command_list: Ordered command values.
+        """
 
 
 class DevelopmentDiagnostics:
@@ -121,7 +199,21 @@ class DevelopmentDiagnostics:
         stop_lease: StopLeaseProtocol,
         transport: SsmTransportProtocol,
     ) -> None:
-        """Bind diagnostics to one exact environment and account."""
+        """Bind diagnostics to one exact environment and account.
+
+        Args:
+            account: Account.
+            account_id: Exact account identity.
+            compute: Compute.
+            host_status: Host status.
+            identity: Identity.
+            product_tool: Product tool.
+            region: Region.
+            retained_volume: Retained volume.
+            stack: Stack.
+            stop_lease: Stop lease.
+            transport: Transport.
+        """
 
         self._account = account
         self._account_id = account_id

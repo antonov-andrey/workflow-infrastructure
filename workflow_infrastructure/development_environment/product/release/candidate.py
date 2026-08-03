@@ -16,7 +16,12 @@ _DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 def _descriptor_validate(value: object, *, expected_digest: str) -> None:
-    """Validate one exact OCI descriptor."""
+    """Validate one exact OCI descriptor.
+
+    Args:
+        value: Candidate value.
+        expected_digest: Expected digest.
+    """
 
     if (
         not isinstance(value, Mapping)
@@ -38,7 +43,14 @@ def _archive_validate(
     logical_name: str,
     release_root_path: Path,
 ) -> None:
-    """Validate optional retained OCI archive identity and bytes."""
+    """Validate optional retained OCI archive identity and bytes.
+
+    Args:
+        archive: Archive.
+        ledger_path: Exact filesystem path for ledger.
+        logical_name: Logical name.
+        release_root_path: Exact filesystem path for release root.
+    """
 
     expected_relative_path = f"image-candidate/{logical_name}/candidate.oci.tar"
     archive_sha256 = archive.get("sha256")
@@ -84,7 +96,15 @@ class RetainedProductCandidateLedgerValidator:
         release_root_path: Path,
         target_platform: str,
     ) -> None:
-        """Validate exact ledger bytes, graph closure, progress, and retained bytes."""
+        """Validate exact ledger bytes, graph closure, progress, and retained bytes.
+
+        Args:
+            expected_ledger_sha256: Expected ledger SHA-256.
+            expected_root_digest: Expected root digest.
+            logical_name: Logical name.
+            release_root_path: Exact filesystem path for release root.
+            target_platform: Target platform.
+        """
 
         relative_path = Path("image-candidate") / logical_name / "candidate-ledger.json"
         ledger_path = release_root_path / relative_path
@@ -170,6 +190,18 @@ class RetainedProductCandidateLedgerValidator:
         root_digest: str,
         target_platform: str,
     ) -> tuple[set[str], set[str]]:
+        """Require one release candidate to carry a complete rooted OCI manifest graph.
+
+        Args:
+            graph: Graph.
+            logical_name: Logical name.
+            root_digest: Root digest.
+            target_platform: Target platform.
+
+        Returns:
+            Values in deterministic immutable order.
+        """
+
         if set(graph) != {
             "blob_descriptor_by_digest_map",
             "manifest_node_by_digest_map",

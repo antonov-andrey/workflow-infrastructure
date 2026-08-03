@@ -20,7 +20,14 @@ _URL_PATTERN = re.compile(r"https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+")
 
 
 def _file_identity_get(path: Path) -> tuple[str, int]:
-    """Return SHA-256 and byte length without loading a large file."""
+    """Return SHA-256 and byte length without loading a large file.
+
+    Args:
+        path: Exact filesystem path.
+
+    Returns:
+        SHA-256 digest and byte length without loading the file.
+    """
 
     digest = hashlib.sha256()
     size = 0
@@ -35,6 +42,12 @@ class HostArtifactDownloader:
     """Own safe artifact download, atomic cache publication, and identity."""
 
     def __init__(self, *, cache_root_path: Path) -> None:
+        """Initialize the host artifact downloader dependencies.
+
+        Args:
+            cache_root_path: Exact filesystem path for cache root.
+        """
+
         self._cache_root_path = cache_root_path
         self._cache_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
 
@@ -52,7 +65,23 @@ class HostArtifactDownloader:
         resolved_ref: str = "",
         source_commit_sha: str = "",
     ) -> HostArtifactIdentity:
-        """Download one safe HTTPS URL and return its immutable identity."""
+        """Download one safe HTTPS URL and return its immutable identity.
+
+        Args:
+            name: Canonical name.
+            selector: Selector.
+            version: Version.
+            url: Url.
+            verification: Verification.
+            verification_identity: Exact verification identity.
+            allow_cache: Allow cache.
+            expected_sha256: Expected SHA-256.
+            resolved_ref: Resolved ref.
+            source_commit_sha: Source commit sha.
+
+        Returns:
+            Resulting host artifact identity.
+        """
 
         parsed_url = urllib.parse.urlparse(url)
         if (
@@ -91,7 +120,14 @@ class HostArtifactDownloader:
         )
 
     def cache_path_get(self, url: str) -> Path:
-        """Return the private cache path for one URL."""
+        """Return the private cache path for one URL.
+
+        Args:
+            url: Url.
+
+        Returns:
+            The private cache path for one URL.
+        """
 
         return self._cache_root_path / hashlib.sha256(url.encode()).hexdigest()
 
@@ -103,7 +139,17 @@ class HostArtifactDownloader:
         url: str,
         allow_cache: bool = True,
     ) -> tuple[str, int]:
-        """Publish exact response bytes atomically after bounded validation."""
+        """Publish exact response bytes atomically after bounded validation.
+
+        Args:
+            artifact_path: Exact filesystem path for artifact.
+            expected_sha256: Expected SHA-256.
+            url: Url.
+            allow_cache: Allow cache.
+
+        Returns:
+            Values in deterministic immutable order.
+        """
 
         if allow_cache and artifact_path.is_file():
             sha256, size = _file_identity_get(artifact_path)
@@ -155,6 +201,15 @@ class HostArtifactDownloader:
 
 
 def _declared_size_get(value: str | None) -> int | None:
+    """Parse and bound an optional HTTP Content-Length declaration.
+
+    Args:
+        value: Candidate value.
+
+    Returns:
+        Validated byte count when the server declared one.
+    """
+
     if value is None:
         return None
     try:
@@ -167,6 +222,12 @@ def _declared_size_get(value: str | None) -> int | None:
 
 
 def _directory_fsync(path: Path) -> None:
+    """Make one directory-entry mutation durable.
+
+    Args:
+        path: Exact filesystem path.
+    """
+
     descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(descriptor)

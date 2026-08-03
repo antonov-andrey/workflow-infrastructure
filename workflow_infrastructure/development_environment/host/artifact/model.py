@@ -123,6 +123,9 @@ class HostArtifactIdentity:
 
         Artifact bytes stay under their canonical logical owner while retaining
         the real filename required by native consumers such as ``apt-get``.
+
+        Returns:
+            One safe source-filename-preserving bundle path.
         """
 
         encoded_filename = urllib.parse.urlsplit(self.url).path.rsplit("/", 1)[-1]
@@ -137,7 +140,11 @@ class HostArtifactIdentity:
         return PurePosixPath("artifact") / self.name / filename
 
     def manifest_payload_get(self) -> dict[str, object]:
-        """Return the canonical serializable identity."""
+        """Return the canonical serializable identity.
+
+        Returns:
+            The canonical serializable identity.
+        """
 
         payload: dict[str, object] = {
             "name": self.name,
@@ -168,10 +175,18 @@ class HostArtifactResolution:
     def __post_init__(self) -> None:
         """Detach and freeze the artifact mapping at the immutable handoff."""
 
-        object.__setattr__(self, "artifact_by_name_map", MappingProxyType(dict(self.artifact_by_name_map)))
+        object.__setattr__(
+            self,
+            "artifact_by_name_map",
+            MappingProxyType(dict(self.artifact_by_name_map)),
+        )
 
     def manifest_payload_get(self) -> dict[str, object]:
-        """Return canonical launch and release provenance."""
+        """Return canonical launch and release provenance.
+
+        Returns:
+            The canonical launch and release provenance.
+        """
 
         return host_artifact_manifest_validate(
             {
@@ -187,17 +202,29 @@ class HostArtifactResolution:
         )
 
     def manifest_sha256_get(self) -> str:
-        """Return the canonical manifest digest."""
+        """Return the canonical manifest digest.
+
+        Returns:
+            The canonical manifest digest.
+        """
 
         return hashlib.sha256(_canonical_bytes(self.manifest_payload_get())).hexdigest()
 
     def manifest_gzip_base64_get(self) -> str:
-        """Return a deterministic compact stack-parameter copy."""
+        """Return a deterministic compact stack-parameter copy.
+
+        Returns:
+            A deterministic compact stack-parameter copy.
+        """
 
         return base64.b64encode(gzip.compress(_canonical_bytes(self.manifest_payload_get()), mtime=0)).decode()
 
     def cloudformation_parameter_by_name_map_get(self) -> dict[str, str]:
-        """Return the bounded canonical stack provenance inputs."""
+        """Return the bounded canonical stack provenance inputs.
+
+        Returns:
+            The bounded canonical stack provenance inputs.
+        """
 
         if any(len(item.url) > 384 for item in self.artifact_by_name_map.values()):
             raise HostArtifactResolutionError("host artifact URL exceeds the bounded launch-input contract")
@@ -211,7 +238,14 @@ class HostArtifactResolution:
 
 
 def host_artifact_manifest_validate(payload: object) -> dict[str, object]:
-    """Validate the one exact current manifest shape."""
+    """Validate the one exact current manifest shape.
+
+    Args:
+        payload: Structured operation payload.
+
+    Returns:
+        Validated current host-artifact manifest payload.
+    """
 
     if not isinstance(payload, dict) or set(payload) != _MANIFEST_FIELD_NAME_SET:
         raise HostArtifactResolutionError("host artifact manifest does not have the exact current shape")
@@ -265,7 +299,15 @@ def host_artifact_manifest_validate(payload: object) -> dict[str, object]:
 
 
 def host_artifact_manifest_decode(*, encoded_manifest: str, expected_sha256: str) -> dict[str, object]:
-    """Decode and validate a deterministic gzip/base64 manifest."""
+    """Decode and validate a deterministic gzip/base64 manifest.
+
+    Args:
+        encoded_manifest: Encoded manifest.
+        expected_sha256: Expected SHA-256.
+
+    Returns:
+        Validated manifest decoded from its compressed transport form.
+    """
 
     try:
         payload = json.loads(gzip.decompress(base64.b64decode(encoded_manifest, validate=True)))
@@ -275,7 +317,15 @@ def host_artifact_manifest_decode(*, encoded_manifest: str, expected_sha256: str
 
 
 def host_artifact_manifest_json_decode(*, manifest_json: str, expected_sha256: str) -> dict[str, object]:
-    """Decode and validate canonical JSON installed on one host."""
+    """Decode and validate canonical JSON installed on one host.
+
+    Args:
+        manifest_json: Manifest json.
+        expected_sha256: Expected SHA-256.
+
+    Returns:
+        Validated manifest decoded from canonical JSON.
+    """
 
     try:
         payload = json.loads(manifest_json)
@@ -285,6 +335,16 @@ def host_artifact_manifest_json_decode(*, manifest_json: str, expected_sha256: s
 
 
 def _manifest_digest_validate(payload: object, *, expected_sha256: str) -> dict[str, object]:
+    """Require the decoded manifest to match its canonical SHA-256 identity.
+
+    Args:
+        payload: Structured operation payload.
+        expected_sha256: Expected SHA-256.
+
+    Returns:
+        Manifest payload whose canonical digest matches the expected identity.
+    """
+
     if re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
         raise HostArtifactResolutionError("host artifact manifest digest is invalid")
     if hashlib.sha256(_canonical_bytes(payload)).hexdigest() != expected_sha256:
@@ -293,8 +353,26 @@ def _manifest_digest_validate(payload: object, *, expected_sha256: str) -> dict[
 
 
 def _canonical_bytes(payload: object) -> bytes:
+    """Serialize one value as canonical JSON bytes.
+
+    Args:
+        payload: Structured operation payload.
+
+    Returns:
+        Resulting byte payload.
+    """
+
     return json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
 
 
 def _nonempty_text(value: object) -> bool:
+    """Report whether one value is non-empty text.
+
+    Args:
+        value: Candidate value.
+
+    Returns:
+        Whether one value is non-empty text.
+    """
+
     return isinstance(value, str) and bool(value)

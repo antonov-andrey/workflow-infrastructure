@@ -20,19 +20,36 @@ from workflow_infrastructure.development_environment.error import (
 
 
 class StackCleanupProtocol(Protocol):
+    """Declare the stack cleanup interface."""
+
     def delete(self, stack_name: str) -> None:
-        """Delete one exact stack."""
+        """Delete one exact stack.
+
+        Args:
+            stack_name: Stack name.
+        """
 
 
 class ComputeCleanup:
     """Stop task compute safely before delegating its stack deletion."""
 
     def __init__(self, *, aws: AwsClientProtocol, stack_cleanup: StackCleanupProtocol) -> None:
+        """Initialize the compute cleanup dependencies.
+
+        Args:
+            aws: Aws.
+            stack_cleanup: Stack cleanup.
+        """
+
         self._aws = aws
         self._stack_cleanup = stack_cleanup
 
     def delete(self, inventory: CleanupInventory) -> None:
-        """Terminate active sessions, stop compute, and delete its stack."""
+        """Terminate active sessions, stop compute, and delete its stack.
+
+        Args:
+            inventory: Inventory.
+        """
 
         self._session_list_terminate(inventory.instance_id)
         state = self.instance_state_get(inventory.instance_id)
@@ -63,6 +80,9 @@ class ComputeCleanup:
         the service proof that the resource can no longer run or be recovered;
         waiting for the tombstone itself to disappear would make goal cleanup
         depend on an unrelated AWS visibility delay.
+
+        Args:
+            inventory: Inventory.
         """
 
         if self.instance_state_get(inventory.instance_id) not in {
@@ -74,7 +94,14 @@ class ComputeCleanup:
             raise DevelopmentEnvironmentError("Task Session Manager sessions remain active")
 
     def active_session_id_list_get(self, instance_id: str) -> list[str]:
-        """Return a complete duplicate-free active Session Manager inventory."""
+        """Return a complete duplicate-free active Session Manager inventory.
+
+        Args:
+            instance_id: Exact instance identity.
+
+        Returns:
+            A complete duplicate-free active Session Manager inventory.
+        """
 
         next_token = ""
         session_id_list: list[str] = []
@@ -110,7 +137,14 @@ class ComputeCleanup:
         return session_id_list
 
     def instance_state_get(self, instance_id: str) -> str:
-        """Return one exact EC2 state or the synthetic absent state."""
+        """Return one exact EC2 state or the synthetic absent state.
+
+        Args:
+            instance_id: Exact instance identity.
+
+        Returns:
+            One exact EC2 state or the synthetic absent state.
+        """
 
         result = self._aws.run(
             ["ec2", "describe-instances", "--instance-ids", instance_id],
@@ -144,5 +178,11 @@ class ComputeCleanup:
         return state_name
 
     def _session_list_terminate(self, instance_id: str) -> None:
+        """Terminate every active SSM session bound to the retiring instance.
+
+        Args:
+            instance_id: Exact instance identity.
+        """
+
         for session_id in self.active_session_id_list_get(instance_id):
             self._aws.run(["ssm", "terminate-session", "--session-id", session_id])

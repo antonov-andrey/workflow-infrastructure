@@ -35,7 +35,17 @@ class CommandRunnerProtocol(Protocol):
         input_text: str | None = None,
         should_capture: bool = True,
     ) -> CommandResultProtocol:
-        """Run one command."""
+        """Run one command.
+
+        Args:
+            command_list: Ordered command values.
+            check: Whether a nonzero command exit raises an error.
+            input_text: Input text.
+            should_capture: Whether stdout and stderr should be captured.
+
+        Returns:
+            Resulting command result protocol.
+        """
 
 
 class IdentityProtocol(Protocol):
@@ -52,18 +62,37 @@ class RetainedVolumeProtocol(Protocol):
     """Retained-volume identity validator."""
 
     def volume_id_validate(self, volume_id: str) -> None:
-        """Validate one EBS volume identity."""
+        """Validate one EBS volume identity.
+
+        Args:
+            volume_id: Exact volume identity.
+        """
 
 
 class TransportProtocol(Protocol):
     """Remote shell boundary used by operator status."""
 
     def ssm_shell_result_get(self, command_list: Sequence[str], *, timeout_seconds: int) -> dict[str, object]:
-        """Run one remote command and return its invocation payload."""
+        """Run one remote command and return its invocation payload.
+
+        Args:
+            command_list: Ordered command values.
+            timeout_seconds: Timeout in seconds.
+
+        Returns:
+            Successful SSM command invocation payload.
+        """
 
 
 def _host_status_payload_validate(payload: object) -> dict[str, str]:
-    """Validate and normalize the fixed safe host-status response contract."""
+    """Validate and normalize the fixed safe host-status response contract.
+
+    Args:
+        payload: Structured operation payload.
+
+    Returns:
+        Normalized safe host-status payload.
+    """
 
     if not isinstance(payload, dict):
         raise DevelopmentEnvironmentError("Development host status output is malformed")
@@ -141,7 +170,16 @@ class DevelopmentHostStatus:
         runner: CommandRunnerProtocol,
         transport: TransportProtocol,
     ) -> None:
-        """Bind status collection to one exact environment."""
+        """Bind status collection to one exact environment.
+
+        Args:
+            identity: Identity.
+            is_host: Whether host.
+            product_activity_get: Product activity get.
+            retained_volume: Retained volume.
+            runner: Explicit command execution boundary.
+            transport: Transport.
+        """
 
         self._identity = identity
         self._is_host = is_host
@@ -242,7 +280,11 @@ class DevelopmentHostStatus:
         }
 
     def _host_current_release_get(self) -> str:
-        """Return the safe exact retained release name or its invalid state."""
+        """Return the safe exact retained release name or its invalid state.
+
+        Returns:
+            The safe exact retained release name or its invalid state.
+        """
 
         if not self._identity.host_retained_current_release_path.is_symlink():
             return ""
@@ -374,7 +416,11 @@ class DevelopmentHostStatus:
         return status
 
     def unavailable_payload_get(self) -> dict[str, str]:
-        """Return stable status fields when the remote host cannot be inspected."""
+        """Return stable status fields when the remote host cannot be inspected.
+
+        Returns:
+            The stable status fields when the remote host cannot be inspected.
+        """
 
         return {
             "current_release": "",

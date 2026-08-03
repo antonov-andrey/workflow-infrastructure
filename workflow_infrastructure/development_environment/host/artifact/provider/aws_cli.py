@@ -34,15 +34,29 @@ class AwsCliArtifactProvider:
         trust_root_path: Path,
         verifier: HostArtifactVerifier,
     ) -> None:
+        """Initialize the AWS CLI artifact provider dependencies.
+
+        Args:
+            downloader: Downloader.
+            git_ref: Git ref.
+            trust_root_path: Exact filesystem path for trust root.
+            verifier: Verifier.
+        """
+
         self._downloader = downloader
         self._git_ref = git_ref
         self._trust_root_path = trust_root_path
         self._verifier = verifier
 
-    def resolve(
-        self, architecture: str
-    ) -> tuple[HostArtifactIdentity, HostArtifactIdentity]:
-        """Return exact AWS CLI archive and detached signature identities."""
+    def resolve(self, architecture: str) -> tuple[HostArtifactIdentity, HostArtifactIdentity]:
+        """Return exact AWS CLI archive and detached signature identities.
+
+        Args:
+            architecture: Architecture.
+
+        Returns:
+            The exact AWS CLI archive and detached signature identities.
+        """
 
         version, resolved_ref, commit_sha = self._git_ref.latest_tag_resolve(
             repository_url=AWS_CLI_REPOSITORY_URL,

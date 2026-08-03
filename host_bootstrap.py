@@ -70,9 +70,7 @@ def main(argv_list: list[str]) -> int:
                 python_runtime_path=args.python_runtime,
                 retained_root_path=args.retained_root,
                 retained_volume_id=args.retained_volume_id,
-                retained_volume_initialization_allowed=(
-                    args.retained_volume_initialization_allowed == "true"
-                ),
+                retained_volume_initialization_allowed=(args.retained_volume_initialization_allowed == "true"),
                 runner=HostBootstrapCommandRunner(),
             ).run()
     except DevelopmentEnvironmentError as error:

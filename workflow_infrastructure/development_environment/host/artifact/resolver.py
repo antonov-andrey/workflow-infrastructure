@@ -40,7 +40,15 @@ class HostArtifactResolver:
         k3s: K3sArtifactProvider,
         python: PythonArtifactProvider,
     ) -> None:
-        """Bind already-wired provider owners to one sequencing facade."""
+        """Bind already-wired provider owners to one sequencing facade.
+
+        Args:
+            aws_cli: Aws cli.
+            docker: Docker.
+            helm: Helm.
+            k3s: K3s.
+            python: Python.
+        """
 
         self._aws_cli = aws_cli
         self._docker = docker
@@ -49,7 +57,14 @@ class HostArtifactResolver:
         self._python = python
 
     def resolve(self, architecture: str) -> HostArtifactResolution:
-        """Resolve and verify all artifacts for one compute architecture."""
+        """Resolve and verify all artifacts for one compute architecture.
+
+        Args:
+            architecture: Architecture.
+
+        Returns:
+            The resolved and verified artifact graph for the compute architecture.
+        """
 
         owner_architecture = ARCHITECTURE_BY_COMPUTE_ARCHITECTURE_MAP.get(architecture)
         if owner_architecture is None:

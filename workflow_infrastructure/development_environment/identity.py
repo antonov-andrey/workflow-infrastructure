@@ -16,9 +16,7 @@ DATA_PLANE_STACK_NAME = "data-primary"
 HOST_CONTROL_CURRENT_SOURCE_PATH = Path("/opt/workflow-infrastructure/control/current")
 HOST_CONTROL_RELEASE_ROOT_PATH = Path("/opt/workflow-infrastructure/control/releases")
 INFRASTRUCTURE_SOURCE_RELATIVE_PATH = Path("sources/workflow-infrastructure")
-INFRASTRUCTURE_ENTRYPOINT_RELATIVE_PATH = (
-    INFRASTRUCTURE_SOURCE_RELATIVE_PATH / "development_environment_manage.py"
-)
+INFRASTRUCTURE_ENTRYPOINT_RELATIVE_PATH = INFRASTRUCTURE_SOURCE_RELATIVE_PATH / "development_environment_manage.py"
 HOST_CURRENT_SOURCE_PATH = Path("/opt/workflow-infrastructure/current")
 HOST_RETAINED_ROOT_PATH = Path("/srv/workflow-control-center")
 HOST_RETAINED_RELEASE_ROOT_PATH = HOST_RETAINED_ROOT_PATH / "release"
@@ -35,46 +33,44 @@ _GIT_WORKTREE_PATTERN = re.compile(r"20[0-9]{2}-[0-9]{2}-[0-9]{2}-[a-z0-9][a-z0-
 class DevelopmentEnvironmentIdentity:
     """Derive every physical development identity from one stable machine name."""
 
-    def __init__(
-        self, environment_name: str = "primary", *, git_worktree: str = ""
-    ) -> None:
-        """Validate and retain one stable lowercase environment name."""
+    def __init__(self, environment_name: str = "primary", *, git_worktree: str = "") -> None:
+        """Validate and retain one stable lowercase environment name.
+
+        Args:
+            environment_name: Environment name.
+            git_worktree: Git worktree.
+        """
 
         if git_worktree:
-            if (
-                _GIT_WORKTREE_PATTERN.fullmatch(git_worktree) is None
-                or len(git_worktree) > 120
-            ):
-                raise DevelopmentEnvironmentError(
-                    "git_worktree must be one canonical dated common prefix"
-                )
-            derived_environment_name = (
-                "w" + hashlib.sha256(git_worktree.encode("utf-8")).hexdigest()[:15]
-            )
+            if _GIT_WORKTREE_PATTERN.fullmatch(git_worktree) is None or len(git_worktree) > 120:
+                raise DevelopmentEnvironmentError("git_worktree must be one canonical dated common prefix")
+            derived_environment_name = "w" + hashlib.sha256(git_worktree.encode("utf-8")).hexdigest()[:15]
             if environment_name not in {"primary", derived_environment_name}:
-                raise DevelopmentEnvironmentError(
-                    "git_worktree and environment_name identify different environments"
-                )
+                raise DevelopmentEnvironmentError("git_worktree and environment_name identify different environments")
             environment_name = derived_environment_name
         if _ENVIRONMENT_NAME_PATTERN.fullmatch(environment_name) is None:
-            raise DevelopmentEnvironmentError(
-                "environment_name must match [a-z][a-z0-9]{0,15}"
-            )
+            raise DevelopmentEnvironmentError("environment_name must match [a-z][a-z0-9]{0,15}")
         self.environment_name = environment_name
         self.git_worktree = git_worktree
-        self._local_port_seed_sha256 = hashlib.sha256(
-            (git_worktree or environment_name).encode("utf-8")
-        ).hexdigest()
+        self._local_port_seed_sha256 = hashlib.sha256((git_worktree or environment_name).encode("utf-8")).hexdigest()
 
     @property
     def is_primary(self) -> bool:
-        """Return whether this is the stable primary development environment."""
+        """Return whether this is the stable primary development environment.
+
+        Returns:
+            Whether this is the stable primary development environment.
+        """
 
         return self.environment_name == "primary"
 
     @property
     def local_http_port(self) -> int:
-        """Return the deterministic local SSM tunnel port for this environment."""
+        """Return the deterministic local SSM tunnel port for this environment.
+
+        Returns:
+            The deterministic local SSM tunnel port for this environment.
+        """
 
         if self.is_primary:
             return 8080
@@ -82,7 +78,11 @@ class DevelopmentEnvironmentIdentity:
 
     @property
     def data_plane_stack_name(self) -> str:
-        """Return the exact data-plane stack identity."""
+        """Return the exact data-plane stack identity.
+
+        Returns:
+            The exact data-plane stack identity.
+        """
 
         if self.is_primary:
             return DATA_PLANE_STACK_NAME
@@ -90,7 +90,11 @@ class DevelopmentEnvironmentIdentity:
 
     @property
     def compute_stack_name(self) -> str:
-        """Return the exact compute stack identity."""
+        """Return the exact compute stack identity.
+
+        Returns:
+            The exact compute stack identity.
+        """
 
         if self.is_primary:
             return COMPUTE_STACK_NAME
@@ -98,7 +102,11 @@ class DevelopmentEnvironmentIdentity:
 
     @property
     def instance_name(self) -> str:
-        """Return the local SSH alias and EC2 Name identity."""
+        """Return the local SSH alias and EC2 Name identity.
+
+        Returns:
+            The local SSH alias and EC2 Name identity.
+        """
 
         if self.is_primary:
             return INSTANCE_NAME
@@ -106,7 +114,11 @@ class DevelopmentEnvironmentIdentity:
 
     @property
     def lease_group_name(self) -> str:
-        """Return the environment-owned Scheduler group name."""
+        """Return the environment-owned Scheduler group name.
+
+        Returns:
+            The environment-owned Scheduler group name.
+        """
 
         if self.is_primary:
             return LEASE_GROUP_NAME
@@ -114,7 +126,11 @@ class DevelopmentEnvironmentIdentity:
 
     @property
     def lease_name(self) -> str:
-        """Return the renewable stop-lease schedule name."""
+        """Return the renewable stop-lease schedule name.
+
+        Returns:
+            The renewable stop-lease schedule name.
+        """
 
         if self.is_primary:
             return LEASE_NAME
@@ -122,19 +138,23 @@ class DevelopmentEnvironmentIdentity:
 
     @property
     def host_control_root_path(self) -> Path:
-        """Return the disposable infrastructure-control source root."""
+        """Return the disposable infrastructure-control source root.
+
+        Returns:
+            The disposable infrastructure-control source root.
+        """
 
         if self.is_primary:
             return HOST_CONTROL_RELEASE_ROOT_PATH.parent
-        return (
-            Path("/opt/workflow-infrastructure/environments")
-            / self.environment_name
-            / "control"
-        )
+        return Path("/opt/workflow-infrastructure/environments") / self.environment_name / "control"
 
     @property
     def host_control_release_root_path(self) -> Path:
-        """Return the exact infrastructure-control release collection."""
+        """Return the exact infrastructure-control release collection.
+
+        Returns:
+            The exact infrastructure-control release collection.
+        """
 
         if self.is_primary:
             return HOST_CONTROL_RELEASE_ROOT_PATH
@@ -142,7 +162,11 @@ class DevelopmentEnvironmentIdentity:
 
     @property
     def host_control_current_source_path(self) -> Path:
-        """Return the current infrastructure-control release pointer."""
+        """Return the current infrastructure-control release pointer.
+
+        Returns:
+            The current infrastructure-control release pointer.
+        """
 
         if self.is_primary:
             return HOST_CONTROL_CURRENT_SOURCE_PATH
@@ -150,24 +174,31 @@ class DevelopmentEnvironmentIdentity:
 
     @property
     def host_control_infrastructure_source_path(self) -> Path:
-        """Return the current workflow-infrastructure repository root."""
+        """Return the current workflow-infrastructure repository root.
 
-        return (
-            self.host_control_current_source_path / INFRASTRUCTURE_SOURCE_RELATIVE_PATH
-        )
+        Returns:
+            The current workflow-infrastructure repository root.
+        """
+
+        return self.host_control_current_source_path / INFRASTRUCTURE_SOURCE_RELATIVE_PATH
 
     @property
     def host_control_entrypoint_path(self) -> Path:
-        """Return the current primary development-environment entrypoint."""
+        """Return the current primary development-environment entrypoint.
 
-        return (
-            self.host_control_current_source_path
-            / INFRASTRUCTURE_ENTRYPOINT_RELATIVE_PATH
-        )
+        Returns:
+            The current primary development-environment entrypoint.
+        """
+
+        return self.host_control_current_source_path / INFRASTRUCTURE_ENTRYPOINT_RELATIVE_PATH
 
     @property
     def host_retained_root_path(self) -> Path:
-        """Return the environment-exclusive retained volume mount."""
+        """Return the environment-exclusive retained volume mount.
+
+        Returns:
+            The environment-exclusive retained volume mount.
+        """
 
         if self.is_primary:
             return HOST_RETAINED_ROOT_PATH
@@ -175,7 +206,11 @@ class DevelopmentEnvironmentIdentity:
 
     @property
     def host_retained_release_root_path(self) -> Path:
-        """Return the retained Product release owner root."""
+        """Return the retained Product release owner root.
+
+        Returns:
+            The retained Product release owner root.
+        """
 
         if self.is_primary:
             return HOST_RETAINED_RELEASE_ROOT_PATH
@@ -183,13 +218,21 @@ class DevelopmentEnvironmentIdentity:
 
     @property
     def host_retained_product_tool_path(self) -> Path:
-        """Return the retained Product management runtime root."""
+        """Return the retained Product management runtime root.
+
+        Returns:
+            The retained Product management runtime root.
+        """
 
         return self.host_retained_root_path / "product-tool"
 
     @property
     def host_release_root_path(self) -> Path:
-        """Return the retained immutable Product release collection."""
+        """Return the retained immutable Product release collection.
+
+        Returns:
+            The retained immutable Product release collection.
+        """
 
         if self.is_primary:
             return HOST_RELEASE_ROOT_PATH
@@ -197,7 +240,11 @@ class DevelopmentEnvironmentIdentity:
 
     @property
     def host_retained_current_release_path(self) -> Path:
-        """Return the retained accepted Product release pointer."""
+        """Return the retained accepted Product release pointer.
+
+        Returns:
+            The retained accepted Product release pointer.
+        """
 
         if self.is_primary:
             return HOST_RETAINED_CURRENT_RELEASE_PATH
@@ -205,31 +252,43 @@ class DevelopmentEnvironmentIdentity:
 
     @property
     def host_retained_rollback_release_path(self) -> Path:
-        """Return the retained previous-current Product release pointer."""
+        """Return the retained previous-current Product release pointer.
+
+        Returns:
+            The retained previous-current Product release pointer.
+        """
 
         return self.host_retained_release_root_path / "rollback"
 
     @property
     def host_product_recovery_marker_path(self) -> Path:
-        """Return the retained interrupted-Product-recovery marker."""
+        """Return the retained interrupted-Product-recovery marker.
+
+        Returns:
+            The retained interrupted-Product-recovery marker.
+        """
 
         return self.host_retained_release_root_path / "recovery-pending.json"
 
     @property
     def host_current_source_path(self) -> Path:
-        """Return the root-volume Product current-source pointer."""
+        """Return the root-volume Product current-source pointer.
+
+        Returns:
+            The root-volume Product current-source pointer.
+        """
 
         if self.is_primary:
             return HOST_CURRENT_SOURCE_PATH
-        return (
-            Path("/opt/workflow-infrastructure/environments")
-            / self.environment_name
-            / "current"
-        )
+        return Path("/opt/workflow-infrastructure/environments") / self.environment_name / "current"
 
     @property
     def host_state_root_path(self) -> Path:
-        """Return the disposable host-controller state root."""
+        """Return the disposable host-controller state root.
+
+        Returns:
+            The disposable host-controller state root.
+        """
 
         if self.is_primary:
             return HOST_STATE_ROOT_PATH
@@ -237,18 +296,30 @@ class DevelopmentEnvironmentIdentity:
 
     @property
     def qualified_registry_identity(self) -> str:
-        """Return the collision-proof logical registry identity."""
+        """Return the collision-proof logical registry identity.
+
+        Returns:
+            The collision-proof logical registry identity.
+        """
 
         return f"{self.compute_stack_name}:apwid-workflow/workflow-image-registry"
 
     @property
     def qualified_product_database_identity(self) -> str:
-        """Return the collision-proof logical Product database identity."""
+        """Return the collision-proof logical Product database identity.
+
+        Returns:
+            The collision-proof logical Product database identity.
+        """
 
         return f"{self.compute_stack_name}:apwid-db/apwid"
 
     @property
     def qualified_credential_identity(self) -> str:
-        """Return the collision-proof logical renewable credential identity."""
+        """Return the collision-proof logical renewable credential identity.
+
+        Returns:
+            The collision-proof logical renewable credential identity.
+        """
 
         return f"{self.compute_stack_name}:apwid-platform/workflow-control-center-aws-credentials"

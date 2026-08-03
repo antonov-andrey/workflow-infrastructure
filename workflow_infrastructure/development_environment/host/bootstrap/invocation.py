@@ -19,7 +19,15 @@ _IN_PROGRESS_STATUS_SET = frozenset({"Delayed", "InProgress", "Pending"})
 
 
 def _required_text(value_by_name: Mapping[str, str], name: str) -> str:
-    """Return one required non-empty text value."""
+    """Return one required non-empty text value.
+
+    Args:
+        value_by_name: Value by name.
+        name: Canonical name.
+
+    Returns:
+        One required non-empty text value.
+    """
 
     value = value_by_name.get(name)
     if not isinstance(value, str) or not value:
@@ -28,7 +36,15 @@ def _required_text(value_by_name: Mapping[str, str], name: str) -> str:
 
 
 def _required_sha256(value_by_name: Mapping[str, str], name: str) -> str:
-    """Return one required lowercase SHA-256 value."""
+    """Return one required lowercase SHA-256 value.
+
+    Args:
+        value_by_name: Value by name.
+        name: Canonical name.
+
+    Returns:
+        One required lowercase SHA-256 value.
+    """
 
     value = _required_text(value_by_name, name)
     if _SHA256_PATTERN.fullmatch(value) is None:
@@ -40,20 +56,43 @@ class AwsClientProtocol(Protocol):
     """AWS operations required by exact document invocation."""
 
     def json_get(self, argument_list: Sequence[str]) -> dict[str, object]:
-        """Run one AWS CLI operation and decode its object result."""
+        """Run one AWS CLI operation and decode its object result.
+
+        Args:
+            argument_list: Exact command arguments.
+
+        Returns:
+            Decoded AWS response object.
+        """
 
     def run(self, argument_list: Sequence[str], *, check: bool = True) -> object:
-        """Run one AWS CLI operation."""
+        """Run one AWS CLI operation.
+
+        Args:
+            argument_list: Exact command arguments.
+            check: Whether a nonzero command exit raises an error.
+
+        Returns:
+            Provider-specific AWS CLI result object.
+        """
 
 
 class ClockProtocol(Protocol):
     """Monotonic wait boundary required by invocation polling."""
 
     def monotonic(self) -> float:
-        """Return monotonic seconds."""
+        """Return monotonic seconds.
+
+        Returns:
+            The monotonic seconds.
+        """
 
     def sleep(self, delay_seconds: float) -> None:
-        """Wait for a bounded duration."""
+        """Wait for a bounded duration.
+
+        Args:
+            delay_seconds: Delay in seconds.
+        """
 
 
 class EnvironmentIdentityProtocol(Protocol):
@@ -67,10 +106,24 @@ class StackManagerProtocol(Protocol):
     """Compute stack state required by document invocation."""
 
     def output_by_name_map_get(self, stack_name: str) -> dict[str, str]:
-        """Return exact stack outputs."""
+        """Return exact stack outputs.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            The exact stack outputs.
+        """
 
     def parameter_by_name_map_get(self, stack_name: str) -> dict[str, str]:
-        """Return exact stack parameters."""
+        """Return exact stack parameters.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            The exact stack parameters.
+        """
 
 
 class StorageInitializationProtocol(Protocol):
@@ -80,7 +133,11 @@ class StorageInitializationProtocol(Protocol):
         """Advance a successfully mounted pending volume to complete."""
 
     def initialization_allowed_get(self) -> bool:
-        """Return whether this exact volume may receive first-time XFS."""
+        """Return whether this exact volume may receive first-time XFS.
+
+        Returns:
+            Whether this exact volume may receive first-time XFS.
+        """
 
 
 class DevelopmentHostBootstrapInvocation:
@@ -97,7 +154,17 @@ class DevelopmentHostBootstrapInvocation:
         stack: StackManagerProtocol,
         storage_initialization: StorageInitializationProtocol,
     ) -> None:
-        """Bind invocation to one environment compute stack."""
+        """Bind invocation to one environment compute stack.
+
+        Args:
+            account_id: Exact account identity.
+            aws: Aws.
+            clock: Clock.
+            compute_stack_name: Compute stack name.
+            identity: Identity.
+            stack: Stack.
+            storage_initialization: Storage initialization.
+        """
 
         self._account_id = account_id
         self._aws = aws
@@ -134,7 +201,15 @@ class DevelopmentHostBootstrapInvocation:
         output_by_name: Mapping[str, str],
         parameter_by_name: Mapping[str, str],
     ) -> tuple[str, str, str]:
-        """Return exact name, numeric version, and system SHA-256."""
+        """Return exact name, numeric version, and system SHA-256.
+
+        Args:
+            output_by_name: Output by name.
+            parameter_by_name: Parameter by name.
+
+        Returns:
+            The exact name, numeric version, and system SHA-256.
+        """
 
         document_name = _required_text(output_by_name, "HostBootstrapDocumentName")
         description = self._aws.json_get(["ssm", "describe-document", "--name", document_name]).get("Document")
@@ -197,7 +272,12 @@ class DevelopmentHostBootstrapInvocation:
         *,
         parameter_by_name: Mapping[str, str],
     ) -> None:
-        """Validate the closed security-relevant document content."""
+        """Validate the closed security-relevant document content.
+
+        Args:
+            content: Content.
+            parameter_by_name: Parameter by name.
+        """
 
         if not isinstance(content, dict) or set(content) != {
             "description",
@@ -291,7 +371,14 @@ class DevelopmentHostBootstrapInvocation:
             raise DevelopmentEnvironmentError("Bootstrap launcher differs from the exact current contract")
 
     def _launcher_get(self, parameter_by_name: Mapping[str, str]) -> str:
-        """Render the one accepted minimal checksum-verifying launcher."""
+        """Render the one accepted minimal checksum-verifying launcher.
+
+        Args:
+            parameter_by_name: Parameter by name.
+
+        Returns:
+            Resulting text value.
+        """
 
         python_sha256 = _required_sha256(parameter_by_name, "HostPythonArtifactSha256")
         bundle_sha256 = _required_sha256(parameter_by_name, "HostBootstrapBundleSha256")
@@ -340,7 +427,17 @@ exec "$python_root/bin/python3.14" -B "$bundle_root/host_bootstrap.py" \\
         output_by_name: Mapping[str, str],
         parameter_by_name: Mapping[str, str],
     ) -> str:
-        """Start one exact hash-bound invocation."""
+        """Start one exact hash-bound invocation.
+
+        Args:
+            document_identity: Exact document identity.
+            initialization_allowed: Initialization allowed.
+            output_by_name: Output by name.
+            parameter_by_name: Parameter by name.
+
+        Returns:
+            Resulting text value.
+        """
 
         document_name, version, document_hash = document_identity
         instance_id = _required_text(output_by_name, "InstanceId")
@@ -387,7 +484,12 @@ exec "$python_root/bin/python3.14" -B "$bundle_root/host_bootstrap.py" \\
         return command_id
 
     def _command_success_wait(self, *, command_id: str, instance_id: str) -> None:
-        """Require one successful invocation without emitting remote content."""
+        """Require one successful invocation without emitting remote content.
+
+        Args:
+            command_id: Exact command identity.
+            instance_id: Exact instance identity.
+        """
 
         t_deadline = self._clock.monotonic() + BOOTSTRAP_COMMAND_TIMEOUT_SECONDS
         status: object = "Pending"

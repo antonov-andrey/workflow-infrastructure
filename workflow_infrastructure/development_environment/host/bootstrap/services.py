@@ -11,7 +11,12 @@ class CommandRunnerProtocol(Protocol):
     """Command boundary required by systemd service activation."""
 
     def run(self, command_argument_list: list[str], *, check: bool = True):
-        """Run one command."""
+        """Run one command.
+
+        Args:
+            command_argument_list: Ordered command argument values.
+            check: Whether a nonzero command exit raises an error.
+        """
 
 
 class HostBootstrapServiceManager:
@@ -59,7 +64,7 @@ class HostBootstrapServiceManager:
         """Reload systemd and enable every selected service.
 
         Args:
-            name_list: Exact systemd unit names.
+            *name_list: Exact systemd unit names.
         """
 
         self._runner.run(["systemctl", "daemon-reload"])

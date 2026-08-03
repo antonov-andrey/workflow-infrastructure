@@ -17,17 +17,30 @@ class CommandRunnerProtocol(Protocol):
     """Command boundary required by retained storage."""
 
     def run(self, command_argument_list: list[str], *, check: bool = True):
-        """Run one command."""
+        """Run one command.
+
+        Args:
+            command_argument_list: Ordered command argument values.
+            check: Whether a nonzero command exit raises an error.
+        """
 
 
 class ClockProtocol(Protocol):
     """Monotonic wait boundary required for device discovery."""
 
     def monotonic(self) -> float:
-        """Return monotonic seconds."""
+        """Return monotonic seconds.
+
+        Returns:
+            The monotonic seconds.
+        """
 
     def sleep(self, delay_seconds: float) -> None:
-        """Wait for one bounded duration."""
+        """Wait for one bounded duration.
+
+        Args:
+            delay_seconds: Delay in seconds.
+        """
 
 
 class HostStorageBootstrap:
@@ -48,12 +61,14 @@ class HostStorageBootstrap:
         """Bind storage setup to one exact EBS volume.
 
         Args:
-            retained_root_path: Environment-exclusive mount root.
-            retained_volume_id: Exact attached EBS volume identity.
             initialization_allowed: Explicit one-time control-plane permission
                 to create XFS on a new base volume.
+            retained_root_path: Environment-exclusive mount root.
+            retained_volume_id: Exact attached EBS volume identity.
             runner: Checked process boundary.
+            clock: Clock.
             device_by_id_root_path: Linux persistent block-device identity root.
+            device_wait_timeout_seconds: Device wait timeout in seconds.
             fstab_path: Persistent mount table path.
         """
 
@@ -155,6 +170,13 @@ class HostStorageBootstrap:
 
 
 def _fstab_write(*, path: Path, line_list: list[str]) -> None:
+    """Persist fstab.
+
+    Args:
+        path: Exact filesystem path.
+        line_list: Ordered line values.
+    """
+
     temporary_path = path.with_name(f".{path.name}.new")
     with temporary_path.open("w", encoding="utf-8") as file:
         file.write("\n".join(line_list).rstrip("\n") + "\n")

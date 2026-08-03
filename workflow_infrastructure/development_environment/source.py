@@ -33,7 +33,11 @@ class ClockProtocol(Protocol):
     """UTC time boundary required by release naming."""
 
     def now(self) -> datetime:
-        """Return the current timezone-aware UTC instant."""
+        """Return the current timezone-aware UTC instant.
+
+        Returns:
+            The current timezone-aware UTC instant.
+        """
 
 
 class EnvironmentIdentityProtocol(Protocol):
@@ -57,14 +61,27 @@ class CommandRunnerProtocol(Protocol):
         check: bool = True,
         should_capture: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        """Run one command."""
+        """Run one command.
+
+        Args:
+            command_list: Ordered command values.
+            check: Whether a nonzero command exit raises an error.
+            should_capture: Whether stdout and stderr should be captured.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
 
 
 class SsmTransportProtocol(Protocol):
     """SSH-over-SSM surface required by source transfer."""
 
     def ssh_control_session(self) -> object:
-        """Return one context manager yielding a control-socket path."""
+        """Return one context manager yielding a control-socket path.
+
+        Returns:
+            One context manager yielding a control-socket path.
+        """
 
     def ssh_run(
         self,
@@ -73,11 +90,27 @@ class SsmTransportProtocol(Protocol):
         ssh_control_path: Path,
         should_capture: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        """Run one remote command."""
+        """Run one remote command.
+
+        Args:
+            remote_command_list: Ordered remote command values.
+            ssh_control_path: Exact filesystem path for ssh control.
+            should_capture: Whether stdout and stderr should be captured.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
 
 
 def _source_file_sha256_by_path_map_get(*, archive_path: Path) -> dict[str, str]:
-    """Return every safe file and symlink digest from one source archive."""
+    """Return every safe file and symlink digest from one source archive.
+
+    Args:
+        archive_path: Exact filesystem path for archive.
+
+    Returns:
+        Every safe file and symlink digest keyed by archive-relative path.
+    """
 
     file_sha256_by_path_map: dict[str, str] = {}
     member_name_set: set[str] = set()
@@ -128,7 +161,15 @@ class DevelopmentSourcePublisher:
         runner: CommandRunnerProtocol,
         transport: SsmTransportProtocol,
     ) -> None:
-        """Bind source publication to one explicit workspace and environment."""
+        """Bind source publication to one explicit workspace and environment.
+
+        Args:
+            clock: Clock.
+            identity: Identity.
+            project_root_path: Exact filesystem path for project root.
+            runner: Explicit command execution boundary.
+            transport: Transport.
+        """
 
         self._clock = clock
         self._identity = identity
@@ -141,7 +182,11 @@ class DevelopmentSourcePublisher:
         *,
         should_install_host_controller: bool = True,
     ) -> None:
-        """Publish exact infrastructure control source and install its controller."""
+        """Publish exact infrastructure control source and install its controller.
+
+        Args:
+            should_install_host_controller: Should install host controller.
+        """
 
         release_name = self._clock.now().strftime("%Y%m%d%H%M%S%f")
         with self._transport.ssh_control_session() as ssh_control_path:  # type: ignore[attr-defined]
@@ -198,7 +243,18 @@ class DevelopmentSourcePublisher:
         repository_name: str,
         ssh_control_path: Path,
     ) -> dict[str, object]:
-        """Resolve, transfer, and verify one moving source exactly once."""
+        """Resolve, transfer, and verify one moving source exactly once.
+
+        Args:
+            exact_override_commit: Exact override commit.
+            release_name: Release name.
+            remote_release_root_path: Exact filesystem path for remote release root.
+            repository_name: Repository name.
+            ssh_control_path: Exact filesystem path for ssh control.
+
+        Returns:
+            Verified manifest for the resolved moving source archive.
+        """
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root_path = Path(temporary_directory)
@@ -228,7 +284,17 @@ class DevelopmentSourcePublisher:
         manifest_path: Path,
         repository_name: str,
     ) -> dict[str, object]:
-        """Resolve one moving source and export its immutable archive."""
+        """Resolve one moving source and export its immutable archive.
+
+        Args:
+            archive_path: Exact filesystem path for archive.
+            exact_override_commit: Exact override commit.
+            manifest_path: Exact filesystem path for manifest.
+            repository_name: Repository name.
+
+        Returns:
+            One moving source and export its immutable archive.
+        """
 
         repository_url = REPOSITORY_URL_BY_NAME_MAP[repository_name]
         if exact_override_commit and re.fullmatch(r"[0-9a-f]{40}", exact_override_commit) is None:
@@ -365,7 +431,18 @@ class DevelopmentSourcePublisher:
         remote_release_root_path: Path,
         ssh_control_path: Path,
     ) -> dict[str, object]:
-        """Create, transfer, and verify one exact-checkout source archive."""
+        """Create, transfer, and verify one exact-checkout source archive.
+
+        Args:
+            repository_name: Repository name.
+            repository_path: Exact filesystem path for repository.
+            release_name: Release name.
+            remote_release_root_path: Exact filesystem path for remote release root.
+            ssh_control_path: Exact filesystem path for ssh control.
+
+        Returns:
+            Verified manifest for the exact-checkout source archive.
+        """
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             temporary_root_path = Path(temporary_directory)
@@ -395,7 +472,17 @@ class DevelopmentSourcePublisher:
         repository_name: str,
         repository_path: Path,
     ) -> dict[str, object]:
-        """Build one deterministic archive from the exact tracked source tree."""
+        """Build one deterministic archive from the exact tracked source tree.
+
+        Args:
+            archive_path: Exact filesystem path for archive.
+            manifest_path: Exact filesystem path for manifest.
+            repository_name: Repository name.
+            repository_path: Exact filesystem path for repository.
+
+        Returns:
+            One deterministic archive from the exact tracked source tree.
+        """
 
         tracked_path_list = self._tracked_path_list_get(repository_path)
         file_sha256_by_path_map: dict[str, str] = {}
@@ -445,7 +532,12 @@ class DevelopmentSourcePublisher:
         repository_path: Path,
         repository_name: str,
     ) -> None:
-        """Prove one checkout and every submodule are clean and published."""
+        """Prove one checkout and every submodule are clean and published.
+
+        Args:
+            repository_path: Exact filesystem path for repository.
+            repository_name: Repository name.
+        """
 
         expected_url = REPOSITORY_URL_BY_NAME_MAP[repository_name]
         actual_url = self._git_stdout_get(
@@ -535,7 +627,14 @@ class DevelopmentSourcePublisher:
         submodule_path: Path,
         submodule_path_text: str,
     ) -> None:
-        """Prove one gitlink on canonical main or the exact task branch."""
+        """Prove one gitlink on canonical main or the exact task branch.
+
+        Args:
+            commit_sha: Commit sha.
+            repository_name: Repository name.
+            submodule_path: Exact filesystem path for submodule.
+            submodule_path_text: Submodule path text.
+        """
 
         self._runner.run(
             [
@@ -595,7 +694,20 @@ class DevelopmentSourcePublisher:
         repository_name: str,
         ssh_control_path: Path,
     ) -> dict[str, object]:
-        """Transfer and verify one already prepared immutable source archive."""
+        """Transfer and verify one already prepared immutable source archive.
+
+        Args:
+            archive_path: Exact filesystem path for archive.
+            manifest: Manifest.
+            manifest_path: Exact filesystem path for manifest.
+            release_name: Release name.
+            remote_release_root_path: Exact filesystem path for remote release root.
+            repository_name: Repository name.
+            ssh_control_path: Exact filesystem path for ssh control.
+
+        Returns:
+            Verified manifest for the remotely installed source archive.
+        """
 
         remote_staging_path = f"/tmp/workflow-source-{release_name}-{repository_name}"
         self._runner.run(
@@ -655,7 +767,14 @@ shutil.rmtree(root_path)
         *,
         repository_url: str,
     ) -> dict[str, str]:
-        """Return the advertised symbolic remote HEAD and exact commit."""
+        """Return the advertised symbolic remote HEAD and exact commit.
+
+        Args:
+            repository_url: Repository URL.
+
+        Returns:
+            The advertised symbolic remote HEAD and exact commit.
+        """
 
         result = self._runner.run(
             [
@@ -693,7 +812,14 @@ shutil.rmtree(root_path)
         self,
         repository_path: Path,
     ) -> dict[str, dict[str, str]]:
-        """Return exact submodule commits and configured remote URLs."""
+        """Return exact submodule commits and configured remote URLs.
+
+        Args:
+            repository_path: Exact filesystem path for repository.
+
+        Returns:
+            The exact submodule commits and configured remote URLs.
+        """
 
         gitmodules_path = repository_path / ".gitmodules"
         if not gitmodules_path.is_file():
@@ -740,7 +866,14 @@ shutil.rmtree(root_path)
         return submodule_by_path_map
 
     def _tracked_path_list_get(self, repository_path: Path) -> list[Path]:
-        """Return the complete tracked path set including submodule bytes."""
+        """Return the complete tracked path set including submodule bytes.
+
+        Args:
+            repository_path: Exact filesystem path for repository.
+
+        Returns:
+            The complete tracked path set including submodule bytes.
+        """
 
         result = self._runner.run(
             [
@@ -761,7 +894,15 @@ shutil.rmtree(root_path)
         repository_path: Path,
         git_argument_list: Sequence[str],
     ) -> str:
-        """Run Git in one repository and return stripped output."""
+        """Run Git in one repository and return stripped output.
+
+        Args:
+            repository_path: Exact filesystem path for repository.
+            git_argument_list: Ordered Git argument values.
+
+        Returns:
+            Resulting text value.
+        """
 
         result = self._runner.run(["git", "-C", str(repository_path), *git_argument_list])
         return result.stdout.strip()

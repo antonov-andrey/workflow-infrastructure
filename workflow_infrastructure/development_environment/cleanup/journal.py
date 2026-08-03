@@ -31,8 +31,17 @@ PHASE_LIST = (
 
 
 class InventoryResolverProtocol(Protocol):
+    """Declare the inventory resolver interface."""
+
     def resolve(self, request: CleanupRequest) -> CleanupInventory:
-        """Return the exact task inventory."""
+        """Return the exact task inventory.
+
+        Args:
+            request: Validated operation request.
+
+        Returns:
+            The exact task inventory.
+        """
 
 
 class CleanupJournalStore:
@@ -44,11 +53,25 @@ class CleanupJournalStore:
         binding: CleanupBindingProtocol,
         inventory_resolver: InventoryResolverProtocol,
     ) -> None:
+        """Initialize the cleanup journal store dependencies.
+
+        Args:
+            binding: Binding.
+            inventory_resolver: Inventory resolver.
+        """
+
         self._binding = binding
         self._inventory_resolver = inventory_resolver
 
     def load_or_create(self, request: CleanupRequest) -> tuple[Path, dict[str, object]]:
-        """Load the same operation or durably create its immutable inventory."""
+        """Load the same operation or durably create its immutable inventory.
+
+        Args:
+            request: Validated operation request.
+
+        Returns:
+            The same operation or durably create its immutable inventory.
+        """
 
         path = self._path_get(request)
         if path.exists():
@@ -70,7 +93,12 @@ class CleanupJournalStore:
         return path, payload
 
     def advance(self, path: Path, payload: dict[str, object]) -> None:
-        """Durably advance exactly one completed phase."""
+        """Durably advance exactly one completed phase.
+
+        Args:
+            path: Exact filesystem path.
+            payload: Structured operation payload.
+        """
 
         phase = payload.get("phase")
         if phase not in PHASE_LIST[:-1]:
@@ -79,6 +107,15 @@ class CleanupJournalStore:
         atomic_json_write(path, payload)
 
     def _path_get(self, request: CleanupRequest) -> Path:
+        """Return the private durable cleanup-journal path for one operation.
+
+        Args:
+            request: Validated operation request.
+
+        Returns:
+            The path.
+        """
+
         return (
             self._binding.common_directory_get()
             / "agent-workflows"
@@ -88,6 +125,15 @@ class CleanupJournalStore:
 
     @staticmethod
     def _load(path: Path) -> dict[str, object]:
+        """Load the requested state.
+
+        Args:
+            path: Exact filesystem path.
+
+        Returns:
+            The requested state.
+        """
+
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -103,7 +149,12 @@ class CleanupJournalStore:
 
 
 def atomic_json_write(path: Path, payload: Mapping[str, object]) -> None:
-    """Replace one private journal only after file and directory durability."""
+    """Replace one private journal only after file and directory durability.
+
+    Args:
+        path: Exact filesystem path.
+        payload: Structured operation payload.
+    """
 
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     temporary_path: Path | None = None

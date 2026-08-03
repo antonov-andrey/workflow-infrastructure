@@ -32,7 +32,12 @@ class CommandRunnerProtocol(Protocol):
     """Command boundary required by host-artifact installation."""
 
     def run(self, command_argument_list: list[str], *, check: bool = True):
-        """Run one command."""
+        """Run one command.
+
+        Args:
+            command_argument_list: Ordered command argument values.
+            check: Whether a nonzero command exit raises an error.
+        """
 
 
 class HostArtifactBootstrap:
@@ -79,9 +84,7 @@ class HostArtifactBootstrap:
         self._uv_install()
         self._python_install()
         self._helm_install()
-        self._runner.run(
-            ["systemctl", "enable", "--now", "containerd", "docker", "ssh"]
-        )
+        self._runner.run(["systemctl", "enable", "--now", "containerd", "docker", "ssh"])
 
     def _docker_validate(self) -> None:
         """Require every installed Docker package version from the bundle."""
@@ -92,43 +95,29 @@ class HostArtifactBootstrap:
             "docker-ce",
             "docker-ce-cli",
         ):
-            result = self._runner.run(
-                ["dpkg-query", "--show", "--showformat=${Version}", package_name]
-            )
+            result = self._runner.run(["dpkg-query", "--show", "--showformat=${Version}", package_name])
             if result.stdout != self._bundle.artifact_version_get(package_name):
-                raise DevelopmentEnvironmentError(
-                    f"Installed Docker package {package_name} differs from the bundle"
-                )
+                raise DevelopmentEnvironmentError(f"Installed Docker package {package_name} differs from the bundle")
 
     def _aws_cli_install(self) -> None:
         """Install and verify the exact AWS CLI archive."""
 
-        with tempfile.TemporaryDirectory(
-            prefix="host-bootstrap-aws-"
-        ) as temporary_directory:
+        with tempfile.TemporaryDirectory(prefix="host-bootstrap-aws-") as temporary_directory:
             temporary_root_path = Path(temporary_directory)
             with zipfile.ZipFile(self._bundle.artifact_path_get("aws-cli")) as archive:
-                _zip_archive_extract(
-                    archive=archive, destination_path=temporary_root_path
-                )
+                _zip_archive_extract(archive=archive, destination_path=temporary_root_path)
             self._runner.run([str(temporary_root_path / "aws/install"), "--update"])
         result = self._runner.run(["/usr/local/bin/aws", "--version"])
         output = result.stdout + result.stderr
         if f"aws-cli/{self._bundle.artifact_version_get('aws-cli')} " not in output:
-            raise DevelopmentEnvironmentError(
-                "Installed AWS CLI version differs from the bundle"
-            )
+            raise DevelopmentEnvironmentError("Installed AWS CLI version differs from the bundle")
 
     def _uv_install(self) -> None:
         """Install and verify the exact uv binary."""
 
-        with tempfile.TemporaryDirectory(
-            prefix="host-bootstrap-uv-"
-        ) as temporary_directory:
+        with tempfile.TemporaryDirectory(prefix="host-bootstrap-uv-") as temporary_directory:
             temporary_root_path = Path(temporary_directory)
-            with tarfile.open(
-                self._bundle.artifact_path_get("uv"), mode="r:gz"
-            ) as archive:
+            with tarfile.open(self._bundle.artifact_path_get("uv"), mode="r:gz") as archive:
                 archive.extractall(temporary_root_path, filter="data")
             candidate_path_list = list(temporary_root_path.rglob("uv"))
             if len(candidate_path_list) != 1 or not candidate_path_list[0].is_file():
@@ -138,9 +127,7 @@ class HostArtifactBootstrap:
             os.chmod(destination_path, 0o755)
         result = self._runner.run([str(destination_path), "--version"])
         if _uv_version_get(result.stdout) != self._bundle.artifact_version_get("uv"):
-            raise DevelopmentEnvironmentError(
-                "Installed uv version differs from the bundle"
-            )
+            raise DevelopmentEnvironmentError("Installed uv version differs from the bundle")
 
     def _python_install(self) -> None:
         """Expose and verify the exact Python runtime used by bootstrap."""
@@ -163,33 +150,28 @@ class HostArtifactBootstrap:
     def _helm_install(self) -> None:
         """Install and verify the exact Helm binary."""
 
-        with tempfile.TemporaryDirectory(
-            prefix="host-bootstrap-helm-"
-        ) as temporary_directory:
+        with tempfile.TemporaryDirectory(prefix="host-bootstrap-helm-") as temporary_directory:
             temporary_root_path = Path(temporary_directory)
-            with tarfile.open(
-                self._bundle.artifact_path_get("helm"), mode="r:gz"
-            ) as archive:
+            with tarfile.open(self._bundle.artifact_path_get("helm"), mode="r:gz") as archive:
                 archive.extractall(temporary_root_path, filter="data")
             candidate_path_list = list(temporary_root_path.rglob("helm"))
             if len(candidate_path_list) != 1 or not candidate_path_list[0].is_file():
-                raise DevelopmentEnvironmentError(
-                    "Helm archive has an unexpected shape"
-                )
+                raise DevelopmentEnvironmentError("Helm archive has an unexpected shape")
             destination_path = Path("/usr/local/bin/helm")
             shutil.copyfile(candidate_path_list[0], destination_path)
             os.chmod(destination_path, 0o755)
-        result = self._runner.run(
-            [str(destination_path), "version", "--template", "{{.Version}}"]
-        )
+        result = self._runner.run([str(destination_path), "version", "--template", "{{.Version}}"])
         if result.stdout.strip() != self._bundle.artifact_version_get("helm"):
-            raise DevelopmentEnvironmentError(
-                "Installed Helm version differs from the bundle"
-            )
+            raise DevelopmentEnvironmentError("Installed Helm version differs from the bundle")
 
 
 def _zip_archive_extract(*, archive: zipfile.ZipFile, destination_path: Path) -> None:
-    """Extract ordinary files and directories without path or symlink escape."""
+    """Extract ordinary files and directories without path or symlink escape.
+
+    Args:
+        archive: Archive.
+        destination_path: Exact filesystem path for destination.
+    """
 
     destination_path = destination_path.resolve(strict=True)
     for info in archive.infolist():
@@ -204,9 +186,7 @@ def _zip_archive_extract(*, archive: zipfile.ZipFile, destination_path: Path) ->
             raise DevelopmentEnvironmentError("AWS CLI archive has an unsafe member")
         target_path = destination_path.joinpath(*relative_path.parts)
         if not target_path.resolve(strict=False).is_relative_to(destination_path):
-            raise DevelopmentEnvironmentError(
-                "AWS CLI archive member escapes extraction root"
-            )
+            raise DevelopmentEnvironmentError("AWS CLI archive member escapes extraction root")
         if info.is_dir():
             target_path.mkdir(mode=0o755, parents=True, exist_ok=True)
             continue
@@ -217,7 +197,14 @@ def _zip_archive_extract(*, archive: zipfile.ZipFile, destination_path: Path) ->
 
 
 def _uv_version_get(output: str) -> str:
-    """Parse the stable uv version while permitting its target annotation."""
+    """Parse the stable uv version while permitting its target annotation.
+
+    Args:
+        output: Output.
+
+    Returns:
+        The stable uv version while permitting its target annotation.
+    """
 
     match = re.fullmatch(
         r"uv (?P<version>[0-9]+\.[0-9]+\.[0-9]+)(?: \([^\r\n()]+\))?\s*",

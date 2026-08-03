@@ -61,11 +61,7 @@ class DevelopmentProductResetManager:
             "python3.14",
             "-B",
             str(
-                release_root_path
-                / "sources"
-                / "workflow-control-center"
-                / "tool"
-                / "development_kubernetes_manage.py"
+                release_root_path / "sources" / "workflow-control-center" / "tool" / "development_kubernetes_manage.py"
             ),
             "product-state-reset",
             "--environment-name",
@@ -82,9 +78,7 @@ class DevelopmentProductResetManager:
             user_email,
         ]
         for expected_role_key in expected_role_key_list:
-            product_reset_command_list.extend(
-                ["--expected-role-key", expected_role_key]
-            )
+            product_reset_command_list.extend(["--expected-role-key", expected_role_key])
         self._transport.ssh_run(
             product_reset_command_list,
             ssh_control_path=ssh_control_path,
@@ -106,9 +100,7 @@ class DevelopmentProductResetManager:
             ],
             ssh_control_path=ssh_control_path,
         )
-        print(
-            f"OK: disposable Product state reset before candidate release {release_name}"
-        )
+        print(f"OK: disposable Product state reset before candidate release {release_name}")
 
 
 class EnvironmentIdentityProtocol(Protocol):
@@ -128,4 +120,13 @@ class SsmTransportProtocol(Protocol):
         ssh_control_path: Path,
         should_capture: bool = True,
     ) -> object:
-        """Run one command through SSH-over-SSM."""
+        """Run one command through SSH-over-SSM.
+
+        Args:
+            command_list: Ordered command values.
+            ssh_control_path: Exact filesystem path for ssh control.
+            should_capture: Whether stdout and stderr should be captured.
+
+        Returns:
+            Transport command result object.
+        """

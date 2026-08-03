@@ -185,6 +185,7 @@ class DevelopmentEnvironment:
         Args:
             clock: UTC and monotonic time boundary.
             environment_name: Stable development environment selector.
+            git_worktree: Git worktree.
             project_root_path: Root of the workflow-infrastructure checkout.
             runner: External process boundary.
         """

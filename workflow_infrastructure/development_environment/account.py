@@ -24,17 +24,41 @@ class CommandRunnerProtocol(Protocol):
         input_text: str | None = None,
         should_capture: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        """Run one command."""
+        """Run one command.
+
+        Args:
+            command_list: Ordered command values.
+            check: Whether a nonzero command exit raises an error.
+            input_text: Input text.
+            should_capture: Whether stdout and stderr should be captured.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
 
 
 class StackReaderProtocol(Protocol):
     """CloudFormation state required by account-foundation verification."""
 
     def output_by_name_map_get(self, stack_name: str) -> dict[str, str]:
-        """Return stack outputs."""
+        """Return stack outputs.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            The stack outputs.
+        """
 
     def parameter_by_name_map_get(self, stack_name: str) -> dict[str, str]:
-        """Return stack parameters."""
+        """Return stack parameters.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            The stack parameters.
+        """
 
 
 class DevelopmentAccountVerifier:
@@ -51,7 +75,17 @@ class DevelopmentAccountVerifier:
         runner: CommandRunnerProtocol,
         stack: StackReaderProtocol,
     ) -> None:
-        """Bind verification to one exact development account and environment."""
+        """Bind verification to one exact development account and environment.
+
+        Args:
+            account_id: Exact account identity.
+            aws: Aws.
+            foundation_stack_name: Foundation stack name.
+            profile: Profile.
+            region: Region.
+            runner: Explicit command execution boundary.
+            stack: Stack.
+        """
 
         self._account_id = account_id
         self._aws = aws

@@ -27,10 +27,20 @@ class RetainedStorageCleanup:
     """Delete only an ownership-proven retained volume and its task snapshots."""
 
     def __init__(self, aws: AwsClientProtocol) -> None:
+        """Initialize the retained storage cleanup dependencies.
+
+        Args:
+            aws: Aws.
+        """
+
         self._aws = aws
 
     def delete(self, inventory: CleanupInventory) -> None:
-        """Delete task snapshots before the detached retained volume."""
+        """Delete task snapshots before the detached retained volume.
+
+        Args:
+            inventory: Inventory.
+        """
 
         for snapshot_id in self._owned_snapshot_id_list_get(inventory):
             self._aws.run(["ec2", "delete-snapshot", "--snapshot-id", snapshot_id])
@@ -68,7 +78,11 @@ class RetainedStorageCleanup:
             raise DevelopmentEnvironmentError("Task retained volume absence cannot be proven")
 
     def absence_validate(self, inventory: CleanupInventory) -> None:
-        """Require both the retained volume and every task snapshot to be absent."""
+        """Require both the retained volume and every task snapshot to be absent.
+
+        Args:
+            inventory: Inventory.
+        """
 
         result = self._aws.run(
             ["ec2", "describe-volumes", "--volume-ids", inventory.retained_volume_id],
@@ -84,6 +98,15 @@ class RetainedStorageCleanup:
             raise DevelopmentEnvironmentError("Task snapshots still exist")
 
     def _owned_snapshot_id_list_get(self, inventory: CleanupInventory) -> list[str]:
+        """Return owned snapshot identity list.
+
+        Args:
+            inventory: Inventory.
+
+        Returns:
+            The owned snapshot identity list.
+        """
+
         payload = self._aws.json_get(
             [
                 "ec2",

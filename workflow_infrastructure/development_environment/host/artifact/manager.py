@@ -28,14 +28,28 @@ class StackManagerProtocol(Protocol):
     """CloudFormation state consumed by host-artifact resolution."""
 
     def parameter_by_name_map_get(self, stack_name: str) -> dict[str, str]:
-        """Return exact stack parameters."""
+        """Return exact stack parameters.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            The exact stack parameters.
+        """
 
 
 class ArtifactResolverProtocol(Protocol):
     """Immutable host-artifact graph resolution boundary."""
 
     def resolve(self, architecture: str) -> HostArtifactResolution:
-        """Resolve one exact host-artifact graph."""
+        """Resolve one exact host-artifact graph.
+
+        Args:
+            architecture: Architecture.
+
+        Returns:
+            One exact host-artifact graph.
+        """
 
 
 class BootstrapObjectPublisherProtocol(Protocol):
@@ -47,7 +61,15 @@ class BootstrapObjectPublisherProtocol(Protocol):
         bucket_name: str,
         resolution: HostArtifactResolution,
     ) -> dict[str, str]:
-        """Publish one resolved graph and return compute parameters."""
+        """Publish one resolved graph and return compute parameters.
+
+        Args:
+            bucket_name: Bucket name.
+            resolution: Resolution.
+
+        Returns:
+            Compute-stack parameters for the published artifact graph.
+        """
 
 
 class DevelopmentHostArtifactManager:
@@ -105,7 +127,14 @@ class DevelopmentHostArtifactManager:
         *,
         compute_stack_exists: bool,
     ) -> HostArtifactResolution:
-        """Resolve and persist one exact host bootstrap graph before compute apply."""
+        """Resolve and persist one exact host bootstrap graph before compute apply.
+
+        Args:
+            compute_stack_exists: Compute stack exists.
+
+        Returns:
+            The resolved and persisted host bootstrap graph.
+        """
 
         architecture = "arm64"
         if compute_stack_exists:
@@ -132,7 +161,11 @@ class DevelopmentHostArtifactManager:
         return resolution
 
     def manifest_payload_get(self) -> dict[str, object]:
-        """Load exact host bootstrap provenance retained by the compute stack."""
+        """Load exact host bootstrap provenance retained by the compute stack.
+
+        Returns:
+            The exact host bootstrap provenance retained by the compute stack.
+        """
 
         parameter_by_name_map = self._stack.parameter_by_name_map_get(self._identity.compute_stack_name)
         encoded_manifest = parameter_by_name_map.get(

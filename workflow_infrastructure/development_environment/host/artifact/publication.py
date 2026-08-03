@@ -46,7 +46,12 @@ class AwsClientProtocol(Protocol):
     """AWS operations required by content-addressed publication."""
 
     def run(self, aws_argument_list: list[str], *, check: bool = True):
-        """Run one AWS CLI operation."""
+        """Run one AWS CLI operation.
+
+        Args:
+            aws_argument_list: Ordered AWS argument values.
+            check: Whether a nonzero command exit raises an error.
+        """
 
 
 class HostBootstrapObjectPublisher:

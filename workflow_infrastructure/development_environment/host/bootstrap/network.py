@@ -38,7 +38,5 @@ class HostNetworkBootstrap:
     def install(self) -> None:
         """Install and activate the fail-closed IMDS policy."""
 
-        self._service.unit_write(
-            name="development-imds-deny.service", text=_IMDS_DENY_UNIT
-        )
+        self._service.unit_write(name="development-imds-deny.service", text=_IMDS_DENY_UNIT)
         self._service.activate("development-imds-deny.service")

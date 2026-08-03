@@ -33,7 +33,15 @@ class ProductToolProtocol(Protocol):
         command: str,
         *argument_list: str,
     ) -> list[str]:
-        """Return one exact Product tool command."""
+        """Return one exact Product tool command.
+
+        Args:
+            command: Command.
+            *argument_list: Exact command arguments.
+
+        Returns:
+            One exact Product tool command.
+        """
 
 
 class SsmTransportProtocol(Protocol):
@@ -45,10 +53,22 @@ class SsmTransportProtocol(Protocol):
         *,
         timeout_seconds: int,
     ) -> dict[str, object]:
-        """Run remote shell commands and return structured SSM output."""
+        """Run remote shell commands and return structured SSM output.
+
+        Args:
+            command_list: Ordered command values.
+            timeout_seconds: Timeout in seconds.
+
+        Returns:
+            Successful SSM command invocation payload.
+        """
 
     def ssm_shell_run(self, command_list: Sequence[str]) -> None:
-        """Run remote shell commands."""
+        """Run remote shell commands.
+
+        Args:
+            command_list: Ordered command values.
+        """
 
 
 class DevelopmentProductRecoveryManager:
@@ -61,14 +81,24 @@ class DevelopmentProductRecoveryManager:
         product_tool: ProductToolProtocol,
         transport: SsmTransportProtocol,
     ) -> None:
-        """Initialize Product recovery from exact host boundaries."""
+        """Initialize Product recovery from exact host boundaries.
+
+        Args:
+            identity: Identity.
+            product_tool: Product tool.
+            transport: Transport.
+        """
 
         self._identity = identity
         self._product_tool = product_tool
         self._transport = transport
 
     def status_get(self) -> str:
-        """Return exact retained Product recovery state from the active host."""
+        """Return exact retained Product recovery state from the active host.
+
+        Returns:
+            The exact retained Product recovery state from the active host.
+        """
 
         result_payload = self._transport.ssm_shell_result_get(
             ["sudo " + shlex.join(self._infrastructure_tool_command_list_get("host-product-recovery-status"))],
@@ -87,7 +117,11 @@ class DevelopmentProductRecoveryManager:
         return status
 
     def is_pending(self) -> bool:
-        """Return whether interrupted retained Product recovery must resume."""
+        """Return whether interrupted retained Product recovery must resume.
+
+        Returns:
+            Whether interrupted retained Product recovery must resume.
+        """
 
         return self.status_get() == "pending"
 
@@ -128,7 +162,11 @@ class DevelopmentProductRecoveryManager:
         )
 
     def _infrastructure_command_run(self, command: str) -> None:
-        """Run one environment-bound infrastructure command as root."""
+        """Run one environment-bound infrastructure command as root.
+
+        Args:
+            command: Command.
+        """
 
         self._transport.ssm_shell_run(["sudo " + shlex.join(self._infrastructure_tool_command_list_get(command))])
 
@@ -137,7 +175,15 @@ class DevelopmentProductRecoveryManager:
         command: str,
         *argument_list: str,
     ) -> list[str]:
-        """Return one environment-bound exact infrastructure-control command."""
+        """Return one environment-bound exact infrastructure-control command.
+
+        Args:
+            command: Command.
+            *argument_list: Exact command arguments.
+
+        Returns:
+            One environment-bound exact infrastructure-control command.
+        """
 
         return [
             "env",

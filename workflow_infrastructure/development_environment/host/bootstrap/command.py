@@ -15,9 +15,7 @@ _MAX_DIAGNOSTIC_CHARACTER_COUNT = 4000
 class HostBootstrapCommandRunner:
     """Run one checked host-bootstrap process without shell evaluation."""
 
-    def run(
-        self, command_argument_list: Sequence[str], *, check: bool = True
-    ) -> subprocess.CompletedProcess[str]:
+    def run(self, command_argument_list: Sequence[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
         """Run one command and retain text diagnostics.
 
         Args:
@@ -43,19 +41,24 @@ class HostBootstrapCommandRunner:
             diagnostic = _diagnostic_get(error.stderr or error.stdout)
             suffix = f": {diagnostic}" if diagnostic else ""
             raise DevelopmentEnvironmentError(
-                f"Host-bootstrap command {command_argument_list[0]} exited "
-                f"{error.returncode}{suffix}"
+                f"Host-bootstrap command {command_argument_list[0]} exited " f"{error.returncode}{suffix}"
             ) from error
 
 
 def _diagnostic_get(value: str | None) -> str:
-    """Return bounded printable command output without command arguments or env."""
+    """Return bounded printable command output without command arguments or env.
+
+    Args:
+        value: Candidate value.
+
+    Returns:
+        The bounded printable command output without command arguments or env.
+    """
 
     if not value:
         return ""
     diagnostic = "".join(
-        character if character in {"\n", "\r", "\t"} or character.isprintable() else "?"
-        for character in value.strip()
+        character if character in {"\n", "\r", "\t"} or character.isprintable() else "?" for character in value.strip()
     )
     if len(diagnostic) <= _MAX_DIAGNOSTIC_CHARACTER_COUNT:
         return diagnostic

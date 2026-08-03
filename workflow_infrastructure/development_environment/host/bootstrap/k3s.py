@@ -50,7 +50,12 @@ class CommandRunnerProtocol(Protocol):
     """Command boundary required by k3s installation."""
 
     def run(self, command_argument_list: list[str], *, check: bool = True):
-        """Run one command."""
+        """Run one command.
+
+        Args:
+            command_argument_list: Ordered command argument values.
+            check: Whether a nonzero command exit raises an error.
+        """
 
 
 class HostK3sBootstrap:
@@ -83,13 +88,9 @@ class HostK3sBootstrap:
         os.chmod(binary_path, 0o755)
         result = self._runner.run([str(binary_path), "--version"])
         expected_version = self._bundle.artifact_version_get("k3s-binary")
-        actual_line = (
-            result.stdout.splitlines()[0] if result.stdout.splitlines() else ""
-        )
+        actual_line = result.stdout.splitlines()[0] if result.stdout.splitlines() else ""
         if expected_version not in actual_line:
-            raise DevelopmentEnvironmentError(
-                "Installed k3s version differs from the bundle"
-            )
+            raise DevelopmentEnvironmentError("Installed k3s version differs from the bundle")
         for link_name in ("kubectl", "crictl", "ctr"):
             link_path = Path("/usr/local/bin") / link_name
             link_path.unlink(missing_ok=True)

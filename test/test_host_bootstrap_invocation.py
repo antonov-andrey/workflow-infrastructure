@@ -42,11 +42,31 @@ OUTPUT_BY_NAME = {
 
 
 class _Stack:
+    """Expose the fixed compute-stack contract consumed by bootstrap invocation."""
+
     def output_by_name_map_get(self, stack_name: str) -> dict[str, str]:
+        """Return fixed outputs for the emulated compute stack.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            Stack outputs keyed by name.
+        """
+
         assert stack_name == "compute-primary"
         return OUTPUT_BY_NAME
 
     def parameter_by_name_map_get(self, stack_name: str) -> dict[str, str]:
+        """Return fixed parameters for the emulated compute stack.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            Stack parameters keyed by name.
+        """
+
         assert stack_name == "compute-primary"
         return PARAMETER_BY_NAME
 
@@ -55,21 +75,48 @@ class _StorageInitialization:
     """Record one authorization and completion transition."""
 
     def __init__(self) -> None:
+        """Initialize the storage initialization dependencies."""
+
         self.complete_count = 0
 
     def initialization_allowed_get(self) -> bool:
+        """Allow the bootstrap scenario to initialize the retained filesystem.
+
+        Returns:
+            True for this initialization scenario.
+        """
+
         return True
 
     def complete(self) -> None:
+        """Return a completed asynchronous result without blocking."""
+
         self.complete_count += 1
 
 
 class _Aws:
+    """Serve scripted SSM document state and capture bootstrap command dispatch."""
+
     def __init__(self, content: dict[str, object]) -> None:
+        """Initialize the AWS dependencies.
+
+        Args:
+            content: Content.
+        """
+
         self.content = content
         self.send_argument_list: list[str] = []
 
     def json_get(self, argument_list: list[str]) -> dict[str, object]:
+        """Return the next scripted AWS JSON response.
+
+        Args:
+            argument_list: Exact command arguments.
+
+        Returns:
+            Decoded JSON object.
+        """
+
         if argument_list[:2] == ["ssm", "describe-document"]:
             return {
                 "Document": {
@@ -99,24 +146,43 @@ class _Aws:
             return {"Command": {"CommandId": "command-identity"}}
         raise AssertionError(argument_list)
 
-    def run(
-        self, argument_list: list[str], *, check: bool = True
-    ) -> subprocess.CompletedProcess[str]:
+    def run(self, argument_list: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        """Record one AWS command and return its scripted process result.
+
+        Args:
+            argument_list: Exact command arguments.
+            check: Whether a nonzero command exit raises an error.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
+
         del check
         assert argument_list[:2] == ["ssm", "get-command-invocation"]
-        return subprocess.CompletedProcess(
-            argument_list, 0, json.dumps({"Status": "Success"}), ""
-        )
+        return subprocess.CompletedProcess(argument_list, 0, json.dumps({"Status": "Success"}), "")
 
 
 def _content_get() -> dict[str, object]:
+    """Return the exact SSM document content expected by one bootstrap invocation.
+
+    Returns:
+        The content.
+    """
+
     project_root = Path(__file__).resolve().parents[1]
     template = _template_get(project_root, "development-compute.yaml")
-    content = deepcopy(
-        template["Resources"]["HostBootstrapDocument"]["Properties"]["Content"]
-    )
+    content = deepcopy(template["Resources"]["HostBootstrapDocument"]["Properties"]["Content"])
 
     def resolve(value: Any) -> Any:
+        """Resolve one artifact graph without external provider access.
+
+        Args:
+            value: Candidate value.
+
+        Returns:
+            The requested result.
+        """
+
         if isinstance(value, dict):
             if set(value) == {"Ref"}:
                 return PARAMETER_BY_NAME[value["Ref"]]
@@ -139,6 +205,16 @@ def _invocation_get(
     aws: _Aws,
     storage_initialization: _StorageInitialization,
 ) -> DevelopmentHostBootstrapInvocation:
+    """Build one bootstrap invocation with deterministic test boundaries.
+
+    Args:
+        aws: Aws.
+        storage_initialization: Storage initialization.
+
+    Returns:
+        The invocation.
+    """
+
     return DevelopmentHostBootstrapInvocation(
         account_id=ACCOUNT_ID,
         aws=aws,
@@ -157,21 +233,10 @@ def test_bootstrap_uses_exact_numeric_version_and_system_hash() -> None:
     storage_initialization = _StorageInitialization()
     _invocation_get(aws, storage_initialization).run()
     assert aws.send_argument_list[:2] == ["ssm", "send-command"]
-    assert (
-        aws.send_argument_list[aws.send_argument_list.index("--document-version") + 1]
-        == DOCUMENT_VERSION
-    )
-    assert (
-        aws.send_argument_list[aws.send_argument_list.index("--document-hash") + 1]
-        == DOCUMENT_HASH
-    )
-    assert (
-        aws.send_argument_list[aws.send_argument_list.index("--document-hash-type") + 1]
-        == "Sha256"
-    )
-    parameter_payload = json.loads(
-        aws.send_argument_list[aws.send_argument_list.index("--parameters") + 1]
-    )
+    assert aws.send_argument_list[aws.send_argument_list.index("--document-version") + 1] == DOCUMENT_VERSION
+    assert aws.send_argument_list[aws.send_argument_list.index("--document-hash") + 1] == DOCUMENT_HASH
+    assert aws.send_argument_list[aws.send_argument_list.index("--document-hash-type") + 1] == "Sha256"
+    parameter_payload = json.loads(aws.send_argument_list[aws.send_argument_list.index("--parameters") + 1])
     assert parameter_payload == {
         "Architecture": ["arm64"],
         "EnvironmentName": ["primary"],

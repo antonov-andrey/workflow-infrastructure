@@ -30,13 +30,28 @@ class DevelopmentHostLifecyclePort(Protocol):
         """Allow workloads to schedule on the development node."""
 
     def host_product_activity_get(self) -> str:
-        """Return ``busy`` or ``idle`` using the Product-owned activity contract."""
+        """Return ``busy`` or ``idle`` using the Product-owned activity contract.
+
+        Returns:
+            The ``busy`` or ``idle`` using the Product-owned activity contract.
+        """
 
     def host_product_maintenance_run(self) -> bool:
-        """Run idle-only Product maintenance and return whether it succeeded."""
+        """Run idle-only Product maintenance and return whether it succeeded.
+
+        Returns:
+            Whether Product maintenance completed successfully.
+        """
 
     def host_session_is_busy(self, instance_id: str) -> bool:
-        """Return whether an active Session Manager session exists."""
+        """Return whether an active Session Manager session exists.
+
+        Args:
+            instance_id: Exact instance identity.
+
+        Returns:
+            Whether an active Session Manager session exists.
+        """
 
     def host_shutdown(self) -> None:
         """Stop the development host through its fail-safe shutdown sequence."""
@@ -49,10 +64,18 @@ class DevelopmentHostLifecycleClock(Protocol):
     """Expose controlled UTC time and waiting to the lifecycle state machine."""
 
     def now(self) -> datetime:
-        """Return the current timezone-aware UTC instant."""
+        """Return the current timezone-aware UTC instant.
+
+        Returns:
+            The current timezone-aware UTC instant.
+        """
 
     def sleep(self, delay_seconds: float) -> None:
-        """Wait for a non-negative duration."""
+        """Wait for a non-negative duration.
+
+        Args:
+            delay_seconds: Delay in seconds.
+        """
 
 
 class DevelopmentHostLifecycle:
@@ -66,7 +89,14 @@ class DevelopmentHostLifecycle:
         retained_root_path: Path,
         state_root_path: Path,
     ) -> None:
-        """Initialize one environment-exclusive host lifecycle."""
+        """Initialize one environment-exclusive host lifecycle.
+
+        Args:
+            clock: Clock.
+            host_port: Host port.
+            retained_root_path: Exact filesystem path for retained root.
+            state_root_path: Exact filesystem path for state root.
+        """
 
         self._clock = clock
         self._host_port = host_port
@@ -77,7 +107,11 @@ class DevelopmentHostLifecycle:
         self._storage_monitor = DevelopmentStorageMonitor(state_root_path=state_root_path)
 
     def run(self, *, instance_id: str) -> None:
-        """Run until the host is stopped after one continuously idle interval."""
+        """Run until the host is stopped after one continuously idle interval.
+
+        Args:
+            instance_id: Exact instance identity.
+        """
 
         self._host_port.host_node_uncordon()
         self._state_root_path.mkdir(mode=0o750, parents=True, exist_ok=True)
@@ -114,7 +148,11 @@ class DevelopmentHostLifecycle:
             self._clock.sleep(_CONTROLLER_POLL_INTERVAL_SECONDS)
 
     def _idle_start_get(self) -> datetime | None:
-        """Return the retained idle-start instant or reset malformed state."""
+        """Return the retained idle-start instant or reset malformed state.
+
+        Returns:
+            The retained idle-start instant or reset malformed state.
+        """
 
         try:
             t_idle_start = datetime.fromisoformat(self._idle_start_path.read_text(encoding="utf-8").strip())
@@ -127,7 +165,11 @@ class DevelopmentHostLifecycle:
         return t_idle_start
 
     def _storage_pressure_observe(self, *, t_now: datetime) -> None:
-        """Report capacity pressure without terminating lifecycle protection."""
+        """Report capacity pressure without terminating lifecycle protection.
+
+        Args:
+            t_now: T now.
+        """
 
         try:
             self._storage_monitor.observe(
@@ -157,7 +199,11 @@ class DevelopmentStorageMonitor:
     """Persist transition-aware root and retained-volume pressure warnings."""
 
     def __init__(self, *, state_root_path: Path) -> None:
-        """Initialize the monitor below one environment-exclusive state root."""
+        """Initialize the monitor below one environment-exclusive state root.
+
+        Args:
+            state_root_path: Exact filesystem path for state root.
+        """
 
         self._state_path = state_root_path / "volume-pressure.json"
 
@@ -167,7 +213,15 @@ class DevelopmentStorageMonitor:
         mount_path_by_name_map: Mapping[str, Path],
         t_now: datetime,
     ) -> dict[str, VolumePressure]:
-        """Observe all mounts and print only transitions or bounded reminders."""
+        """Observe all mounts and print only transitions or bounded reminders.
+
+        Args:
+            mount_path_by_name_map: Mount path by name mapping.
+            t_now: T now.
+
+        Returns:
+            Current volume pressure keyed by mount identity.
+        """
 
         if t_now.tzinfo is None:
             raise DevelopmentStorageError("storage observation timestamp must be timezone-aware")
@@ -212,7 +266,11 @@ class DevelopmentStorageMonitor:
         return current_by_name_map
 
     def _state_payload_get(self) -> dict[str, object]:
-        """Return prior monitor state without trusting malformed bytes."""
+        """Return prior monitor state without trusting malformed bytes.
+
+        Returns:
+            The prior monitor state without trusting malformed bytes.
+        """
 
         if not self._state_path.is_file():
             return {}
@@ -223,7 +281,11 @@ class DevelopmentStorageMonitor:
         return payload if isinstance(payload, dict) else {}
 
     def _state_payload_write(self, payload: Mapping[str, object]) -> None:
-        """Atomically retain the latest pressure state."""
+        """Atomically retain the latest pressure state.
+
+        Args:
+            payload: Structured operation payload.
+        """
 
         self._state_path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
         temporary_path = self._state_path.with_suffix(".json.tmp")
@@ -239,12 +301,23 @@ class DevelopmentMaintenanceSchedule:
     """Persist one bounded cadence for expensive idle-only Product retention."""
 
     def __init__(self, *, state_root_path: Path) -> None:
-        """Initialize the schedule below one environment-exclusive state root."""
+        """Initialize the schedule below one environment-exclusive state root.
+
+        Args:
+            state_root_path: Exact filesystem path for state root.
+        """
 
         self._attempt_path = state_root_path / "product-maintenance-attempt"
 
     def is_due(self, *, t_now: datetime) -> bool:
-        """Return whether another idle maintenance attempt is due."""
+        """Return whether another idle maintenance attempt is due.
+
+        Args:
+            t_now: T now.
+
+        Returns:
+            Whether another idle maintenance attempt is due.
+        """
 
         if t_now.tzinfo is None:
             raise DevelopmentStorageError("maintenance timestamp must be timezone-aware")
@@ -259,7 +332,11 @@ class DevelopmentMaintenanceSchedule:
         return t_now - t_previous >= _MAINTENANCE_INTERVAL
 
     def attempt_record(self, *, t_now: datetime) -> None:
-        """Atomically record an attempt before invoking Product maintenance."""
+        """Atomically record an attempt before invoking Product maintenance.
+
+        Args:
+            t_now: T now.
+        """
 
         self._attempt_path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
         temporary_path = self._attempt_path.with_suffix(".tmp")
@@ -269,7 +346,14 @@ class DevelopmentMaintenanceSchedule:
 
 
 def _volume_pressure_get(path: Path) -> VolumePressure:
-    """Return one classified filesystem-capacity observation."""
+    """Return one classified filesystem-capacity observation.
+
+    Args:
+        path: Exact filesystem path.
+
+    Returns:
+        One classified filesystem-capacity observation.
+    """
 
     try:
         usage = shutil.disk_usage(path)

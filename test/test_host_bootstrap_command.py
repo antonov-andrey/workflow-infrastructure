@@ -17,11 +17,25 @@ from workflow_infrastructure.development_environment.host.bootstrap.command impo
 def test_checked_command_reports_bounded_output_without_arguments(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A bootstrap failure is actionable without echoing its complete argv."""
+    """A bootstrap failure is actionable without echoing its complete argv.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+    """
 
     diagnostic = "apt failure\x00" + "x" * 5000
 
     def run_fake(*args: object, **kwargs: object) -> object:
+        """Record one bootstrap command and return its scripted result.
+
+        Args:
+            *args: Additional positional arguments.
+            **kwargs: Provider keyword arguments.
+
+        Returns:
+            Scripted bootstrap command result.
+        """
+
         del args, kwargs
         raise subprocess.CalledProcessError(
             100,

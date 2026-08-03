@@ -23,10 +23,20 @@ class KmsCleanup:
     """Remove the exact task alias and schedule its key for service deletion."""
 
     def __init__(self, aws: AwsClientProtocol) -> None:
+        """Initialize the KMS cleanup dependencies.
+
+        Args:
+            aws: Aws.
+        """
+
         self._aws = aws
 
     def retire(self, inventory: CleanupInventory) -> None:
-        """Idempotently move one ownership-proven key to PendingDeletion."""
+        """Idempotently move one ownership-proven key to PendingDeletion.
+
+        Args:
+            inventory: Inventory.
+        """
 
         relevant_alias_by_name_map = self._relevant_alias_by_name_map_get(inventory)
         key_id = _key_id_get(inventory)
@@ -56,7 +66,11 @@ class KmsCleanup:
             raise DevelopmentEnvironmentError("Task KMS key did not enter PendingDeletion")
 
     def absence_validate(self, inventory: CleanupInventory) -> None:
-        """Require no custom task alias and a key pending service deletion."""
+        """Require no custom task alias and a key pending service deletion.
+
+        Args:
+            inventory: Inventory.
+        """
 
         if self._key_state_get(inventory) not in {"PendingDeletion", "absent"}:
             raise DevelopmentEnvironmentError("Task KMS key PendingDeletion proof is unavailable")
@@ -64,7 +78,14 @@ class KmsCleanup:
             raise DevelopmentEnvironmentError("Task KMS alias ownership still exists")
 
     def _relevant_alias_by_name_map_get(self, inventory: CleanupInventory) -> dict[str, str]:
-        """Return the exact task alias and every other custom alias targeting its key."""
+        """Return the exact task alias and every other custom alias targeting its key.
+
+        Args:
+            inventory: Inventory.
+
+        Returns:
+            The exact task alias and every other custom alias targeting its key.
+        """
 
         payload = self._aws.json_get(["kms", "list-aliases"])
         alias_list = payload.get("Aliases", [])
@@ -86,6 +107,15 @@ class KmsCleanup:
         return result
 
     def _key_state_get(self, inventory: CleanupInventory) -> str:
+        """Read the exact lifecycle state of the task-owned KMS key.
+
+        Args:
+            inventory: Inventory.
+
+        Returns:
+            Current AWS KMS key state.
+        """
+
         result = self._aws.run(
             ["kms", "describe-key", "--key-id", inventory.kms_key_arn],
             check=False,
@@ -109,6 +139,13 @@ class KmsCleanup:
 
 
 def _key_id_get(inventory: CleanupInventory) -> str:
-    """Return the exact key identifier embedded in the validated ARN."""
+    """Return the exact key identifier embedded in the validated ARN.
+
+    Args:
+        inventory: Inventory.
+
+    Returns:
+        The exact key identifier embedded in the validated ARN.
+    """
 
     return inventory.kms_key_arn.rsplit("/", maxsplit=1)[-1]

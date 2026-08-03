@@ -12,15 +12,21 @@ from workflow_infrastructure.development_environment.error import (
 
 
 class AccountVerifierProtocol(Protocol):
+    """Declare the account verifier interface."""
+
     def account_foundation_validate(self) -> None:
         """Validate exact live account-global state."""
 
 
 class EnvironmentIdentityProtocol(Protocol):
+    """Declare the environment identity interface."""
+
     is_primary: bool
 
 
 class StackManagerProtocol(Protocol):
+    """Declare the stack manager interface."""
+
     def apply(
         self,
         *,
@@ -29,22 +35,59 @@ class StackManagerProtocol(Protocol):
         parameter_by_name_map: dict[str, str],
         must_preserve_resource: bool,
     ) -> None:
-        """Apply one exact CloudFormation stack transition."""
+        """Apply one exact CloudFormation stack transition.
+
+        Args:
+            stack_name: Stack name.
+            template_path: Exact filesystem path for template.
+            parameter_by_name_map: Parameter by name mapping.
+            must_preserve_resource: Must preserve resource.
+        """
 
     def drift_validate(self, stack_name: str) -> None:
-        """Validate one existing stack's drift."""
+        """Validate one existing stack's drift.
+
+        Args:
+            stack_name: Stack name.
+        """
 
     def output_by_name_map_get(self, stack_name: str) -> dict[str, str]:
-        """Return stack outputs."""
+        """Return stack outputs.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            The stack outputs.
+        """
 
     def parameter_by_name_map_get(self, stack_name: str) -> dict[str, str]:
-        """Return stack parameters."""
+        """Return stack parameters.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            The stack parameters.
+        """
 
     def payload_get(self, stack_name: str, *, is_required: bool) -> Mapping[str, object]:
-        """Return an existing stack or an empty mapping."""
+        """Return an existing stack or an empty mapping.
+
+        Args:
+            stack_name: Stack name.
+            is_required: Whether required.
+
+        Returns:
+            An existing stack or an empty mapping.
+        """
 
     def template_validate(self, template_path: Path) -> None:
-        """Validate a local CloudFormation template."""
+        """Validate a local CloudFormation template.
+
+        Args:
+            template_path: Exact filesystem path for template.
+        """
 
 
 class DevelopmentAccountFoundationManager:
@@ -60,6 +103,15 @@ class DevelopmentAccountFoundationManager:
         stack: StackManagerProtocol,
         template_path: Path,
     ) -> None:
+        """Initialize the development account foundation manager dependencies.
+
+        Args:
+            account: Account.
+            identity: Identity.
+            stack: Stack.
+            template_path: Exact filesystem path for template.
+        """
+
         self._account = account
         self._identity = identity
         self._stack = stack
@@ -71,7 +123,12 @@ class DevelopmentAccountFoundationManager:
         primary_platform_role_arn: str | None = None,
         primary_retained_volume_arn: str | None = None,
     ) -> None:
-        """Apply the primary-owned state or validate it without competing writes."""
+        """Apply the primary-owned state or validate it without competing writes.
+
+        Args:
+            primary_platform_role_arn: Primary platform role arn.
+            primary_retained_volume_arn: Primary retained volume arn.
+        """
 
         if not self._identity.is_primary:
             if not self.exists():
@@ -101,4 +158,10 @@ class DevelopmentAccountFoundationManager:
         self._account.account_foundation_validate()
 
     def exists(self) -> bool:
+        """Report whether the unique account-foundation stack currently exists.
+
+        Returns:
+            Whether the account-foundation stack exists.
+        """
+
         return bool(self._stack.payload_get(self.STACK_NAME, is_required=False))

@@ -71,7 +71,17 @@ class RunnerFake:
         input_text: str | None = None,
         should_capture: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        """Return deterministic command output."""
+        """Return deterministic command output.
+
+        Args:
+            command_list: Ordered command values.
+            check: Whether a nonzero command exit raises an error.
+            input_text: Input text.
+            should_capture: Whether stdout and stderr should be captured.
+
+        Returns:
+            The deterministic command output.
+        """
 
         del input_text, should_capture
         self.command_list_list.append(command_list)
@@ -97,7 +107,14 @@ class RunnerFake:
 
 
 def _artifact_get(name: str) -> HostArtifactIdentity:
-    """Return one canonical dummy artifact."""
+    """Return one canonical dummy artifact.
+
+    Args:
+        name: Canonical name.
+
+    Returns:
+        One canonical dummy artifact.
+    """
 
     resolved_source_kwargs = (
         {
@@ -141,7 +158,14 @@ _BUNDLE_FILENAME_BY_ARTIFACT_NAME_MAP = {
 
 
 def _bundle_artifact_get(name: str) -> HostArtifactIdentity:
-    """Return a realistic filename-bearing bootstrap artifact."""
+    """Return a realistic filename-bearing bootstrap artifact.
+
+    Args:
+        name: Canonical name.
+
+    Returns:
+        A realistic filename-bearing bootstrap artifact.
+    """
 
     payload = name.encode()
     resolved_source_kwargs = (
@@ -185,7 +209,11 @@ def test_host_artifact_resolution_detaches_and_freezes_its_mapping() -> None:
 
 
 def test_bundle_paths_preserve_real_safe_filenames(tmp_path: Path) -> None:
-    """Native package consumers receive filenames with their required suffixes."""
+    """Native package consumers receive filenames with their required suffixes.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     cache_root_path = tmp_path / "cache"
     resolution = HostArtifactResolution(
@@ -241,7 +269,12 @@ def test_bundle_path_rejects_missing_or_unsafe_source_filename(
     name: str,
     url: str,
 ) -> None:
-    """Bundle paths reject consumer-breaking suffix drift and decoded separators."""
+    """Bundle paths reject consumer-breaking suffix drift and decoded separators.
+
+    Args:
+        name: Canonical name.
+        url: Url.
+    """
 
     artifact = HostArtifactIdentity(
         name=name,
@@ -261,7 +294,11 @@ def test_bundle_path_rejects_missing_or_unsafe_source_filename(
 def test_latest_tag_resolution_uses_numeric_stable_version(
     tmp_path: Path,
 ) -> None:
-    """Numeric stable selection must retain the commit peeled from an annotated tag."""
+    """Numeric stable selection must retain the commit peeled from an annotated tag.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     runner = RunnerFake()
     resolver = GitRefResolver(runner=runner)
@@ -298,7 +335,13 @@ def test_tag_source_identity_requires_exact_commit_object(
     actual_sha: str,
     tmp_path: Path,
 ) -> None:
-    """A tree/blob tag or a different fetched commit cannot enter provenance."""
+    """A tree/blob tag or a different fetched commit cannot enter provenance.
+
+    Args:
+        returncode: Returncode.
+        actual_sha: Observed sha.
+        tmp_path: Temporary directory path.
+    """
 
     class GitObjectRunnerFake:
         """Model init, exact fetch, and Git commit peeling."""
@@ -316,7 +359,17 @@ def test_tag_source_identity_requires_exact_commit_object(
             input_text: str | None = None,
             should_capture: bool = True,
         ) -> subprocess.CompletedProcess[str]:
-            """Return the selected rev-parse result."""
+            """Return the selected rev-parse result.
+
+            Args:
+                command_list: Ordered command values.
+                check: Whether a nonzero command exit raises an error.
+                input_text: Input text.
+                should_capture: Whether stdout and stderr should be captured.
+
+            Returns:
+                The selected rev-parse result.
+            """
 
             del input_text, should_capture
             self.command_list_list.append(command_list)
@@ -356,7 +409,11 @@ def test_tag_source_identity_requires_exact_commit_object(
 
 
 def test_tag_source_identity_accepts_exact_commit_object(tmp_path: Path) -> None:
-    """An exact fetched commit is accepted without retaining a repository clone."""
+    """An exact fetched commit is accepted without retaining a repository clone.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     expected_sha = "e" * 40
 
@@ -371,7 +428,17 @@ def test_tag_source_identity_accepts_exact_commit_object(tmp_path: Path) -> None
             input_text: str | None = None,
             should_capture: bool = True,
         ) -> subprocess.CompletedProcess[str]:
-            """Model the bounded Git proof."""
+            """Model the bounded Git proof.
+
+            Args:
+                command_list: Ordered command values.
+                check: Whether a nonzero command exit raises an error.
+                input_text: Input text.
+                should_capture: Whether stdout and stderr should be captured.
+
+            Returns:
+                Completed text-mode subprocess result.
+            """
 
             del check, input_text, should_capture
             if len(command_list) > 3 and command_list[3] == "rev-parse":
@@ -492,7 +559,12 @@ def test_manifest_decode_requires_exact_provenance_shape_by_artifact_owner(
     artifact_name: str,
     mutate: Callable[[dict[str, object]], object],
 ) -> None:
-    """Resolved-source provenance is mandatory only for its exact artifact owners."""
+    """Resolved-source provenance is mandatory only for its exact artifact owners.
+
+    Args:
+        artifact_name: Artifact name.
+        mutate: Mutate.
+    """
 
     resolution = HostArtifactResolution(
         architecture="arm64",
@@ -574,7 +646,11 @@ def test_python_selector_chooses_latest_stable_patch_for_target_architecture() -
 def test_k3s_release_requires_exact_repository_owned_trust(
     tmp_path: Path,
 ) -> None:
-    """Mutable release metadata cannot authorize one root-executed K3s binary."""
+    """Mutable release metadata cannot authorize one root-executed K3s binary.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     trust_path = tmp_path / "k3s-release.json"
     trust_path.write_text(
@@ -634,7 +710,11 @@ def test_k3s_release_requires_exact_repository_owned_trust(
 def test_docker_signed_index_selects_exact_latest_packages(
     tmp_path: Path,
 ) -> None:
-    """Signed metadata owns exact Docker package URL, version, and SHA selection."""
+    """Signed metadata owns exact Docker package URL, version, and SHA selection.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     downloader = HostArtifactDownloader(cache_root_path=tmp_path)
     runner = RunnerFake()
@@ -716,7 +796,11 @@ def test_docker_trust_anchor_excludes_additional_primary_keys() -> None:
 
 
 def test_artifact_url_rejects_shell_control_characters(tmp_path: Path) -> None:
-    """Release metadata cannot inject commands into CloudFormation UserData."""
+    """Release metadata cannot inject commands into CloudFormation UserData.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     downloader = HostArtifactDownloader(cache_root_path=tmp_path)
 
@@ -738,7 +822,12 @@ def test_artifact_download_verifies_stream_and_reuses_exact_cache(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Downloaded bytes become cache-visible only after complete digest proof."""
+    """Downloaded bytes become cache-visible only after complete digest proof.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     payload = b"verified artifact bytes"
     open_count = 0
@@ -749,12 +838,24 @@ def test_artifact_download_verifies_stream_and_reuses_exact_cache(
         headers: dict[str, str] = {"Content-Length": str(len(payload))}
 
         def geturl(self) -> str:
-            """Return an HTTPS final URL."""
+            """Return an HTTPS final URL.
+
+            Returns:
+                An HTTPS final URL.
+            """
 
             return "https://cdn.example.invalid/artifact"
 
     def urlopen(request: object, timeout: int) -> ResponseFake:
-        """Return one deterministic byte stream."""
+        """Return one deterministic byte stream.
+
+        Args:
+            request: Validated operation request.
+            timeout: Timeout.
+
+        Returns:
+            One deterministic byte stream.
+        """
 
         nonlocal open_count
         del request
@@ -787,7 +888,12 @@ def test_artifact_download_refreshes_one_moving_metadata_url(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Moving signed metadata must not become permanently stale in local cache."""
+    """Moving signed metadata must not become permanently stale in local cache.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     payload_list = [b"signed metadata 1", b"signed metadata 2"]
 
@@ -797,12 +903,24 @@ def test_artifact_download_refreshes_one_moving_metadata_url(
         headers: dict[str, str] = {}
 
         def geturl(self) -> str:
-            """Return an HTTPS final URL."""
+            """Return an HTTPS final URL.
+
+            Returns:
+                An HTTPS final URL.
+            """
 
             return "https://cdn.example.invalid/InRelease"
 
     def urlopen(request: object, timeout: int) -> ResponseFake:
-        """Return the next deterministic metadata snapshot."""
+        """Return the next deterministic metadata snapshot.
+
+        Args:
+            request: Validated operation request.
+            timeout: Timeout.
+
+        Returns:
+            The next deterministic metadata snapshot.
+        """
 
         del request
         assert timeout == 120
@@ -834,7 +952,12 @@ def test_artifact_download_rejects_oversized_response_before_cache_publication(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A compromised artifact endpoint cannot fill operator storage without a bound."""
+    """A compromised artifact endpoint cannot fill operator storage without a bound.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     payload = b"oversized"
 
@@ -844,7 +967,11 @@ def test_artifact_download_rejects_oversized_response_before_cache_publication(
         headers: dict[str, str] = {"Content-Length": str(len(payload))}
 
         def geturl(self) -> str:
-            """Return an HTTPS final URL."""
+            """Return an HTTPS final URL.
+
+            Returns:
+                An HTTPS final URL.
+            """
 
             return "https://cdn.example.invalid/oversized"
 

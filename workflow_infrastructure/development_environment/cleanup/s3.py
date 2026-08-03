@@ -17,10 +17,20 @@ class VersionedBucketCleaner:
     """Delete all versions, delete markers, uploads, and one exact bucket."""
 
     def __init__(self, aws: AwsClientProtocol) -> None:
+        """Initialize the versioned bucket cleaner dependencies.
+
+        Args:
+            aws: Aws.
+        """
+
         self._aws = aws
 
     def delete(self, bucket_name: str) -> None:
-        """Idempotently delete every retained object identity and the bucket."""
+        """Idempotently delete every retained object identity and the bucket.
+
+        Args:
+            bucket_name: Bucket name.
+        """
 
         if not self._exists(bucket_name):
             return
@@ -37,12 +47,25 @@ class VersionedBucketCleaner:
             raise DevelopmentEnvironmentError(f"Task bucket {bucket_name} still exists after deletion")
 
     def absence_validate(self, bucket_name: str) -> None:
-        """Require one exact bucket to be absent."""
+        """Require one exact bucket to be absent.
+
+        Args:
+            bucket_name: Bucket name.
+        """
 
         if self._exists(bucket_name):
             raise DevelopmentEnvironmentError(f"Task bucket {bucket_name} absence is not proven")
 
     def _exists(self, bucket_name: str) -> bool:
+        """Report whether the exact versioned cleanup bucket still exists.
+
+        Args:
+            bucket_name: Bucket name.
+
+        Returns:
+            Whether the exact bucket still exists.
+        """
+
         result = self._aws.run(["s3api", "head-bucket", "--bucket", bucket_name], check=False)
         if result.returncode == 0:
             return True
@@ -55,6 +78,12 @@ class VersionedBucketCleaner:
         raise DevelopmentEnvironmentError(f"Task bucket {bucket_name} ownership cannot be observed")
 
     def _multipart_upload_list_delete(self, bucket_name: str) -> None:
+        """Abort every incomplete multipart upload in one task bucket.
+
+        Args:
+            bucket_name: Bucket name.
+        """
+
         while True:
             payload = self._aws.json_get(
                 [
@@ -91,6 +120,12 @@ class VersionedBucketCleaner:
                 )
 
     def _object_version_list_delete(self, bucket_name: str) -> None:
+        """Remove every object version and delete marker from one task bucket.
+
+        Args:
+            bucket_name: Bucket name.
+        """
+
         while True:
             payload = self._aws.json_get(
                 [

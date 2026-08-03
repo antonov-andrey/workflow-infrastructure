@@ -28,9 +28,7 @@ _MANIFEST_FIELD_NAME_SET = frozenset(
 class HostBootstrapBundle:
     """Own validated paths and identities from one extracted bootstrap bundle."""
 
-    def __init__(
-        self, *, bundle_root_path: Path, expected_manifest_sha256: str
-    ) -> None:
+    def __init__(self, *, bundle_root_path: Path, expected_manifest_sha256: str) -> None:
         """Load and validate one exact bundle manifest.
 
         Args:
@@ -44,17 +42,11 @@ class HostBootstrapBundle:
             manifest_bytes = manifest_path.read_bytes()
             payload = json.loads(manifest_bytes)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise DevelopmentEnvironmentError(
-                "Host bootstrap bundle manifest is unavailable"
-            ) from error
+            raise DevelopmentEnvironmentError("Host bootstrap bundle manifest is unavailable") from error
         if hashlib.sha256(manifest_bytes).hexdigest() != expected_manifest_sha256:
-            raise DevelopmentEnvironmentError(
-                "Host bootstrap bundle manifest digest differs"
-            )
+            raise DevelopmentEnvironmentError("Host bootstrap bundle manifest digest differs")
         if not isinstance(payload, Mapping) or set(payload) != _MANIFEST_FIELD_NAME_SET:
-            raise DevelopmentEnvironmentError(
-                "Host bootstrap bundle manifest has an unsupported shape"
-            )
+            raise DevelopmentEnvironmentError("Host bootstrap bundle manifest has an unsupported shape")
         architecture = payload.get("architecture")
         artifact_by_name_map = payload.get("artifact_by_name_map")
         host_artifact_manifest_sha256 = payload.get("host_artifact_manifest_sha256")
@@ -67,9 +59,7 @@ class HostBootstrapBundle:
             or not isinstance(python_version, str)
             or re.fullmatch(r"3\.14\.[0-9]+", python_version) is None
         ):
-            raise DevelopmentEnvironmentError(
-                "Host bootstrap bundle manifest is invalid"
-            )
+            raise DevelopmentEnvironmentError("Host bootstrap bundle manifest is invalid")
         validated_artifact_by_name_map: dict[str, dict[str, object]] = {}
         for name, artifact in artifact_by_name_map.items():
             if (
@@ -78,14 +68,10 @@ class HostBootstrapBundle:
                 or not isinstance(artifact, Mapping)
                 or set(artifact) != _ARTIFACT_FIELD_NAME_SET
             ):
-                raise DevelopmentEnvironmentError(
-                    "Host bootstrap artifact identity is invalid"
-                )
+                raise DevelopmentEnvironmentError("Host bootstrap artifact identity is invalid")
             relative_path_text = artifact.get("path")
             relative_path = (
-                PurePosixPath(relative_path_text)
-                if isinstance(relative_path_text, str)
-                else PurePosixPath(".")
+                PurePosixPath(relative_path_text) if isinstance(relative_path_text, str) else PurePosixPath(".")
             )
             size = artifact.get("size")
             if (
@@ -100,25 +86,13 @@ class HostBootstrapBundle:
                 or not isinstance(artifact.get("version"), str)
                 or not artifact.get("version")
             ):
-                raise DevelopmentEnvironmentError(
-                    "Host bootstrap artifact identity is invalid"
-                )
+                raise DevelopmentEnvironmentError("Host bootstrap artifact identity is invalid")
             artifact_path = self._bundle_root_path.joinpath(*relative_path.parts)
-            if (
-                artifact_path.is_symlink()
-                or not artifact_path.is_file()
-                or artifact_path.stat().st_nlink != 1
-            ):
-                raise DevelopmentEnvironmentError(
-                    f"Host bootstrap artifact {name} is unavailable"
-                )
+            if artifact_path.is_symlink() or not artifact_path.is_file() or artifact_path.stat().st_nlink != 1:
+                raise DevelopmentEnvironmentError(f"Host bootstrap artifact {name} is unavailable")
             artifact_bytes = artifact_path.read_bytes()
-            if len(artifact_bytes) != size or hashlib.sha256(
-                artifact_bytes
-            ).hexdigest() != artifact.get("sha256"):
-                raise DevelopmentEnvironmentError(
-                    f"Host bootstrap artifact {name} differs from its identity"
-                )
+            if len(artifact_bytes) != size or hashlib.sha256(artifact_bytes).hexdigest() != artifact.get("sha256"):
+                raise DevelopmentEnvironmentError(f"Host bootstrap artifact {name} differs from its identity")
             validated_artifact_by_name_map[name] = dict(artifact)
         self._architecture = architecture
         self._host_artifact_manifest_sha256 = host_artifact_manifest_sha256
@@ -126,20 +100,24 @@ class HostBootstrapBundle:
         self._artifact_by_name_map = validated_artifact_by_name_map
 
     def architecture_validate(self, expected_architecture: str) -> None:
-        """Require the bundle to target one exact host architecture."""
+        """Require the bundle to target one exact host architecture.
+
+        Args:
+            expected_architecture: Expected architecture.
+        """
 
         if self._architecture != expected_architecture:
-            raise DevelopmentEnvironmentError(
-                "Bootstrap bundle architecture differs from the instance"
-            )
+            raise DevelopmentEnvironmentError("Bootstrap bundle architecture differs from the instance")
 
     def python_version_validate(self, actual_version: str) -> None:
-        """Require an extracted runtime to match the bundle identity."""
+        """Require an extracted runtime to match the bundle identity.
+
+        Args:
+            actual_version: Observed version.
+        """
 
         if actual_version != self._python_version:
-            raise DevelopmentEnvironmentError(
-                "Installed Python version differs from the bundle"
-            )
+            raise DevelopmentEnvironmentError("Installed Python version differs from the bundle")
 
     def artifact_path_get(self, name: str) -> Path:
         """Return one verified artifact path.
@@ -153,9 +131,7 @@ class HostBootstrapBundle:
 
         artifact = self._artifact_by_name_map.get(name)
         if artifact is None:
-            raise DevelopmentEnvironmentError(
-                f"Host bootstrap artifact {name} is not declared"
-            )
+            raise DevelopmentEnvironmentError(f"Host bootstrap artifact {name} is not declared")
         return self._bundle_root_path / str(artifact["path"])
 
     def artifact_version_get(self, name: str) -> str:
@@ -170,9 +146,7 @@ class HostBootstrapBundle:
 
         artifact = self._artifact_by_name_map.get(name)
         if artifact is None:
-            raise DevelopmentEnvironmentError(
-                f"Host bootstrap artifact {name} is not declared"
-            )
+            raise DevelopmentEnvironmentError(f"Host bootstrap artifact {name} is not declared")
         return str(artifact["version"])
 
     def host_artifact_manifest_path_get(self) -> Path:
@@ -184,20 +158,17 @@ class HostBootstrapBundle:
 
         path = self._bundle_root_path / "host-artifact-manifest.json"
         if path.is_symlink() or not path.is_file() or path.stat().st_nlink != 1:
-            raise DevelopmentEnvironmentError(
-                "Host artifact manifest is unavailable in bootstrap bundle"
-            )
-        if (
-            hashlib.sha256(path.read_bytes()).hexdigest()
-            != self._host_artifact_manifest_sha256
-        ):
-            raise DevelopmentEnvironmentError(
-                "Host artifact manifest differs from its bundle identity"
-            )
+            raise DevelopmentEnvironmentError("Host artifact manifest is unavailable in bootstrap bundle")
+        if hashlib.sha256(path.read_bytes()).hexdigest() != self._host_artifact_manifest_sha256:
+            raise DevelopmentEnvironmentError("Host artifact manifest differs from its bundle identity")
         return path
 
     def host_artifact_manifest_install(self, destination_root_path: Path) -> None:
-        """Atomically install the manifest and digest with durability proof."""
+        """Atomically install the manifest and digest with durability proof.
+
+        Args:
+            destination_root_path: Exact filesystem path for destination root.
+        """
 
         destination_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
         manifest_bytes = self.host_artifact_manifest_path_get().read_bytes()
@@ -226,6 +197,13 @@ def _sha256_is_valid(value: object) -> bool:
 
 
 def _atomic_file_write(*, path: Path, data: bytes) -> None:
+    """Persist atomic file.
+
+    Args:
+        path: Exact filesystem path.
+        data: Data.
+    """
+
     temporary_path = path.with_name(f".{path.name}.new")
     with temporary_path.open("wb") as file:
         file.write(data)
@@ -236,6 +214,12 @@ def _atomic_file_write(*, path: Path, data: bytes) -> None:
 
 
 def _directory_fsync(path: Path) -> None:
+    """Make one directory-entry mutation durable.
+
+    Args:
+        path: Exact filesystem path.
+    """
+
     descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
     try:
         os.fsync(descriptor)

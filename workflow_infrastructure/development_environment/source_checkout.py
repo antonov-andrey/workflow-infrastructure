@@ -27,7 +27,16 @@ class CommandRunnerProtocol(Protocol):
         check: bool = True,
         should_capture: bool = True,
     ) -> CommandResultProtocol:
-        """Run one Git command."""
+        """Run one Git command.
+
+        Args:
+            command_list: Ordered command values.
+            check: Whether a nonzero command exit raises an error.
+            should_capture: Whether stdout and stderr should be captured.
+
+        Returns:
+            Resulting command result protocol.
+        """
 
 
 class DevelopmentSourceCheckoutResolver:
@@ -40,7 +49,13 @@ class DevelopmentSourceCheckoutResolver:
         project_root_path: Path,
         runner: CommandRunnerProtocol,
     ) -> None:
-        """Bind the infrastructure checkout and optional task common prefix."""
+        """Bind the infrastructure checkout and optional task common prefix.
+
+        Args:
+            git_worktree: Git worktree.
+            project_root_path: Exact filesystem path for project root.
+            runner: Explicit command execution boundary.
+        """
 
         self._git_worktree = git_worktree
         self._project_root_path = project_root_path.resolve()
@@ -53,15 +68,19 @@ class DevelopmentSourceCheckoutResolver:
         The infrastructure repository is always the invoking checkout. Other
         repositories use the exact same-prefix worktree when its remote task
         branch exists; otherwise they must use the canonical ``main`` checkout.
+
+        Args:
+            repository_name: Repository name.
+
+        Returns:
+            One exact published-source checkout for a repository.
         """
 
         if repository_name == "workflow-infrastructure":
             return self._project_root_path
         canonical_path = self._workspace_root_path_get() / repository_name
         if not canonical_path.is_dir():
-            raise DevelopmentEnvironmentError(
-                f"Canonical source repository is missing: {canonical_path}"
-            )
+            raise DevelopmentEnvironmentError(f"Canonical source repository is missing: {canonical_path}")
         if not self._git_worktree:
             self._branch_require(
                 repository_name=repository_name,
@@ -77,9 +96,7 @@ class DevelopmentSourceCheckoutResolver:
         )
         if task_path.exists():
             if not task_path.is_dir():
-                raise DevelopmentEnvironmentError(
-                    f"Task source path is not a directory: {task_path}"
-                )
+                raise DevelopmentEnvironmentError(f"Task source path is not a directory: {task_path}")
             self._branch_require(
                 repository_name=repository_name,
                 repository_path=task_path,
@@ -102,7 +119,11 @@ class DevelopmentSourceCheckoutResolver:
         return canonical_path
 
     def _workspace_root_path_get(self) -> Path:
-        """Derive the canonical workspace from Git's common directory."""
+        """Derive the canonical workspace from Git's common directory.
+
+        Returns:
+            Resolved filesystem path.
+        """
 
         if self._workspace_root_path is not None:
             return self._workspace_root_path
@@ -118,10 +139,7 @@ class DevelopmentSourceCheckoutResolver:
         )
         common_directory = Path(result.stdout.strip()).resolve()
         canonical_repository_path = common_directory.parent
-        if (
-            common_directory.name != ".git"
-            or canonical_repository_path.name != "workflow-infrastructure"
-        ):
+        if common_directory.name != ".git" or canonical_repository_path.name != "workflow-infrastructure":
             raise DevelopmentEnvironmentError(
                 "Infrastructure Git common directory does not identify the canonical workspace"
             )
@@ -135,18 +153,28 @@ class DevelopmentSourceCheckoutResolver:
         repository_path: Path,
         required_branch: str,
     ) -> None:
-        """Require one checkout to be attached to the exact expected branch."""
+        """Require one checkout to be attached to the exact expected branch.
 
-        result = self._runner.run(
-            ["git", "-C", str(repository_path), "branch", "--show-current"]
-        )
+        Args:
+            repository_name: Repository name.
+            repository_path: Exact filesystem path for repository.
+            required_branch: Required branch.
+        """
+
+        result = self._runner.run(["git", "-C", str(repository_path), "branch", "--show-current"])
         if result.stdout.strip() != required_branch:
-            raise DevelopmentEnvironmentError(
-                f"{repository_name} source must use branch {required_branch}"
-            )
+            raise DevelopmentEnvironmentError(f"{repository_name} source must use branch {required_branch}")
 
     def _remote_branch_exists(self, *, repository_path: Path, branch_name: str) -> bool:
-        """Return whether origin advertises one exact task branch."""
+        """Return whether origin advertises one exact task branch.
+
+        Args:
+            repository_path: Exact filesystem path for repository.
+            branch_name: Branch name.
+
+        Returns:
+            Whether origin advertises one exact task branch.
+        """
 
         result = self._runner.run(
             [
@@ -163,12 +191,8 @@ class DevelopmentSourceCheckoutResolver:
         if result.returncode == 0:
             field_list = result.stdout.strip().split()
             if len(field_list) != 2 or field_list[1] != f"refs/heads/{branch_name}":
-                raise DevelopmentEnvironmentError(
-                    f"{repository_path.name} task branch lookup is malformed"
-                )
+                raise DevelopmentEnvironmentError(f"{repository_path.name} task branch lookup is malformed")
             return True
         if result.returncode == 2:
             return False
-        raise DevelopmentEnvironmentError(
-            f"{repository_path.name} task branch lookup failed"
-        )
+        raise DevelopmentEnvironmentError(f"{repository_path.name} task branch lookup failed")

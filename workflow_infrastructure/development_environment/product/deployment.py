@@ -35,7 +35,11 @@ class ClockProtocol(Protocol):
     """UTC clock consumed by immutable release creation."""
 
     def now(self) -> datetime:
-        """Return current UTC time."""
+        """Return current UTC time.
+
+        Returns:
+            The current UTC time.
+        """
 
 
 class ComputeManagerProtocol(Protocol):
@@ -46,7 +50,11 @@ class ComputeManagerProtocol(Protocol):
         *,
         require_latest: bool = True,
     ) -> None:
-        """Validate exact active launch-template version."""
+        """Validate exact active launch-template version.
+
+        Args:
+            require_latest: Require latest.
+        """
 
     def online_wait(self) -> None:
         """Wait for the host to become SSM Online."""
@@ -58,10 +66,23 @@ class ComputeManagerProtocol(Protocol):
         text: str,
         ssh_control_path: Path,
     ) -> None:
-        """Install one generated non-secret remote file."""
+        """Install one generated non-secret remote file.
+
+        Args:
+            remote_path: Exact filesystem path for remote.
+            text: Text.
+            ssh_control_path: Exact filesystem path for ssh control.
+        """
 
     def runtime_platform_get(self, ssh_control_path: Path) -> str:
-        """Return the one WorkflowRun-eligible node platform."""
+        """Return the one WorkflowRun-eligible node platform.
+
+        Args:
+            ssh_control_path: Exact filesystem path for ssh control.
+
+        Returns:
+            The one WorkflowRun-eligible node platform.
+        """
 
 
 class EnvironmentIdentityProtocol(Protocol):
@@ -82,14 +103,22 @@ class HostArtifactProtocol(Protocol):
     """Immutable host-artifact provenance boundary."""
 
     def manifest_payload_get(self) -> dict[str, object]:
-        """Return exact compute launch provenance."""
+        """Return exact compute launch provenance.
+
+        Returns:
+            The exact compute launch provenance.
+        """
 
 
 class ProductRecoveryProtocol(Protocol):
     """Retained Product recovery boundary."""
 
     def status_get(self) -> str:
-        """Return current retained recovery state."""
+        """Return current retained recovery state.
+
+        Returns:
+            The current retained recovery state.
+        """
 
 
 class PublicEcrAuthProtocol(Protocol):
@@ -101,7 +130,15 @@ class PublicEcrAuthProtocol(Protocol):
         release_name: str,
         ssh_control_path: Path,
     ) -> AbstractContextManager[Path]:
-        """Yield one release-local authenticated Docker config."""
+        """Yield one release-local authenticated Docker config.
+
+        Args:
+            release_name: Release name.
+            ssh_control_path: Exact filesystem path for ssh control.
+
+        Returns:
+            Resolved filesystem path.
+        """
 
 
 class ProductResetProtocol(Protocol):
@@ -117,7 +154,16 @@ class ProductResetProtocol(Protocol):
         target_platform: str,
         user_email: str,
     ) -> None:
-        """Reset disposable Product state before deploying one candidate."""
+        """Reset disposable Product state before deploying one candidate.
+
+        Args:
+            expected_role_key_list: Expected role key list.
+            release_name: Release name.
+            release_root_path: Exact filesystem path for release root.
+            ssh_control_path: Exact filesystem path for ssh control.
+            target_platform: Target platform.
+            user_email: User email.
+        """
 
 
 class SourcePublisherProtocol(Protocol):
@@ -132,7 +178,18 @@ class SourcePublisherProtocol(Protocol):
         remote_release_root_path: Path,
         ssh_control_path: Path,
     ) -> dict[str, object]:
-        """Publish one exact local repository archive."""
+        """Publish one exact local repository archive.
+
+        Args:
+            repository_name: Repository name.
+            repository_path: Exact filesystem path for repository.
+            release_name: Release name.
+            remote_release_root_path: Exact filesystem path for remote release root.
+            ssh_control_path: Exact filesystem path for ssh control.
+
+        Returns:
+            Immutable source archive descriptor used by the release.
+        """
 
     def moving_archive_publish(
         self,
@@ -143,35 +200,66 @@ class SourcePublisherProtocol(Protocol):
         repository_name: str,
         ssh_control_path: Path,
     ) -> dict[str, object]:
-        """Resolve and publish one moving external source."""
+        """Resolve and publish one moving external source.
+
+        Args:
+            exact_override_commit: Exact override commit.
+            release_name: Release name.
+            remote_release_root_path: Exact filesystem path for remote release root.
+            repository_name: Repository name.
+            ssh_control_path: Exact filesystem path for ssh control.
+
+        Returns:
+            The resolved and published external source descriptor.
+        """
 
     def validate_repository(
         self,
         repository_path: Path,
         repository_name: str,
     ) -> None:
-        """Validate one exact local source repository."""
+        """Validate one exact local source repository.
+
+        Args:
+            repository_path: Exact filesystem path for repository.
+            repository_name: Repository name.
+        """
 
 
 class SourceCheckoutResolverProtocol(Protocol):
     """Exact local checkout selection boundary."""
 
     def repository_path_get(self, repository_name: str) -> Path:
-        """Return one exact canonical or task source checkout."""
+        """Return one exact canonical or task source checkout.
+
+        Args:
+            repository_name: Repository name.
+
+        Returns:
+            One exact canonical or task source checkout.
+        """
 
 
 class StackManagerProtocol(Protocol):
     """CloudFormation boundary consumed by Product deployment."""
 
     def drift_validate(self, stack_name: str) -> None:
-        """Require a drift-free stack."""
+        """Require a drift-free stack.
+
+        Args:
+            stack_name: Stack name.
+        """
 
 
 class SsmTransportProtocol(Protocol):
     """SSH-over-SSM boundary consumed by Product deployment."""
 
     def ssh_control_session(self) -> AbstractContextManager[Path]:
-        """Open one reusable SSH-over-SSM control session."""
+        """Open one reusable SSH-over-SSM control session.
+
+        Returns:
+            Resolved filesystem path.
+        """
 
     def ssh_run(
         self,
@@ -180,7 +268,16 @@ class SsmTransportProtocol(Protocol):
         ssh_control_path: Path,
         should_capture: bool = True,
     ) -> object:
-        """Run one command through SSH-over-SSM."""
+        """Run one command through SSH-over-SSM.
+
+        Args:
+            command_list: Ordered command values.
+            ssh_control_path: Exact filesystem path for ssh control.
+            should_capture: Whether stdout and stderr should be captured.
+
+        Returns:
+            Transport command result object.
+        """
 
 
 class DevelopmentProductDeploymentManager:
@@ -203,7 +300,23 @@ class DevelopmentProductDeploymentManager:
         stack: StackManagerProtocol,
         transport: SsmTransportProtocol,
     ) -> None:
-        """Initialize Product deployment from explicit owner boundaries."""
+        """Initialize Product deployment from explicit owner boundaries.
+
+        Args:
+            account: Account.
+            clock: Clock.
+            compute: Compute.
+            host_artifact: Host artifact.
+            identity: Identity.
+            product_recovery: Product recovery.
+            product_reset: Product reset.
+            project_root_path: Exact filesystem path for project root.
+            public_ecr_auth: Public ecr auth.
+            source_checkout: Source checkout.
+            source_publisher: Source publisher.
+            stack: Stack.
+            transport: Transport.
+        """
 
         self._account = account
         self._clock = clock
@@ -237,24 +350,16 @@ class DevelopmentProductDeploymentManager:
         """
 
         if should_reset_product_state and not user_email:
-            raise DevelopmentEnvironmentError(
-                "Destructive Product reset requires one preserved ZITADEL user"
-            )
+            raise DevelopmentEnvironmentError("Destructive Product reset requires one preserved ZITADEL user")
         if not should_reset_product_state and (user_email or expected_role_key_list):
-            raise DevelopmentEnvironmentError(
-                "Preserved Product identity inputs require destructive Product reset"
-            )
-        self._precondition_validate(
-            should_reset_product_state=should_reset_product_state
-        )
+            raise DevelopmentEnvironmentError("Preserved Product identity inputs require destructive Product reset")
+        self._precondition_validate(should_reset_product_state=should_reset_product_state)
         release_name = self._clock.now().strftime("%Y%m%d%H%M%S%f")
         source_manifest_by_repository_name_map: dict[str, dict[str, object]] = {}
         with self._transport.ssh_control_session() as ssh_control_path:
             self._source_publish(
                 release_name=release_name,
-                source_manifest_by_repository_name_map=(
-                    source_manifest_by_repository_name_map
-                ),
+                source_manifest_by_repository_name_map=(source_manifest_by_repository_name_map),
                 ssh_control_path=ssh_control_path,
                 workflow_container_contract_commit=(workflow_container_contract_commit),
             )
@@ -262,9 +367,7 @@ class DevelopmentProductDeploymentManager:
             self._release_manifest_write(
                 release_name=release_name,
                 release_root_path=release_root_path,
-                source_manifest_by_repository_name_map=(
-                    source_manifest_by_repository_name_map
-                ),
+                source_manifest_by_repository_name_map=(source_manifest_by_repository_name_map),
                 ssh_control_path=ssh_control_path,
             )
             self._host_prepare(
@@ -321,13 +424,8 @@ class DevelopmentProductDeploymentManager:
         self._stack.drift_validate(self._identity.compute_stack_name)
         self._compute.online_wait()
         self._compute.launch_template_version_validate(require_latest=True)
-        if (
-            self._product_recovery.status_get() == "pending"
-            and not should_reset_product_state
-        ):
-            raise DevelopmentEnvironmentError(
-                "Pending retained Product recovery must complete before a new deploy"
-            )
+        if self._product_recovery.status_get() == "pending" and not should_reset_product_state:
+            raise DevelopmentEnvironmentError("Pending retained Product recovery must complete before a new deploy")
 
     def _source_publish(
         self,
@@ -337,21 +435,26 @@ class DevelopmentProductDeploymentManager:
         ssh_control_path: Path,
         workflow_container_contract_commit: str,
     ) -> None:
-        """Publish the exact local and moving source graph."""
+        """Publish the exact local and moving source graph.
+
+        Args:
+            release_name: Release name.
+            source_manifest_by_repository_name_map: Source manifest by repository name mapping.
+            ssh_control_path: Exact filesystem path for ssh control.
+            workflow_container_contract_commit: Workflow container contract commit.
+        """
 
         for repository_name in [
             "workflow-infrastructure",
             *PRODUCT_SOURCE_REPOSITORY_NAME_LIST,
         ]:
             repository_path = self._source_checkout.repository_path_get(repository_name)
-            source_manifest_by_repository_name_map[repository_name] = (
-                self._source_publisher.archive_publish(
-                    repository_name=repository_name,
-                    repository_path=repository_path,
-                    release_name=release_name,
-                    remote_release_root_path=self._identity.host_release_root_path,
-                    ssh_control_path=ssh_control_path,
-                )
+            source_manifest_by_repository_name_map[repository_name] = self._source_publisher.archive_publish(
+                repository_name=repository_name,
+                repository_path=repository_path,
+                release_name=release_name,
+                remote_release_root_path=self._identity.host_release_root_path,
+                ssh_control_path=ssh_control_path,
             )
         source_manifest_by_repository_name_map["workflow-container-contract"] = (
             self._source_publisher.moving_archive_publish(
@@ -371,7 +474,14 @@ class DevelopmentProductDeploymentManager:
         source_manifest_by_repository_name_map: dict[str, dict[str, object]],
         ssh_control_path: Path,
     ) -> None:
-        """Write immutable release source and host provenance."""
+        """Write immutable release source and host provenance.
+
+        Args:
+            release_name: Release name.
+            release_root_path: Exact filesystem path for release root.
+            source_manifest_by_repository_name_map: Source manifest by repository name mapping.
+            ssh_control_path: Exact filesystem path for ssh control.
+        """
 
         release_manifest_text = json.dumps(
             {
@@ -398,7 +508,12 @@ class DevelopmentProductDeploymentManager:
         release_root_path: Path,
         ssh_control_path: Path,
     ) -> None:
-        """Validate host inputs from the exact release before Product execution."""
+        """Validate host inputs from the exact release before Product execution.
+
+        Args:
+            release_root_path: Exact filesystem path for release root.
+            ssh_control_path: Exact filesystem path for ssh control.
+        """
 
         self._transport.ssh_run(
             [
@@ -424,7 +539,15 @@ class DevelopmentProductDeploymentManager:
         release_root_path: Path,
         ssh_control_path: Path,
     ) -> None:
-        """Invoke Product-owned deployment from the immutable release."""
+        """Invoke Product-owned deployment from the immutable release.
+
+        Args:
+            docker_config_path: Exact filesystem path for docker config.
+            platform: Platform.
+            release_name: Release name.
+            release_root_path: Exact filesystem path for release root.
+            ssh_control_path: Exact filesystem path for ssh control.
+        """
 
         self._transport.ssh_run(
             [
@@ -464,7 +587,13 @@ class DevelopmentProductDeploymentManager:
         release_root_path: Path,
         ssh_control_path: Path,
     ) -> None:
-        """Activate the accepted Product and infrastructure source pointers."""
+        """Activate the accepted Product and infrastructure source pointers.
+
+        Args:
+            release_name: Release name.
+            release_root_path: Exact filesystem path for release root.
+            ssh_control_path: Exact filesystem path for ssh control.
+        """
 
         self._transport.ssh_run(
             [
@@ -516,7 +645,13 @@ class DevelopmentProductDeploymentManager:
         release_root_path: Path,
         ssh_control_path: Path,
     ) -> None:
-        """Release Product registry admission after exact retained-pointer proof."""
+        """Release Product registry admission after exact retained-pointer proof.
+
+        Args:
+            release_name: Release name.
+            release_root_path: Exact filesystem path for release root.
+            ssh_control_path: Exact filesystem path for ssh control.
+        """
 
         self._transport.ssh_run(
             [
@@ -544,7 +679,11 @@ class DevelopmentProductDeploymentManager:
         )
 
     def _host_service_install(self, *, ssh_control_path: Path) -> None:
-        """Install Product and infrastructure host services from active pointers."""
+        """Install Product and infrastructure host services from active pointers.
+
+        Args:
+            ssh_control_path: Exact filesystem path for ssh control.
+        """
 
         self._transport.ssh_run(
             [

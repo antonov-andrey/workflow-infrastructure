@@ -40,13 +40,29 @@ class CleanupInventoryResolver:
         region: str,
         stack: StackManagerProtocol,
     ) -> None:
+        """Initialize the cleanup inventory resolver dependencies.
+
+        Args:
+            account_id: Exact account identity.
+            identity: Identity.
+            region: Region.
+            stack: Stack.
+        """
+
         self._account_id = account_id
         self._identity = identity
         self._region = region
         self._stack = stack
 
     def resolve(self, request: CleanupRequest) -> CleanupInventory:
-        """Return exact service identities only after both stacks prove ownership."""
+        """Return exact service identities only after both stacks prove ownership.
+
+        Args:
+            request: Validated operation request.
+
+        Returns:
+            The exact service identities only after both stacks prove ownership.
+        """
 
         self._stack_identity_validate(self._identity.data_plane_stack_name)
         self._stack_identity_validate(self._identity.compute_stack_name)
@@ -78,6 +94,12 @@ class CleanupInventoryResolver:
         )
 
     def _stack_identity_validate(self, stack_name: str) -> None:
+        """Require one cleanup stack to carry the exact task worktree identity.
+
+        Args:
+            stack_name: Stack name.
+        """
+
         payload = self._stack.payload_get(stack_name, is_required=True)
         parameter_map = self._stack.parameter_by_name_map_get(stack_name)
         tag_map = tag_map_get(payload.get("Tags"))

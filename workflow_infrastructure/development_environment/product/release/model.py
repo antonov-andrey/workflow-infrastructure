@@ -36,4 +36,13 @@ class RetainedProductReleaseCommandRunner(Protocol):
         check: bool = True,
         should_capture: bool = True,
     ) -> RetainedProductReleaseCommandResult:
-        """Run one host command."""
+        """Run one host command.
+
+        Args:
+            command_list: Ordered command values.
+            check: Whether a nonzero command exit raises an error.
+            should_capture: Whether stdout and stderr should be captured.
+
+        Returns:
+            Resulting retained product release command result.
+        """

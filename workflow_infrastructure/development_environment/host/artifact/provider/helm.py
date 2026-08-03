@@ -34,15 +34,29 @@ class HelmArtifactProvider:
         trust_root_path: Path,
         verifier: HostArtifactVerifier,
     ) -> None:
+        """Initialize the helm artifact provider dependencies.
+
+        Args:
+            downloader: Downloader.
+            git_ref: Git ref.
+            trust_root_path: Exact filesystem path for trust root.
+            verifier: Verifier.
+        """
+
         self._downloader = downloader
         self._git_ref = git_ref
         self._trust_root_path = trust_root_path
         self._verifier = verifier
 
-    def resolve(
-        self, architecture: str
-    ) -> tuple[HostArtifactIdentity, HostArtifactIdentity]:
-        """Return exact Helm archive and signature identities."""
+    def resolve(self, architecture: str) -> tuple[HostArtifactIdentity, HostArtifactIdentity]:
+        """Return exact Helm archive and signature identities.
+
+        Args:
+            architecture: Architecture.
+
+        Returns:
+            The exact Helm archive and signature identities.
+        """
 
         version, resolved_ref, commit_sha = self._git_ref.latest_tag_resolve(
             repository_url=HELM_REPOSITORY_URL,

@@ -121,6 +121,7 @@ def _environment_get(
     Args:
         project_root_path: Test project root.
         environment_name: Stable environment selector.
+        git_worktree: Git worktree.
 
     Returns:
         Development environment.
@@ -169,7 +170,14 @@ def _template_get(project_root_path: Path, template_name: str) -> dict[str, obje
 
 
 def _declared_tag_key_list_get(tag_declaration: object) -> list[str]:
-    """Return direct and conditionally declared CloudFormation tag keys."""
+    """Return direct and conditionally declared CloudFormation tag keys.
+
+    Args:
+        tag_declaration: Tag declaration.
+
+    Returns:
+        Direct and conditionally declared CloudFormation tag keys.
+    """
 
     if isinstance(tag_declaration, dict):
         return [str(key) for key in tag_declaration]
@@ -198,7 +206,12 @@ def _yaml_mapping_keys_unique_assert(
     *,
     document_path: str,
 ) -> None:
-    """Recursively reject duplicate YAML mapping keys before construction."""
+    """Recursively reject duplicate YAML mapping keys before construction.
+
+    Args:
+        node: Node.
+        document_path: Exact filesystem path for document.
+    """
 
     if isinstance(node, MappingNode):
         key_identity_set: set[tuple[str, str]] = set()
@@ -231,7 +244,11 @@ def _yaml_mapping_keys_unique_assert(
 def test_cloudformation_templates_have_no_duplicate_yaml_keys(
     template_name: str,
 ) -> None:
-    """CloudFormation validation must not receive silently shadowed YAML keys."""
+    """CloudFormation validation must not receive silently shadowed YAML keys.
+
+    Args:
+        template_name: Template name.
+    """
 
     template_path = Path(__file__).resolve().parents[1] / "cloudformation" / template_name
     root_node = yaml.compose(template_path.read_text(encoding="utf-8"))
@@ -246,7 +263,12 @@ def test_cloudformation_template_transport_uses_verified_s3_for_oversized_body(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A template beyond the inline API limit uses one exact private S3 object."""
+    """A template beyond the inline API limit uses one exact private S3 object.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     template_path = tmp_path / "template.yaml"
@@ -268,6 +290,16 @@ def test_cloudformation_template_transport_uses_verified_s3_for_oversized_body(
         *,
         check: bool = True,
     ) -> subprocess.CompletedProcess[str]:
+        """Capture oversized-template object storage and stack operations.
+
+        Args:
+            argument_list: Exact command arguments.
+            check: Whether a nonzero command exit raises an error.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
+
         command_list.append((argument_list, check))
         if argument_list[:2] == ["s3api", "head-object"]:
             return subprocess.CompletedProcess(
@@ -307,7 +339,12 @@ def test_cloudformation_template_transport_keeps_small_body_inline(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A small template does not create an unnecessary S3 artifact."""
+    """A small template does not create an unnecessary S3 artifact.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     template_path = tmp_path / "template.yaml"
@@ -328,7 +365,12 @@ def test_cloudformation_stack_update_drops_parameters_removed_from_template(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """One update carries forward only parameters declared by the submitted template."""
+    """One update carries forward only parameters declared by the submitted template.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     template_path = tmp_path / "template.yaml"
@@ -354,14 +396,29 @@ def test_cloudformation_stack_update_drops_parameters_removed_from_template(
         *,
         check: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        """Record one controlled CloudFormation command."""
+        """Record one controlled CloudFormation command.
+
+        Args:
+            argument_list: Exact command arguments.
+            check: Whether a nonzero command exit raises an error.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
 
         del check
         command_list.append(argument_list)
         return subprocess.CompletedProcess(argument_list, 0, "{}", "")
 
     def aws_json_get(argument_list: list[str]) -> dict[str, object]:
-        """Return the submitted template schema and empty change set."""
+        """Return the submitted template schema and empty change set.
+
+        Args:
+            argument_list: Exact command arguments.
+
+        Returns:
+            The submitted template schema and empty change set.
+        """
 
         if argument_list[:2] == ["cloudformation", "get-template-summary"]:
             return {
@@ -401,7 +458,12 @@ def test_cloudformation_stack_parameters_preserve_json_values(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """JSON-valued parameters are passed through the AWS CLI without shorthand parsing."""
+    """JSON-valued parameters are passed through the AWS CLI without shorthand parsing.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     template_path = tmp_path / "template.yaml"
@@ -422,6 +484,16 @@ def test_cloudformation_stack_parameters_preserve_json_values(
         *,
         check: bool = True,
     ) -> subprocess.CompletedProcess[str]:
+        """Capture the stack operation that preserves JSON parameter values.
+
+        Args:
+            argument_list: Exact command arguments.
+            check: Whether a nonzero command exit raises an error.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
+
         del check
         command_list.append(argument_list)
         return subprocess.CompletedProcess(argument_list, 0, "{}", "")
@@ -450,7 +522,12 @@ def test_cloudformation_template_parameter_schema_rejects_malformed_response(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A malformed remote template summary cannot silently discard stack parameters."""
+    """A malformed remote template summary cannot silently discard stack parameters.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     monkeypatch.setattr(
@@ -476,7 +553,11 @@ def test_cloudformation_template_parameter_schema_rejects_malformed_response(
 def test_every_explicit_cloudformation_tag_uses_account_local_environment_identity(
     template_name: str,
 ) -> None:
-    """Explicit tags never restore project prefixes or the obsolete tag schema."""
+    """Explicit tags never restore project prefixes or the obsolete tag schema.
+
+    Args:
+        template_name: Template name.
+    """
 
     template = _template_get(Path(__file__).resolve().parents[1], template_name)
     resource_by_name_map = template["Resources"]
@@ -613,7 +694,12 @@ def test_product_reset_sequences_preservation_before_retained_release_removal(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """The explicit cutover removes release state only after Product preservation."""
+    """The explicit cutover removes release state only after Product preservation.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     command_list_list: list[list[str]] = []
@@ -717,7 +803,12 @@ def test_existing_compute_stack_rejects_every_noncurrent_contract(
     tmp_path: Path,
     parameter_by_name_map: dict[str, str],
 ) -> None:
-    """No transition path accepts a compute stack without the exact current identity."""
+    """No transition path accepts a compute stack without the exact current identity.
+
+    Args:
+        tmp_path: Temporary directory path.
+        parameter_by_name_map: Parameter by name mapping.
+    """
 
     environment = _environment_get(tmp_path)
 
@@ -729,7 +820,11 @@ def test_existing_compute_stack_rejects_every_noncurrent_contract(
 
 
 def test_existing_compute_stack_accepts_exact_current_contract(tmp_path: Path) -> None:
-    """The current environment identity and host manifest are sufficient."""
+    """The current environment identity and host manifest are sufficient.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
 
@@ -748,7 +843,12 @@ def test_current_product_tool_calls_preserve_nonprimary_environment(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Every infrastructure-to-Product command must retain its environment identity."""
+    """Every infrastructure-to-Product command must retain its environment identity.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path, environment_name="feature1")
     product_tool_path = (
@@ -765,6 +865,18 @@ def test_current_product_tool_calls_preserve_nonprimary_environment(
         input_text: str | None = None,
         should_capture: bool = True,
     ) -> subprocess.CompletedProcess[str]:
+        """Drive one concurrent replacement attempt through the shared lease boundary.
+
+        Args:
+            argument_list: Exact command arguments.
+            check: Whether a nonzero command exit raises an error.
+            input_text: Input text.
+            should_capture: Whether stdout and stderr should be captured.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
+
         del check, input_text, should_capture
         local_command_list_list.append(argument_list)
         stdout = (
@@ -848,7 +960,11 @@ def test_current_product_tool_calls_preserve_nonprimary_environment(
 def test_current_primary_product_tool_calls_include_exact_environment(
     tmp_path: Path,
 ) -> None:
-    """Primary lifecycle uses the same explicit environment contract as every environment."""
+    """Primary lifecycle uses the same explicit environment contract as every environment.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
 
@@ -903,7 +1019,15 @@ def test_host_product_activity_accepts_only_safe_utc_observation(
     stdout: str,
     expected: str,
 ) -> None:
-    """Lifecycle treats every malformed or unverifiable Product observation as busy."""
+    """Lifecycle treats every malformed or unverifiable Product observation as busy.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+        returncode: Returncode.
+        stdout: Stdout.
+        expected: Expected.
+    """
 
     environment = _environment_get(tmp_path)
     monkeypatch.setattr(Path, "is_file", lambda path: True)
@@ -1078,7 +1202,11 @@ def test_account_foundation_owns_lake_formation_settings_and_data_stacks_only_gr
     ["", "Primary", "feature-1", "feature_1", "a" * 17, "../primary"],
 )
 def test_environment_identity_rejects_unsafe_name(environment_name: str) -> None:
-    """Unsafe environment names cannot enter AWS resources or host paths."""
+    """Unsafe environment names cannot enter AWS resources or host paths.
+
+    Args:
+        environment_name: Environment name.
+    """
 
     with pytest.raises(DevelopmentEnvironmentError):
         DevelopmentEnvironmentIdentity(environment_name)
@@ -1395,7 +1523,12 @@ def test_primary_retained_backup_policy_requires_exact_provider_state(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """CloudFormation success cannot hide a malformed AWS Backup policy."""
+    """CloudFormation success cannot hide a malformed AWS Backup policy.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     backup_plan_payload = {
@@ -1440,7 +1573,14 @@ def test_primary_retained_backup_policy_requires_exact_provider_state(
     )
 
     def aws_json_get(aws_argument_list: list[str]) -> dict[str, object]:
-        """Return one controlled AWS Backup provider graph."""
+        """Return one controlled AWS Backup provider graph.
+
+        Args:
+            aws_argument_list: Ordered AWS argument values.
+
+        Returns:
+            One controlled AWS Backup provider graph.
+        """
 
         if aws_argument_list[:2] == ["backup", "get-backup-plan"]:
             return backup_plan_payload
@@ -1484,7 +1624,12 @@ def test_nonprimary_environment_verifies_primary_owned_account_foundation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Secondary environments may verify but never redefine account-global state."""
+    """Secondary environments may verify but never redefine account-global state.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path, environment_name="featurea")
     deployment_principal_arn = "arn:aws:iam::463564115167:role/deployment-admin"
@@ -1540,7 +1685,14 @@ def test_nonprimary_environment_verifies_primary_owned_account_foundation(
     }
 
     def aws_json_get(aws_argument_list: list[str]) -> dict[str, object]:
-        """Return the exact primary-owned global state."""
+        """Return the exact primary-owned global state.
+
+        Args:
+            aws_argument_list: Ordered AWS argument values.
+
+        Returns:
+            The exact primary-owned global state.
+        """
 
         if aws_argument_list[:2] == [
             "s3control",
@@ -1640,7 +1792,12 @@ def test_pending_recovery_applies_current_compute_contract_before_bootstrap(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """An interrupted first start can retry with a corrected bootstrap document."""
+    """An interrupted first start can retry with a corrected bootstrap document.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     operation_list: list[str] = []
@@ -1670,6 +1827,15 @@ def test_pending_recovery_applies_current_compute_contract_before_bootstrap(
     monkeypatch.setattr(environment._stack, "drift_validate", lambda stack_name: None)
 
     def parameter_by_name_map_get(stack_name: str) -> dict[str, str]:
+        """Return stack parameters required by stop-lease reconciliation.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            Stack parameters keyed by name.
+        """
+
         if stack_name == environment._identity.data_plane_stack_name:
             return {
                 "EnvironmentName": "primary",
@@ -1705,6 +1871,12 @@ def test_pending_recovery_applies_current_compute_contract_before_bootstrap(
     )
 
     def stack_apply(**kwargs: object) -> None:
+        """Record the compute-stack apply that must precede bootstrap probing.
+
+        Args:
+            **kwargs: Provider keyword arguments.
+        """
+
         nonlocal compute_stack_applied
         stack_name = str(kwargs["stack_name"])
         operation_list.append(f"apply:{stack_name}")
@@ -1746,6 +1918,12 @@ def test_pending_recovery_applies_current_compute_contract_before_bootstrap(
     )
 
     def failed_bootstrap_replacement_is_proven() -> bool:
+        """Prove the replacement probe runs only after the compute-stack apply.
+
+        Returns:
+            False so the scenario continues without replacing the instance.
+        """
+
         assert compute_stack_applied
         operation_list.append("failed-bootstrap-probe")
         return False
@@ -1790,7 +1968,12 @@ def test_account_foundation_apply_is_primary_only_and_source_bound(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Bootstrap the global owner without implicitly creating an environment."""
+    """Bootstrap the global owner without implicitly creating an environment.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     event_list: list[object] = []
@@ -1827,7 +2010,12 @@ def test_task_foundation_validation_requires_the_primary_stack_and_zero_drift(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A task may only read a present drift-free foundation before AWS mutation."""
+    """A task may only read a present drift-free foundation before AWS mutation.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path, environment_name="featurea")
     event_list: list[str] = []
@@ -1899,7 +2087,11 @@ def test_data_plane_template_adds_compute_trust_without_narrowing_platform_permi
 def test_data_stack_endpoint_contract_rejects_collision_and_unpersisted_port(
     tmp_path: Path,
 ) -> None:
-    """Provisioning cannot reuse another endpoint or accept an unpersisted allocation."""
+    """Provisioning cannot reuse another endpoint or accept an unpersisted allocation.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(
         tmp_path,
@@ -2139,7 +2331,12 @@ def test_runtime_platform_accepts_one_linux_arm64_platform(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Runtime platform discovery must normalize one homogeneous eligible node set."""
+    """Runtime platform discovery must normalize one homogeneous eligible node set.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     node_payload = {
@@ -2177,7 +2374,12 @@ def test_runtime_platform_rejects_mixed_eligible_nodes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Runtime platform discovery must reject mixed eligible architectures before build."""
+    """Runtime platform discovery must reject mixed eligible architectures before build.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     node_payload = {
@@ -2216,7 +2418,12 @@ def test_price_lookup_requires_one_exact_current_price(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Cost review must select one exact current AWS price at the declared unit and usage type."""
+    """Cost review must select one exact current AWS price at the declared unit and usage type.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     product_payload = {
@@ -2254,7 +2461,12 @@ def test_price_dimension_lookup_preserves_every_tier_and_service(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Usage-based review must retain exact tier boundaries instead of cherry-picking one rate."""
+    """Usage-based review must retain exact tier boundaries instead of cherry-picking one rate.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     product_payload = {
@@ -2282,7 +2494,14 @@ def test_price_dimension_lookup_preserves_every_tier_and_service(
     }
 
     def aws_json_get(aws_argument_list: list[str]) -> dict[str, object]:
-        """Verify the exact service and filters while returning controlled tiers."""
+        """Verify the exact service and filters while returning controlled tiers.
+
+        Args:
+            aws_argument_list: Ordered AWS argument values.
+
+        Returns:
+            Scripted provider response for the requested pricing tier.
+        """
 
         assert aws_argument_list[:5] == [
             "pricing",
@@ -2320,7 +2539,12 @@ def test_cost_review_includes_one_bounded_retained_rollback_volume(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """The checkpoint must price root, current retained, and one previous rollback."""
+    """The checkpoint must price root, current retained, and one previous rollback.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
 
@@ -2330,7 +2554,16 @@ def test_cost_review_includes_one_bounded_retained_rollback_volume(
         unit: str,
         usage_type: str,
     ) -> Decimal:
-        """Return controlled prices for each declared cost dimension."""
+        """Return controlled prices for each declared cost dimension.
+
+        Args:
+            filter_by_field_map: Filter by field mapping.
+            unit: Unit.
+            usage_type: Usage type.
+
+        Returns:
+            The controlled prices for each declared cost dimension.
+        """
 
         del filter_by_field_map
         if unit == "Hrs":
@@ -2353,7 +2586,16 @@ def test_cost_review_includes_one_bounded_retained_rollback_volume(
         filter_by_field_map: dict[str, str],
         usage_type: str,
     ) -> list[dict[str, str]]:
-        """Return one controlled current meter rate for every usage service."""
+        """Return one controlled current meter rate for every usage service.
+
+        Args:
+            service_code: Service code.
+            filter_by_field_map: Filter by field mapping.
+            usage_type: Usage type.
+
+        Returns:
+            One controlled current meter rate for every usage service.
+        """
 
         del service_code, filter_by_field_map
         return [
@@ -2423,7 +2665,14 @@ def test_drift_preflight_requires_stable_stack_status_and_outputs(
     capsys: pytest.CaptureFixture[str],
     stack_status: str,
 ) -> None:
-    """Mutation preflight accepts completed recovery states and proves drift."""
+    """Mutation preflight accepts completed recovery states and proves drift.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+        capsys: Capsys.
+        stack_status: Stack status.
+    """
 
     environment = _environment_get(tmp_path)
     operation_list: list[str] = []
@@ -2439,7 +2688,14 @@ def test_drift_preflight_requires_stable_stack_status_and_outputs(
     )
 
     def aws_json_get(argument_list: list[str]) -> dict[str, object]:
-        """Return the controlled drift lifecycle."""
+        """Return the controlled drift lifecycle.
+
+        Args:
+            argument_list: Exact command arguments.
+
+        Returns:
+            The controlled drift lifecycle.
+        """
 
         if argument_list[1] == "detect-stack-drift":
             operation_list.append("detect")
@@ -2462,7 +2718,12 @@ def test_drift_preflight_rejects_incomplete_stack_rollback(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """An incomplete rollback cannot become the starting point for another update."""
+    """An incomplete rollback cannot become the starting point for another update.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     monkeypatch.setattr(
@@ -2481,7 +2742,11 @@ def test_drift_preflight_rejects_incomplete_stack_rollback(
 def test_source_archive_is_deterministic_and_excludes_untracked_files(
     tmp_path: Path,
 ) -> None:
-    """Source archive must contain only deterministic tracked content and its exact manifest."""
+    """Source archive must contain only deterministic tracked content and its exact manifest.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     repository_path = tmp_path / "repository"
     repository_path.mkdir()
@@ -2525,7 +2790,12 @@ def test_source_archive_transfer_refuses_to_replace_immutable_release(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A reused release/source identity must fail instead of deleting accepted bytes."""
+    """A reused release/source identity must fail instead of deleting accepted bytes.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     repository_path = tmp_path / "repository"
     repository_path.mkdir()
@@ -2551,7 +2821,15 @@ def test_source_archive_transfer_refuses_to_replace_immutable_release(
     real_run = environment._runner.run
 
     def run(command_list: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        """Materialize the rsync payload locally and delegate ordinary commands."""
+        """Materialize the rsync payload locally and delegate ordinary commands.
+
+        Args:
+            command_list: Ordered command values.
+            **kwargs: Provider keyword arguments.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
 
         if command_list[0] != "rsync":
             return real_run(command_list, **kwargs)
@@ -2566,7 +2844,15 @@ def test_source_archive_transfer_refuses_to_replace_immutable_release(
         *,
         ssh_control_path: Path,
     ) -> subprocess.CompletedProcess[str]:
-        """Execute the generated remote verification command on the test host."""
+        """Execute the generated remote verification command on the test host.
+
+        Args:
+            command_list: Ordered command values.
+            ssh_control_path: Exact filesystem path for ssh control.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
 
         assert ssh_control_path == tmp_path / "control"
         assert command_list[0] == "sudo"
@@ -2611,7 +2897,12 @@ def test_moving_source_resolution_retries_race_and_supports_one_exact_override(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Resolve remote default HEAD once, retry a race, and keep override provenance explicit."""
+    """Resolve remote default HEAD once, retry a race, and keep override provenance explicit.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     remote_path = tmp_path / "contract.git"
     subprocess.run(
@@ -2761,7 +3052,12 @@ def test_source_repository_requires_clean_exact_published_head(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Source validation must reject dirty and unpublished repository states."""
+    """Source validation must reject dirty and unpublished repository states.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     remote_path = tmp_path / "remote.git"
     subprocess.run(["git", "init", "--bare", "--initial-branch=main", str(remote_path)], check=True)
@@ -2802,7 +3098,11 @@ def test_source_repository_requires_clean_exact_published_head(
 def test_task_environment_accepts_only_exact_task_branch_submodule_commit(
     tmp_path: Path,
 ) -> None:
-    """A task gitlink may precede goal-merge but must be the published task head."""
+    """A task gitlink may precede goal-merge but must be the published task head.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     task_name = "2026-08-01-workflow-platform-hardening"
     remote_path = tmp_path / "submodule.git"
@@ -2858,7 +3158,11 @@ def test_task_environment_accepts_only_exact_task_branch_submodule_commit(
 def test_submodule_publication_fetches_remote_main_before_ancestry_proof(
     tmp_path: Path,
 ) -> None:
-    """A valid gitlink remains provable when another checkout advanced origin/main."""
+    """A valid gitlink remains provable when another checkout advanced origin/main.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     remote_path = tmp_path / "submodule.git"
     subprocess.run(
@@ -2938,7 +3242,11 @@ def test_submodule_publication_fetches_remote_main_before_ancestry_proof(
 def test_task_source_checkout_resolver_selects_exact_worktrees_and_canonical_main(
     tmp_path: Path,
 ) -> None:
-    """Task sources use same-prefix branches while unchanged sources stay on main."""
+    """Task sources use same-prefix branches while unchanged sources stay on main.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     workspace_root_path = tmp_path / "workspace"
     remote_root_path = tmp_path / "remote"
@@ -2947,7 +3255,15 @@ def test_task_source_checkout_resolver_selects_exact_worktrees_and_canonical_mai
     common_prefix = "2026-08-01-workflow-platform-hardening"
 
     def repository_create(repository_name: str, *, with_task_worktree: bool) -> tuple[Path, Path | None]:
-        """Create one published canonical checkout and optional exact task worktree."""
+        """Create one published canonical checkout and optional exact task worktree.
+
+        Args:
+            repository_name: Repository name.
+            with_task_worktree: With task worktree.
+
+        Returns:
+            One published canonical checkout and optional exact task worktree.
+        """
 
         remote_path = remote_root_path / f"{repository_name}.git"
         subprocess.run(
@@ -3006,7 +3322,12 @@ def test_service_readiness_checks_every_required_aws_control_plane(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Account readiness must prove S3, KMS, Athena, and CloudFormation access."""
+    """Account readiness must prove S3, KMS, Athena, and CloudFormation access.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     command_list: list[list[str]] = []
@@ -3044,7 +3365,11 @@ def test_service_readiness_checks_every_required_aws_control_plane(
 def test_stable_data_change_allows_only_identity_preserving_conditional_dependencies(
     tmp_path: Path,
 ) -> None:
-    """Conditional dependent updates are safe only when their source cannot be replaced."""
+    """Conditional dependent updates are safe only when their source cannot be replaced.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     safe_detail = {
@@ -3081,7 +3406,11 @@ def test_stable_data_change_allows_only_identity_preserving_conditional_dependen
 def test_stable_data_change_allows_only_exact_data_lake_settings_parameter_update(
     tmp_path: Path,
 ) -> None:
-    """The documented in-place Parameters update cannot weaken the stable-data guard."""
+    """The documented in-place Parameters update cannot weaken the stable-data guard.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     parameter_detail = {
@@ -3140,7 +3469,11 @@ def test_stable_data_change_allows_only_exact_data_lake_settings_parameter_updat
 def test_stable_data_change_proves_transitive_conditional_dependency_chain(
     tmp_path: Path,
 ) -> None:
-    """A conditional child is safe when every transitive physical owner is stable."""
+    """A conditional child is safe when every transitive physical owner is stable.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
 
@@ -3149,6 +3482,16 @@ def test_stable_data_change_proves_transitive_conditional_dependency_chain(
         *,
         change_source: str = "ResourceAttribute",
     ) -> dict[str, object]:
+        """Return changing provider detail to prove each retry fetches fresh state.
+
+        Args:
+            causing_entity: Causing entity.
+            change_source: Change source.
+
+        Returns:
+            Fresh scripted instance detail for the current retry.
+        """
+
         return {
             "CausingEntity": causing_entity,
             "ChangeSource": change_source,
@@ -3199,7 +3542,11 @@ def test_stable_data_change_proves_transitive_conditional_dependency_chain(
 def test_ordinary_compute_apply_rejects_every_possible_stable_identity_replacement(
     tmp_path: Path,
 ) -> None:
-    """Only the explicit replacement workflow may change instance or retained attachment identity."""
+    """Only the explicit replacement workflow may change instance or retained attachment identity.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     change_summary_list = [
@@ -3238,7 +3585,11 @@ def test_ordinary_compute_apply_rejects_every_possible_stable_identity_replaceme
 def test_existing_stack_resource_identity_validation_allows_only_additions(
     tmp_path: Path,
 ) -> None:
-    """A guarded update may add resources but cannot remove or replace an existing identity."""
+    """A guarded update may add resources but cannot remove or replace an existing identity.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     previous_identity_by_logical_id_map = {
@@ -3275,7 +3626,12 @@ def test_replacement_parameters_select_next_slot_and_enable_creation_guard(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Explicit replacement makes future instance creation fail-safe before it starts."""
+    """Explicit replacement makes future instance creation fail-safe before it starts.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     monkeypatch.setattr(
@@ -3299,7 +3655,12 @@ def test_replacement_detaches_retained_volume_only_after_proven_stop(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """The old stopped instance releases retained EBS before CloudFormation creates its successor."""
+    """The old stopped instance releases retained EBS before CloudFormation creates its successor.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     attachment = {
@@ -3374,7 +3735,14 @@ def test_restore_plan_alternates_declarative_retained_volume_resources(
     current_slot: str,
     next_slot: str,
 ) -> None:
-    """Every restore selects a new logical volume while ordinary replacement does not."""
+    """Every restore selects a new logical volume while ordinary replacement does not.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+        current_slot: Current slot.
+        next_slot: Next slot.
+    """
 
     environment = _environment_get(tmp_path)
     validation_argument_list: list[dict[str, str]] = []
@@ -3412,7 +3780,12 @@ def test_restore_source_must_be_completed_owned_encrypted_snapshot(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Restore preflight rejects a snapshot before stopping the current instance."""
+    """Restore preflight rejects a snapshot before stopping the current instance.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     snapshot_payload = {
@@ -3453,7 +3826,12 @@ def test_restore_proves_distinct_snapshot_volume_and_retires_old_backup_target(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A successful restore keeps only the new primary volume in AWS Backup."""
+    """A successful restore keeps only the new primary volume in AWS Backup.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     old_volume_payload = {
@@ -3497,6 +3875,16 @@ def test_restore_proves_distinct_snapshot_volume_and_retires_old_backup_target(
     )
 
     def aws_run(argument_list: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        """Record removal of the inherited regular-backup tag from the source volume.
+
+        Args:
+            argument_list: Exact command arguments.
+            **kwargs: Provider keyword arguments.
+
+        Returns:
+            Successful deterministic AWS CLI result.
+        """
+
         del kwargs
         aws_argument_list_list.append(argument_list)
         old_volume_payload["Tags"] = []
@@ -3526,7 +3914,12 @@ def test_restore_cleanup_keeps_current_and_deletes_only_owned_stale_rollback(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A new restore bounds retained gp3 storage to current plus one rollback."""
+    """A new restore bounds retained gp3 storage to current plus one rollback.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     current_volume_id = "vol-0123456789abcdef0"
@@ -3585,7 +3978,15 @@ def test_restore_cleanup_keeps_current_and_deletes_only_owned_stale_rollback(
         *,
         check: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        """Record exact stale-volume deletion commands."""
+        """Record exact stale-volume deletion commands.
+
+        Args:
+            argument_list: Exact command arguments.
+            check: Whether a nonzero command exit raises an error.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
 
         del check
         aws_argument_list_list.append(argument_list)
@@ -3611,7 +4012,12 @@ def test_instance_launch_template_version_must_match_stack_latest_output(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A completed replacement proves the concrete immutable version used by EC2."""
+    """A completed replacement proves the concrete immutable version used by EC2.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     monkeypatch.setattr(
@@ -3651,7 +4057,12 @@ def test_failed_replacement_recovers_the_stack_declared_volume_attachment(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A rolled-back replacement leaves the old volume attached before returning failure."""
+    """A rolled-back replacement leaves the old volume attached before returning failure.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     operation_list: list[str] = []
@@ -3702,7 +4113,12 @@ def test_first_replacement_relies_on_cloudformation_guard_before_target_exists(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """The initial stack replacement does not require the future Lambda output."""
+    """The initial stack replacement does not require the future Lambda output.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     operation_list: list[str] = []
@@ -3760,7 +4176,12 @@ def test_replace_uses_controlled_detach_and_creation_guard(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Public replace disables the creation guard only after renewable lease and start."""
+    """Public replace disables the creation guard only after renewable lease and start.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     operation_list: list[object] = []
@@ -3862,7 +4283,12 @@ def test_restore_combines_snapshot_and_creation_guard_in_controlled_replacement(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Snapshot restore uses the same exact replacement boundary as retained-volume reuse."""
+    """Snapshot restore uses the same exact replacement boundary as retained-volume reuse.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     operation_list: list[object] = []
@@ -3999,7 +4425,12 @@ def test_ssh_remote_arguments_are_shell_quoted_once(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """SSH must transport one exact remote argument vector through the remote shell."""
+    """SSH must transport one exact remote argument vector through the remote shell.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     command_list: list[str] = []
@@ -4040,7 +4471,12 @@ def test_start_creates_stop_lease_before_ec2_start(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Start must prove the external lease before invoking EC2 StartInstances."""
+    """Start must prove the external lease before invoking EC2 StartInstances.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     operation_list: list[str] = []
@@ -4123,7 +4559,12 @@ def test_ordinary_start_reuses_installed_controller_without_source_delivery(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A lifecycle-only start must not become an implicit source deployment."""
+    """A lifecycle-only start must not become an implicit source deployment.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     operation_list: list[str] = []
@@ -4187,7 +4628,12 @@ def test_host_readiness_waits_for_foundation_and_controller(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Final readiness requires both the host foundation and lifecycle controller."""
+    """Final readiness requires both the host foundation and lifecycle controller.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     operation_list: list[str] = []
@@ -4219,7 +4665,14 @@ def test_host_readiness_waits_for_foundation_and_controller(
     )
 
     def host_status_payload_get(*, retained_volume_id: str) -> dict[str, str]:
-        """Return one controlled readiness transition."""
+        """Return one controlled readiness transition.
+
+        Args:
+            retained_volume_id: Exact retained volume identity.
+
+        Returns:
+            One controlled readiness transition.
+        """
 
         assert retained_volume_id == "vol-0123456789abcdef0"
         operation_list.append("probe")
@@ -4238,7 +4691,12 @@ def test_host_status_probe_normalizes_only_safe_fields(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Remote status accepts the fixed safe schema and uses a bounded SSM command."""
+    """Remote status accepts the fixed safe schema and uses a bounded SSM command.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     expected_payload = {
@@ -4258,7 +4716,15 @@ def test_host_status_probe_normalizes_only_safe_fields(
         *,
         timeout_seconds: int,
     ) -> dict[str, object]:
-        """Capture the exact status command and return safe output."""
+        """Capture the exact status command and return safe output.
+
+        Args:
+            shell_command_list: Ordered shell command values.
+            timeout_seconds: Timeout in seconds.
+
+        Returns:
+            Safe scripted SSM status response.
+        """
 
         assert timeout_seconds == development_host_status.HOST_STATUS_COMMAND_TIMEOUT_SECONDS
         command_list_list.append(shell_command_list)
@@ -4283,7 +4749,12 @@ def test_host_status_collects_exact_mount_node_release_and_activity(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Host-side status proves the retained device and reports no secret content."""
+    """Host-side status proves the retained device and reports no secret content.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     retained_root_path = tmp_path / "srv"
@@ -4331,7 +4802,17 @@ def test_host_status_collects_exact_mount_node_release_and_activity(
         input_text: str | None = None,
         should_capture: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        """Return controlled host command results."""
+        """Return controlled host command results.
+
+        Args:
+            argument_list: Exact command arguments.
+            check: Whether a nonzero command exit raises an error.
+            input_text: Input text.
+            should_capture: Whether stdout and stderr should be captured.
+
+        Returns:
+            The controlled host command results.
+        """
 
         del check, input_text, should_capture
         if argument_list[0] == "findmnt":
@@ -4366,7 +4847,13 @@ def test_status_includes_remote_host_readiness_and_activity(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Status must expose safe runtime state, not only CloudFormation resources."""
+    """Status must expose safe runtime state, not only CloudFormation resources.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+        capsys: Capsys.
+    """
 
     environment = _environment_get(tmp_path)
     output_by_name_map = {
@@ -4443,7 +4930,12 @@ def test_stop_lease_uses_renewable_tag_resolving_target(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Lease target must protect a future replacement whose instance ID is not known yet."""
+    """Lease target must protect a future replacement whose instance ID is not known yet.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     aws_argument_list_list: list[list[str]] = []
@@ -4518,7 +5010,14 @@ def test_connect_forwards_the_environment_canonical_ingress_port(
     git_worktree: str,
     expected_port: str,
 ) -> None:
-    """Both ends of Session Manager use the environment's exact hostPort."""
+    """Both ends of Session Manager use the environment's exact hostPort.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+        git_worktree: Git worktree.
+        expected_port: Expected port.
+    """
 
     environment = _environment_get(tmp_path, git_worktree=git_worktree)
     command_list: list[str] = []
@@ -4530,6 +5029,18 @@ def test_connect_forwards_the_environment_canonical_ingress_port(
         input_text: str | None = None,
         should_capture: bool = True,
     ) -> subprocess.CompletedProcess[str]:
+        """Drive one connection session until the stop lease becomes externally visible.
+
+        Args:
+            argument_list: Exact command arguments.
+            check: Whether a nonzero command exit raises an error.
+            input_text: Input text.
+            should_capture: Whether stdout and stderr should be captured.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
+
         del check, input_text, should_capture
         command_list.extend(argument_list)
         return subprocess.CompletedProcess(argument_list, 0, "", "")
@@ -4554,11 +5065,25 @@ def test_cli_interrupt_returns_standard_status_without_traceback(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """An operator Ctrl+C must stop a foreground command without a Python traceback."""
+    """An operator Ctrl+C must stop a foreground command without a Python traceback.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        capsys: Capsys.
+    """
 
     def connect_interrupted(
         _access: development_access.DevelopmentAccessManager,
     ) -> int:
+        """Interrupt the synthetic connect operation after acquiring its lease.
+
+        Args:
+            _access: Access.
+
+        Returns:
+            Unreachable exit status because the helper always raises ``KeyboardInterrupt``.
+        """
+
         raise KeyboardInterrupt
 
     monkeypatch.setattr(
@@ -4574,15 +5099,29 @@ def test_cli_interrupt_returns_standard_status_without_traceback(
 def test_root_cli_composes_the_exact_repository_root(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Moving the primary entrypoint cannot retain the former tool-directory offset."""
+    """Moving the primary entrypoint cannot retain the former tool-directory offset.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+    """
 
     captured_project_root_path: list[Path] = []
 
     class _Access:
+        """Return successful connection status without opening a tunnel."""
+
         def connect(self) -> int:
+            """Record one connection attempt while the lifecycle operation is active.
+
+            Returns:
+                Zero, representing a successful synthetic connection.
+            """
+
             return 0
 
     class _Environment:
+        """Capture the project root composed by the primary CLI entrypoint."""
+
         access = _Access()
 
         def __init__(
@@ -4594,6 +5133,16 @@ def test_root_cli_composes_the_exact_repository_root(
             project_root_path: Path,
             runner: object,
         ) -> None:
+            """Initialize the environment dependencies.
+
+            Args:
+                clock: Clock.
+                environment_name: Environment name.
+                git_worktree: Git worktree.
+                project_root_path: Exact filesystem path for project root.
+                runner: Explicit command execution boundary.
+            """
+
             del clock, environment_name, git_worktree, runner
             captured_project_root_path.append(project_root_path)
 
@@ -4614,23 +5163,47 @@ def test_root_cli_composes_the_exact_repository_root(
 def test_task_lifecycle_acceptance_validates_cleanup_binding_before_mutation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Acceptance is a task AWS mutation and must use the sealed cleanup binding."""
+    """Acceptance is a task AWS mutation and must use the sealed cleanup binding.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+    """
 
     event_list: list[str] = []
 
     class _CleanupBinding:
+        """Record sealed cleanup-binding validation before AWS acceptance."""
+
         def validate(self, *, common_prefix: str) -> None:
+            """Validate the cleanup binding contract.
+
+            Args:
+                common_prefix: Exact task common prefix.
+            """
+
             event_list.append(f"binding:{common_prefix}")
 
     class _Lifecycle:
+        """Record the acceptance event after cleanup-binding validation."""
+
         def acceptance_run(self) -> None:
+            """Record acceptance after the cleanup binding validation event."""
+
             event_list.append("acceptance")
 
     class _Environment:
+        """Expose the cleanup-binding and lifecycle owners consumed by the CLI."""
+
         cleanup_binding = _CleanupBinding()
         lifecycle = _Lifecycle()
 
         def __init__(self, **kwargs: object) -> None:
+            """Initialize the environment dependencies.
+
+            Args:
+                **kwargs: Provider keyword arguments.
+            """
+
             del kwargs
 
     monkeypatch.setattr(
@@ -4646,16 +5219,30 @@ def test_task_lifecycle_acceptance_validates_cleanup_binding_before_mutation(
 def test_deploy_starts_the_environment_before_product_publication(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Canonical deploy must be usable after the idle controller stops EC2."""
+    """Canonical deploy must be usable after the idle controller stops EC2.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+    """
 
     event_list: list[str] = []
 
     class _Lifecycle:
+        """Record development-host startup before Product deployment."""
+
         def start(self, *, should_publish_infrastructure_source: bool) -> None:
+            """Record that lifecycle recovery requested the stopped instance to start.
+
+            Args:
+                should_publish_infrastructure_source: Should publish infrastructure source.
+            """
+
             assert should_publish_infrastructure_source is True
             event_list.append("start")
 
     class _ProductDeployment:
+        """Validate deployment inputs and record publication after host startup."""
+
         def deploy(
             self,
             *,
@@ -4664,6 +5251,15 @@ def test_deploy_starts_the_environment_before_product_publication(
             user_email: str,
             workflow_container_contract_commit: str | None,
         ) -> None:
+            """Record one deployment attempt after lifecycle recovery.
+
+            Args:
+                expected_role_key_list: Expected role key list.
+                should_reset_product_state: Should reset product state.
+                user_email: User email.
+                workflow_container_contract_commit: Workflow container contract commit.
+            """
+
             assert expected_role_key_list == []
             assert should_reset_product_state is False
             assert user_email == ""
@@ -4671,10 +5267,18 @@ def test_deploy_starts_the_environment_before_product_publication(
             event_list.append("deploy")
 
     class _Environment:
+        """Expose ordered lifecycle and Product-deployment owners to the CLI."""
+
         lifecycle = _Lifecycle()
         product_deployment = _ProductDeployment()
 
         def __init__(self, **kwargs: object) -> None:
+            """Initialize the environment dependencies.
+
+            Args:
+                **kwargs: Provider keyword arguments.
+            """
+
             del kwargs
 
     monkeypatch.setattr(
@@ -4693,7 +5297,13 @@ def _retained_product_release_prepare(
     release_name: str,
     source_manifest_version: int | None = SOURCE_MANIFEST_VERSION,
 ) -> None:
-    """Create one internally consistent retained Product release fixture."""
+    """Create one internally consistent retained Product release fixture.
+
+    Args:
+        release_root_path: Exact filesystem path for release root.
+        release_name: Release name.
+        source_manifest_version: Source manifest version.
+    """
 
     source_identity_by_name_map: dict[str, dict[str, str]] = {}
     repository_by_name_map: dict[str, dict[str, object]] = {}
@@ -4879,7 +5489,12 @@ def test_host_product_release_activation_is_verified_retained_and_atomic(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Only a byte-exact retained release becomes current on retained and root volumes."""
+    """Only a byte-exact retained release becomes current on retained and root volumes.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     retained_release_root_path = tmp_path / "retained/release"
     release_root_path = retained_release_root_path / "releases/20260728120000000000"
@@ -4926,7 +5541,13 @@ def test_host_product_release_rejects_noncurrent_source_manifest(
     tmp_path: Path,
     source_manifest_version: int | None,
 ) -> None:
-    """A retained Product release has exactly one accepted source-manifest version."""
+    """A retained Product release has exactly one accepted source-manifest version.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+        source_manifest_version: Source manifest version.
+    """
 
     retained_release_root_path = tmp_path / "retained/release"
     release_root_path = retained_release_root_path / "releases/20260730120000000000"
@@ -4955,7 +5576,13 @@ def test_host_product_release_rejects_noncurrent_release_manifest(
     tmp_path: Path,
     release_manifest_version: int | None,
 ) -> None:
-    """A retained Product release has exactly one accepted release-manifest version."""
+    """A retained Product release has exactly one accepted release-manifest version.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+        release_manifest_version: Release manifest version.
+    """
 
     retained_release_root_path = tmp_path / "retained/release"
     release_root_path = retained_release_root_path / "releases/20260730120000000000"
@@ -5000,7 +5627,14 @@ def test_host_product_release_rejects_noncurrent_manifest_shape(
     manifest_name: str,
     field_name: str,
 ) -> None:
-    """A current version number cannot hide another compatibility shape."""
+    """A current version number cannot hide another compatibility shape.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+        manifest_name: Manifest name.
+        field_name: Field name.
+    """
 
     release_root_path = tmp_path / "retained/release/releases/20260730120000000000"
     _retained_product_release_prepare(
@@ -5032,7 +5666,12 @@ def test_host_product_release_requires_exact_current_timestamp_identity(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """The removed millisecond release-name shape is not accepted."""
+    """The removed millisecond release-name shape is not accepted.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     retained_release_root_path = tmp_path / "retained/release"
     release_root_path = retained_release_root_path / "releases/20260730120000000"
@@ -5058,7 +5697,12 @@ def test_host_product_release_requires_byte_exact_host_artifact_manifest(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A selector-compatible but byte-different host cannot recover the release."""
+    """A selector-compatible but byte-different host cannot recover the release.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     retained_release_root_path = tmp_path / "retained/release"
     release_root_path = retained_release_root_path / "releases/20260730120000000000"
@@ -5088,7 +5732,12 @@ def test_host_product_release_reset_removes_only_exact_product_graph(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Host reset removes releases and tool runtime without touching sibling state."""
+    """Host reset removes releases and tool runtime without touching sibling state.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     retained_root_path = tmp_path / "retained"
     retained_release_root_path = retained_root_path / "release"
@@ -5156,7 +5805,12 @@ def test_host_product_release_reset_rejects_unowned_retained_entry(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """An unexpected retained release entry blocks every destructive mutation."""
+    """An unexpected retained release entry blocks every destructive mutation.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     retained_root_path = tmp_path / "retained"
     retained_release_root_path = retained_root_path / "release"
@@ -5212,7 +5866,12 @@ def test_replacement_recovery_finish_resumes_exact_interrupted_cutover(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Resume installs control before disabling the guard and recovering Product."""
+    """Resume installs control before disabling the guard and recovering Product.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     event_list: list[object] = []
@@ -5275,7 +5934,12 @@ def test_replacement_recovery_finish_accepts_absent_product_release(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A clean pre-production host replacement releases its guard without recovery."""
+    """A clean pre-production host replacement releases its guard without recovery.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     event_list: list[object] = []
@@ -5320,7 +5984,13 @@ def test_steady_state_start_resumes_only_proven_pending_product_recovery(
     tmp_path: Path,
     is_pending: bool,
 ) -> None:
-    """An interrupted post-guard recovery remains resumable on the next apply."""
+    """An interrupted post-guard recovery remains resumable on the next apply.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+        is_pending: Whether pending.
+    """
 
     environment = _environment_get(tmp_path)
     event_list: list[object] = []
@@ -5369,7 +6039,13 @@ def test_failed_replacement_bootstrap_is_replaced_only_before_retained_mount(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Terminal cloud-init failure is replaceable only before stateful startup."""
+    """Terminal cloud-init failure is replaceable only before stateful startup.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+        capsys: Capsys.
+    """
 
     environment = _environment_get(tmp_path)
     shell_command_list_list: list[list[str]] = []
@@ -5385,6 +6061,16 @@ def test_failed_replacement_bootstrap_is_replaced_only_before_retained_mount(
         *,
         timeout_seconds: int,
     ) -> dict[str, object]:
+        """Return the failed-bootstrap host diagnostic for replacement selection.
+
+        Args:
+            shell_command_list: Ordered shell command values.
+            timeout_seconds: Timeout in seconds.
+
+        Returns:
+            Emulated SSM shell diagnostic payload.
+        """
+
         shell_command_list_list.append(shell_command_list)
         assert timeout_seconds == development_compute.HOST_STATUS_COMMAND_TIMEOUT_SECONDS
         return {
@@ -5424,7 +6110,12 @@ def test_host_product_release_restore_rejects_changed_tracked_source(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A snapshot cannot execute Product recovery after one retained tracked byte changes."""
+    """A snapshot cannot execute Product recovery after one retained tracked byte changes.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     retained_release_root_path = tmp_path / "retained/release"
     release_root_path = retained_release_root_path / "releases/20260728120000000000"
@@ -5489,7 +6180,13 @@ def test_host_product_release_restore_rejects_current_unmanifested_source_file(
     tmp_path: Path,
     relative_path_text: str,
 ) -> None:
-    """Current releases reject every added source byte, including cache-shaped bytes."""
+    """Current releases reject every added source byte, including cache-shaped bytes.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+        relative_path_text: Relative path text.
+    """
 
     retained_release_root_path = tmp_path / "retained/release"
     release_root_path = retained_release_root_path / "releases/20260730120000000000"
@@ -5546,7 +6243,13 @@ def test_host_product_recovery_marker_is_durable_and_identity_bound(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """The savepoint survives guard release and clears only after restored acceptance."""
+    """The savepoint survives guard release and clears only after restored acceptance.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+        capsys: Capsys.
+    """
 
     retained_release_root_path = tmp_path / "retained/release"
     release_root_path = retained_release_root_path / "releases/20260730120000000000"
@@ -5606,6 +6309,16 @@ def test_host_product_recovery_marker_is_durable_and_identity_bound(
         command_list: list[str],
         **kwargs: object,
     ) -> subprocess.CompletedProcess[str]:
+        """Drive one credential-refresh loop until the deterministic stop boundary.
+
+        Args:
+            command_list: Ordered command values.
+            **kwargs: Provider keyword arguments.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
+
         del kwargs
         if command_list[:1] == ["python3.14"]:
             pytest.fail("Pending Product recovery must remain host activity")
@@ -5627,7 +6340,12 @@ def test_host_controller_cannot_write_control_release_bytecode(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Host installation keeps setup and persistent execution outside exact source."""
+    """Host installation keeps setup and persistent execution outside exact source.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path / "control/current/sources/workflow-infrastructure")
     written_text_by_path_map: dict[str, str] = {}
@@ -5640,6 +6358,17 @@ def test_host_controller_cannot_write_control_release_bytecode(
         *,
         encoding: str,
     ) -> int:
+        """Persist text.
+
+        Args:
+            path: Exact filesystem path.
+            text: Text.
+            encoding: Encoding.
+
+        Returns:
+            Number of characters persisted.
+        """
+
         assert encoding == "utf-8"
         written_text_by_path_map[str(path)] = text
         return len(text)
@@ -5651,6 +6380,15 @@ def test_host_controller_cannot_write_control_release_bytecode(
         parents: bool = False,
         exist_ok: bool = False,
     ) -> None:
+        """Record private-directory creation without touching the host filesystem.
+
+        Args:
+            path: Exact filesystem path.
+            mode: Mode.
+            parents: Parents.
+            exist_ok: Exist ok.
+        """
+
         del parents, exist_ok
         directory_mode_by_path_map[str(path)] = mode
 
@@ -5695,7 +6433,12 @@ def test_reset_deploy_is_one_candidate_cutover_before_activation_and_host_servic
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """One candidate resets disposable state, deploys, activates, and installs services."""
+    """One candidate resets disposable state, deploys, activates, and installs services.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path / "workflow-infrastructure")
     remote_command_list_list: list[list[str]] = []
@@ -5739,6 +6482,15 @@ def test_reset_deploy_is_one_candidate_cutover_before_activation_and_host_servic
     )
 
     def source_archive_publish(**kwargs: object) -> dict[str, object]:
+        """Record and describe one immutable source archive for reset deployment.
+
+        Args:
+            **kwargs: Provider keyword arguments.
+
+        Returns:
+            Scripted immutable source-archive descriptor.
+        """
+
         remote_release_root_path = kwargs["remote_release_root_path"]
         assert isinstance(remote_release_root_path, Path)
         remote_release_root_path_list.append(remote_release_root_path)
@@ -5762,7 +6514,7 @@ def test_reset_deploy_is_one_candidate_cutover_before_activation_and_host_servic
         """Return one exact resolved moving-source entry.
 
         Args:
-            kwargs: Moving-source publication arguments.
+            **kwargs: Moving-source publication arguments.
 
         Returns:
             Resolved moving-source manifest.
@@ -5797,6 +6549,12 @@ def test_reset_deploy_is_one_candidate_cutover_before_activation_and_host_servic
     )
 
     def remote_text_write(**kwargs: object) -> None:
+        """Persist remote text.
+
+        Args:
+            **kwargs: Provider keyword arguments.
+        """
+
         remote_path = kwargs["remote_path"]
         assert isinstance(remote_path, Path)
         if remote_path.name == "source-manifest.json":
@@ -5819,6 +6577,17 @@ def test_reset_deploy_is_one_candidate_cutover_before_activation_and_host_servic
         ssh_control_path: Path,
         should_capture: bool = True,
     ) -> subprocess.CompletedProcess[str]:
+        """Emulate the host-side release command used by reset deployment.
+
+        Args:
+            remote_command_list: Ordered remote command values.
+            ssh_control_path: Exact filesystem path for ssh control.
+            should_capture: Whether stdout and stderr should be captured.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
+
         del ssh_control_path, should_capture
         remote_command_list_list.append(remote_command_list)
         return subprocess.CompletedProcess(remote_command_list, 0, "", "")
@@ -5934,7 +6703,11 @@ def test_reset_deploy_is_one_candidate_cutover_before_activation_and_host_servic
 def test_deploy_rejects_product_identity_inputs_outside_destructive_reset(
     tmp_path: Path,
 ) -> None:
-    """Destructive identity assertions cannot silently change an ordinary deploy."""
+    """Destructive identity assertions cannot silently change an ordinary deploy.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
 
@@ -5955,7 +6728,13 @@ def test_ssm_shell_run_waits_for_real_operation_and_registration_delay(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Run Command polling must outlive the AWS CLI default waiter."""
+    """Run Command polling must outlive the AWS CLI default waiter.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+        capsys: Capsys.
+    """
 
     environment = _environment_get(tmp_path)
     response_list = [
@@ -6010,7 +6789,12 @@ def test_ssm_shell_run_timeout_preserves_remote_command_for_diagnosis(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A local wait timeout must report but not cancel the remote operation."""
+    """A local wait timeout must report but not cancel the remote operation.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     monkeypatch.setattr(development_transport, "SSM_COMMAND_TIMEOUT_SECONDS", 10)
@@ -6040,7 +6824,12 @@ def test_host_prepare_validates_preinstalled_helm_against_launch_manifest(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Host preparation never downloads and accepts only launch-bound Helm."""
+    """Host preparation never downloads and accepts only launch-bound Helm.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     helm_version = "v4.2.3"
     helm_path = tmp_path / "bin/helm"
@@ -6124,6 +6913,18 @@ def test_host_prepare_validates_preinstalled_helm_against_launch_manifest(
             input_text: str | None = None,
             should_capture: bool = True,
         ) -> subprocess.CompletedProcess[str]:
+            """Run the helm runner operation.
+
+            Args:
+                command_list: Ordered command values.
+                check: Whether a nonzero command exit raises an error.
+                input_text: Input text.
+                should_capture: Whether stdout and stderr should be captured.
+
+            Returns:
+                Completed text-mode subprocess result.
+            """
+
             del check, input_text, should_capture
             assert command_list[0] == str(helm_path)
             return subprocess.CompletedProcess(
@@ -6149,7 +6950,12 @@ def test_host_prepare_rejects_product_release_built_for_another_host_input(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Product release provenance must equal the launch input installed on its host."""
+    """Product release provenance must equal the launch input installed on its host.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     host_release_root_path = tmp_path / "retained/release/releases"
     project_root_path = host_release_root_path / "20260730120000000000" / "sources" / "workflow-infrastructure"
@@ -6187,7 +6993,12 @@ def test_host_controller_renews_beyond_two_hours_then_stops_after_proven_idle(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Useful access has no hard deadline; a fresh 30-minute idle proof is still required."""
+    """Useful access has no hard deadline; a fresh 30-minute idle proof is still required.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     clock = ClockFixed()
     environment = DevelopmentEnvironment(
@@ -6207,6 +7018,18 @@ def test_host_controller_renews_beyond_two_hours_then_stops_after_proven_idle(
         input_text: str | None = None,
         should_capture: bool = True,
     ) -> subprocess.CompletedProcess[str]:
+        """Drive one stop-lease renewal loop against the deterministic clock.
+
+        Args:
+            argument_list: Exact command arguments.
+            check: Whether a nonzero command exit raises an error.
+            input_text: Input text.
+            should_capture: Whether stdout and stderr should be captured.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
+
         del check, input_text, should_capture
         command_list_list.append(argument_list)
         return subprocess.CompletedProcess(argument_list, 0, "", "")
@@ -6257,7 +7080,12 @@ def test_host_controller_discards_stale_idle_proof_on_restart(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A controller restart begins a new uninterrupted idle interval."""
+    """A controller restart begins a new uninterrupted idle interval.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     clock = ClockFixed()
     environment = DevelopmentEnvironment(
@@ -6311,7 +7139,12 @@ def test_host_controller_treats_unknown_session_state_as_busy(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """An SSM API failure must renew the lease and restart the idle proof."""
+    """An SSM API failure must renew the lease and restart the idle proof.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     clock = ClockFixed()
     environment = DevelopmentEnvironment(
@@ -6324,6 +7157,15 @@ def test_host_controller_treats_unknown_session_state_as_busy(
     shutdown_time_list: list[datetime] = []
 
     def session_count_get(instance_id: str) -> int:
+        """Fail the first session probe and report idle on the retry.
+
+        Args:
+            instance_id: Exact instance identity.
+
+        Returns:
+            Zero after the transient observation failure.
+        """
+
         nonlocal session_probe_count
         del instance_id
         session_probe_count += 1
@@ -6374,7 +7216,12 @@ def test_lifecycle_acceptance_uses_short_real_lease_then_restores_production(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Short acceptance must prove renewal and fail-safe stop without changing policy."""
+    """Short acceptance must prove renewal and fail-safe stop without changing policy.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     clock = ClockFixed()
     environment = DevelopmentEnvironment(
@@ -6418,12 +7265,24 @@ def test_lifecycle_acceptance_uses_short_real_lease_then_restores_production(
     )
 
     def stop_lease_upsert(*, lease_duration: timedelta = development_lifecycle.LEASE_DURATION) -> None:
+        """Record each short acceptance lease and its simulated timestamp.
+
+        Args:
+            lease_duration: Lease duration.
+        """
+
         lease_duration_list.append(lease_duration)
         event_list.append(("lease", lease_duration, clock.t_now))
 
     monkeypatch.setattr(environment._stop_lease, "upsert", stop_lease_upsert)
 
     def stop_lease_payload_get() -> dict[str, object]:
+        """Expose the current simulated lease until the instance stops.
+
+        Returns:
+            Current simulated scheduler state.
+        """
+
         if clock.t_now >= datetime(2026, 7, 28, 12, 7, 30, tzinfo=UTC):
             return {"state": "absent"}
         return {
@@ -6434,6 +7293,15 @@ def test_lifecycle_acceptance_uses_short_real_lease_then_restores_production(
     monkeypatch.setattr(environment._stop_lease, "payload_get", stop_lease_payload_get)
 
     def instance_state_get(instance_id: str) -> str:
+        """Expose running state until the simulated stop deadline passes.
+
+        Args:
+            instance_id: Exact instance identity.
+
+        Returns:
+            Current simulated EC2 instance state.
+        """
+
         assert instance_id == "i-0123456789abcdef0"
         if clock.t_now >= datetime(2026, 7, 28, 12, 7, 30, tzinfo=UTC):
             return "stopped"
@@ -6465,7 +7333,12 @@ def test_lifecycle_acceptance_failure_restores_controller_and_production_lease(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A failed acceptance probe must not leave the fail-safe controller disabled."""
+    """A failed acceptance probe must not leave the fail-safe controller disabled.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     event_list: list[object] = []
@@ -6493,6 +7366,12 @@ def test_lifecycle_acceptance_failure_restores_controller_and_production_lease(
     )
 
     def stop_lease_upsert(*, lease_duration: timedelta = development_lifecycle.LEASE_DURATION) -> None:
+        """Inject the first scheduler failure while recording lease restoration.
+
+        Args:
+            lease_duration: Lease duration.
+        """
+
         nonlocal lease_call_count
         lease_call_count += 1
         event_list.append(("lease", lease_duration))
@@ -6523,7 +7402,12 @@ def test_start_never_calls_ec2_when_initial_stop_lease_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """The external failure lease is a precondition, not best-effort cleanup."""
+    """The external failure lease is a precondition, not best-effort cleanup.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     environment = _environment_get(tmp_path)
     monkeypatch.setattr(environment._account, "local_operator_context_validate", lambda: None)

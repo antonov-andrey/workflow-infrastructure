@@ -18,11 +18,22 @@ class DevelopmentCurrentProductTool:
         identity: RetainedProductReleaseHostIdentity,
         python_bytecode_environment_assignment: str,
     ) -> None:
+        """Initialize the development current product tool dependencies.
+
+        Args:
+            identity: Identity.
+            python_bytecode_environment_assignment: Python bytecode environment assignment.
+        """
+
         self._identity = identity
         self._python_bytecode_environment_assignment = python_bytecode_environment_assignment
 
     def path_get(self) -> Path:
-        """Return the current exact Product management-tool path."""
+        """Return the current exact Product management-tool path.
+
+        Returns:
+            The current exact Product management-tool path.
+        """
 
         return (
             self._identity.host_current_source_path
@@ -33,7 +44,15 @@ class DevelopmentCurrentProductTool:
         )
 
     def command_list_get(self, command: str, *argument_list: str) -> list[str]:
-        """Return one environment-bound command for the current Product tool."""
+        """Return one environment-bound command for the current Product tool.
+
+        Args:
+            command: Command.
+            *argument_list: Exact command arguments.
+
+        Returns:
+            One environment-bound command for the current Product tool.
+        """
 
         return [
             "env",

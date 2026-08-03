@@ -11,7 +11,15 @@ from workflow_infrastructure.development_environment.error import (
 
 
 def json_object_get(text: str, *, label: str) -> dict[str, object]:
-    """Decode one required AWS CLI JSON object."""
+    """Decode one required AWS CLI JSON object.
+
+    Args:
+        text: Text.
+        label: Diagnostic owner label.
+
+    Returns:
+        Decoded AWS response object.
+    """
 
     try:
         payload = json.loads(text)
@@ -23,7 +31,14 @@ def json_object_get(text: str, *, label: str) -> dict[str, object]:
 
 
 def tag_map_get(payload: object) -> dict[str, str]:
-    """Decode one duplicate-free AWS tag list."""
+    """Decode one duplicate-free AWS tag list.
+
+    Args:
+        payload: Structured operation payload.
+
+    Returns:
+        Tag values keyed by their unique tag keys.
+    """
 
     if not isinstance(payload, list):
         raise DevelopmentEnvironmentError("Task resource tags are unavailable")

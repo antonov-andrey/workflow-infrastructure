@@ -30,7 +30,14 @@ class AwsCliError:
 
 
 def aws_cli_error_get(result: subprocess.CompletedProcess[str]) -> AwsCliError | None:
-    """Decode exactly one standard AWS CLI error line, or fail closed."""
+    """Decode exactly one standard AWS CLI error line, or fail closed.
+
+    Args:
+        result: Result.
+
+    Returns:
+        Resulting AWS CLI error.
+    """
 
     returncode = getattr(result, "returncode", None)
     stderr = getattr(result, "stderr", None)
@@ -49,7 +56,16 @@ def aws_cli_error_matches(
     code_set: frozenset[str],
     operation: str,
 ) -> bool:
-    """Return whether a failed command proves one exact service error identity."""
+    """Return whether a failed command proves one exact service error identity.
+
+    Args:
+        result: Result.
+        code_set: Unique code values.
+        operation: Lifecycle operation name.
+
+    Returns:
+        Whether a failed command proves one exact service error identity.
+    """
 
     error = aws_cli_error_get(result)
     return error is not None and error.operation == operation and error.code in code_set
@@ -66,7 +82,17 @@ class CommandRunnerProtocol(Protocol):
         input_text: str | None = None,
         should_capture: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        """Run one command."""
+        """Run one command.
+
+        Args:
+            command_list: Ordered command values.
+            check: Whether a nonzero command exit raises an error.
+            input_text: Input text.
+            should_capture: Whether stdout and stderr should be captured.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
 
 
 class DevelopmentAwsClient:
@@ -80,7 +106,14 @@ class DevelopmentAwsClient:
         region: str,
         runner: CommandRunnerProtocol,
     ) -> None:
-        """Bind the client to one explicit account access path."""
+        """Bind the client to one explicit account access path.
+
+        Args:
+            is_host: Whether host.
+            profile: Profile.
+            region: Region.
+            runner: Explicit command execution boundary.
+        """
 
         if not profile or not region:
             raise DevelopmentEnvironmentError("AWS profile and region are required")
@@ -95,7 +128,15 @@ class DevelopmentAwsClient:
         *,
         check: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        """Run one AWS CLI operation through the configured identity boundary."""
+        """Run one AWS CLI operation through the configured identity boundary.
+
+        Args:
+            aws_argument_list: Ordered AWS argument values.
+            check: Whether a nonzero command exit raises an error.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
 
         command_list = ["aws", *aws_argument_list, "--region", self._region]
         if not self._is_host:
@@ -103,7 +144,14 @@ class DevelopmentAwsClient:
         return self._runner.run(command_list, check=check)
 
     def json_get(self, aws_argument_list: Sequence[str]) -> dict[str, object]:
-        """Run one AWS CLI operation and require one object JSON response."""
+        """Run one AWS CLI operation and require one object JSON response.
+
+        Args:
+            aws_argument_list: Ordered AWS argument values.
+
+        Returns:
+            Decoded AWS response object.
+        """
 
         result = self.run([*aws_argument_list, "--output", "json"])
         try:

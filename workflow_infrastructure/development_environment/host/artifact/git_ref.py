@@ -13,22 +13,41 @@ from workflow_infrastructure.development_environment.host.artifact.model import 
 
 
 class CommandResultProtocol(Protocol):
+    """Declare the command result interface."""
+
     returncode: int
     stdout: str
 
 
 class CommandRunnerProtocol(Protocol):
+    """Declare the command runner interface."""
+
     def run(
         self,
         command_list: Sequence[str],
         *,
         check: bool = True,
     ) -> CommandResultProtocol:
-        """Run one local command."""
+        """Run one local command.
+
+        Args:
+            command_list: Ordered command values.
+            check: Whether a nonzero command exit raises an error.
+
+        Returns:
+            Resulting command result protocol.
+        """
 
 
 def _tag_commit_sha_by_ref_map_get(output: str) -> dict[str, str]:
-    """Map each tag to its peeled commit identity when present."""
+    """Map each tag to its peeled commit identity when present.
+
+    Args:
+        output: Output.
+
+    Returns:
+        Peeled commit SHA keyed by tag ref.
+    """
 
     sha_by_ref: dict[str, str] = {}
     for line in output.splitlines():
@@ -48,6 +67,12 @@ class GitRefResolver:
     """Own tag selection, commit-object proof, and moving-ref recheck."""
 
     def __init__(self, *, runner: CommandRunnerProtocol) -> None:
+        """Initialize the Git ref resolver dependencies.
+
+        Args:
+            runner: Explicit command execution boundary.
+        """
+
         self._runner = runner
 
     def latest_tag_resolve(
@@ -57,7 +82,16 @@ class GitRefResolver:
         selector: str,
         tag_pattern: re.Pattern[str],
     ) -> tuple[str, str, str]:
-        """Resolve the numerically latest stable tag accepted by one selector."""
+        """Resolve the numerically latest stable tag accepted by one selector.
+
+        Args:
+            repository_url: Repository URL.
+            selector: Selector.
+            tag_pattern: Tag pattern.
+
+        Returns:
+            The numerically latest stable tag accepted by one selector.
+        """
 
         result = self._runner.run(["git", "ls-remote", "--tags", repository_url])
         commit_sha_by_ref = _tag_commit_sha_by_ref_map_get(result.stdout)
@@ -79,7 +113,13 @@ class GitRefResolver:
         return version, resolved_ref, commit_sha
 
     def commit_validate(self, *, repository_url: str, resolved_ref: str, expected_commit_sha: str) -> None:
-        """Prove an exact shallow fetch peels to the recorded commit object."""
+        """Prove an exact shallow fetch peels to the recorded commit object.
+
+        Args:
+            repository_url: Repository URL.
+            resolved_ref: Resolved ref.
+            expected_commit_sha: Expected commit sha.
+        """
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             self._runner.run(["git", "init", "--quiet", temporary_directory])
@@ -111,7 +151,13 @@ class GitRefResolver:
             raise HostArtifactResolutionError(f"artifact ref does not resolve to expected commit: {resolved_ref}")
 
     def unchanged_validate(self, *, repository_url: str, resolved_ref: str, expected_commit_sha: str) -> None:
-        """Fail if the selected moving ref changed during resolution."""
+        """Fail if the selected moving ref changed during resolution.
+
+        Args:
+            repository_url: Repository URL.
+            resolved_ref: Resolved ref.
+            expected_commit_sha: Expected commit sha.
+        """
 
         result = self._runner.run(
             [

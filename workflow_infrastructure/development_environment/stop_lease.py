@@ -20,10 +20,18 @@ class ClockProtocol(Protocol):
     """Controlled UTC and wait boundary."""
 
     def now(self) -> datetime:
-        """Return current time."""
+        """Return current time.
+
+        Returns:
+            The current time.
+        """
 
     def sleep(self, delay_seconds: float) -> None:
-        """Wait for a bounded duration."""
+        """Wait for a bounded duration.
+
+        Args:
+            delay_seconds: Delay in seconds.
+        """
 
 
 class IdentityProtocol(Protocol):
@@ -38,7 +46,14 @@ class StackReaderProtocol(Protocol):
     """CloudFormation output reader used by lease renewal."""
 
     def output_by_name_map_get(self, stack_name: str) -> dict[str, str]:
-        """Return stack outputs."""
+        """Return stack outputs.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            The stack outputs.
+        """
 
 
 class DevelopmentStopLeaseManager:
@@ -55,7 +70,17 @@ class DevelopmentStopLeaseManager:
         poll_interval_seconds: int,
         stack: StackReaderProtocol,
     ) -> None:
-        """Bind one lease manager to one environment."""
+        """Bind one lease manager to one environment.
+
+        Args:
+            aws: Aws.
+            clock: Clock.
+            identity: Identity.
+            instance_state_get: Instance state get.
+            lease_duration: Lease duration.
+            poll_interval_seconds: Poll interval in seconds.
+            stack: Stack.
+        """
 
         self._aws = aws
         self._clock = clock
@@ -87,7 +112,11 @@ class DevelopmentStopLeaseManager:
             raise DevelopmentEnvironmentError(f"Stop lease deletion failed: {result.stderr.strip()}")
 
     def payload_get(self) -> dict[str, object]:
-        """Return the stable content-free lease status."""
+        """Return the stable content-free lease status.
+
+        Returns:
+            The stable content-free lease status.
+        """
 
         result = self._aws.run(
             [
@@ -127,7 +156,11 @@ class DevelopmentStopLeaseManager:
         }
 
     def upsert(self, *, lease_duration: timedelta | None = None) -> None:
-        """Create or renew a lease that resolves the current instance at expiry."""
+        """Create or renew a lease that resolves the current instance at expiry.
+
+        Args:
+            lease_duration: Lease duration.
+        """
 
         effective_lease_duration = lease_duration or self._lease_duration
         if effective_lease_duration <= timedelta():
@@ -186,7 +219,11 @@ class DevelopmentStopLeaseManager:
             raise DevelopmentEnvironmentError("Stop lease was not proven enabled")
 
     def wait_until(self, t_deadline: datetime) -> None:
-        """Wait until one UTC deadline without changing operational policy."""
+        """Wait until one UTC deadline without changing operational policy.
+
+        Args:
+            t_deadline: T deadline.
+        """
 
         while self._clock.now() < t_deadline:
             remaining_seconds = (t_deadline - self._clock.now()).total_seconds()
@@ -198,7 +235,12 @@ class DevelopmentStopLeaseManager:
         instance_id: str,
         t_deadline: datetime,
     ) -> None:
-        """Wait for the lease target to stop the exact instance."""
+        """Wait for the lease target to stop the exact instance.
+
+        Args:
+            instance_id: Exact instance identity.
+            t_deadline: T deadline.
+        """
 
         while self._clock.now() < t_deadline:
             state = self._instance_state_get(instance_id)
@@ -210,7 +252,11 @@ class DevelopmentStopLeaseManager:
         raise DevelopmentEnvironmentError("Lifecycle acceptance lease did not stop the instance " "before its deadline")
 
     def absence_wait(self, *, t_deadline: datetime) -> None:
-        """Wait for Scheduler to auto-delete a completed acceptance lease."""
+        """Wait for Scheduler to auto-delete a completed acceptance lease.
+
+        Args:
+            t_deadline: T deadline.
+        """
 
         while self._clock.now() < t_deadline:
             if self.payload_get().get("state") == "absent":

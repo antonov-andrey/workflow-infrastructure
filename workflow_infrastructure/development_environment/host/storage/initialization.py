@@ -18,7 +18,14 @@ class AwsClientProtocol(Protocol):
     """AWS read surface required for exact volume validation."""
 
     def json_get(self, argument_list: Sequence[str]) -> dict[str, object]:
-        """Run one AWS CLI operation and decode its object response."""
+        """Run one AWS CLI operation and decode its object response.
+
+        Args:
+            argument_list: Exact command arguments.
+
+        Returns:
+            Decoded AWS response object.
+        """
 
 
 class EnvironmentIdentityProtocol(Protocol):
@@ -41,16 +48,42 @@ class StackManagerProtocol(Protocol):
         must_preserve_resource: bool,
         protected_identity_logical_id_set: Collection[str] = (),
     ) -> None:
-        """Apply one exact stack transition."""
+        """Apply one exact stack transition.
+
+        Args:
+            stack_name: Stack name.
+            template_path: Exact filesystem path for template.
+            parameter_by_name_map: Parameter by name mapping.
+            must_preserve_resource: Must preserve resource.
+            protected_identity_logical_id_set: Unique protected identity logical identity values.
+        """
 
     def drift_validate(self, stack_name: str) -> None:
-        """Prove one stack is in sync."""
+        """Prove one stack is in sync.
+
+        Args:
+            stack_name: Stack name.
+        """
 
     def output_by_name_map_get(self, stack_name: str) -> dict[str, str]:
-        """Return exact stack outputs."""
+        """Return exact stack outputs.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            The exact stack outputs.
+        """
 
     def parameter_by_name_map_get(self, stack_name: str) -> dict[str, str]:
-        """Return exact stack parameters."""
+        """Return exact stack parameters.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            The exact stack parameters.
+        """
 
 
 class DevelopmentHostStorageInitialization:
@@ -65,25 +98,31 @@ class DevelopmentHostStorageInitialization:
         identity: EnvironmentIdentityProtocol,
         stack: StackManagerProtocol,
     ) -> None:
-        """Bind authorization to one exact CloudFormation-owned volume."""
+        """Bind authorization to one exact CloudFormation-owned volume.
+
+        Args:
+            aws: Aws.
+            compute_stable_identity_logical_id_set: Unique compute stable identity logical identity values.
+            compute_template_path: Exact filesystem path for compute template.
+            identity: Identity.
+            stack: Stack.
+        """
 
         self._aws = aws
-        self._compute_stable_identity_logical_id_set = frozenset(
-            compute_stable_identity_logical_id_set
-        )
+        self._compute_stable_identity_logical_id_set = frozenset(compute_stable_identity_logical_id_set)
         self._compute_template_path = compute_template_path
         self._identity = identity
         self._stack = stack
 
     def initialization_allowed_get(self) -> bool:
-        """Return whether the exact new base volume remains pending."""
+        """Return whether the exact new base volume remains pending.
 
-        parameter_by_name = self._stack.parameter_by_name_map_get(
-            self._identity.compute_stack_name
-        )
-        output_by_name = self._stack.output_by_name_map_get(
-            self._identity.compute_stack_name
-        )
+        Returns:
+            Whether the exact new base volume remains pending.
+        """
+
+        parameter_by_name = self._stack.parameter_by_name_map_get(self._identity.compute_stack_name)
+        output_by_name = self._stack.output_by_name_map_get(self._identity.compute_stack_name)
         state = parameter_by_name.get("RetainedVolumeFilesystemState")
         volume_id = output_by_name.get("RetainedVolumeId")
         instance_id = output_by_name.get("InstanceId")
@@ -99,9 +138,7 @@ class DevelopmentHostStorageInitialization:
             or slot not in {"a", "b", "base"}
             or not isinstance(source_snapshot_id, str)
         ):
-            raise DevelopmentEnvironmentError(
-                "Retained-volume filesystem authorization state is malformed"
-            )
+            raise DevelopmentEnvironmentError("Retained-volume filesystem authorization state is malformed")
         volume_payload = self._volume_payload_get(volume_id)
         tag_by_name = _tag_by_name_map_get(volume_payload)
         expected_tag_by_name = {
@@ -125,10 +162,7 @@ class DevelopmentHostStorageInitialization:
         if (
             volume_payload.get("Encrypted") is not True
             or volume_payload.get("State") != "in-use"
-            or any(
-                tag_by_name.get(name) != value
-                for name, value in expected_tag_by_name.items()
-            )
+            or any(tag_by_name.get(name) != value for name, value in expected_tag_by_name.items())
             or (not self._identity.git_worktree and "git-worktree" in tag_by_name)
             or not isinstance(attachment_list, list)
             or len(attachment_list) != 1
@@ -138,20 +172,12 @@ class DevelopmentHostStorageInitialization:
             or attachment.get("State") != "attached"
             or attachment.get("VolumeId") != volume_id
         ):
-            raise DevelopmentEnvironmentError(
-                "Retained volume does not match its filesystem authorization owner"
-            )
+            raise DevelopmentEnvironmentError("Retained volume does not match its filesystem authorization owner")
         actual_snapshot_id = volume_payload.get("SnapshotId")
         if actual_snapshot_id != source_snapshot_id:
-            raise DevelopmentEnvironmentError(
-                "Retained volume differs from its declared snapshot source"
-            )
-        if state == _PENDING_STATE and (
-            slot != "base" or source_snapshot_id or actual_snapshot_id
-        ):
-            raise DevelopmentEnvironmentError(
-                "Only a new base retained volume may remain pending initialization"
-            )
+            raise DevelopmentEnvironmentError("Retained volume differs from its declared snapshot source")
+        if state == _PENDING_STATE and (slot != "base" or source_snapshot_id or actual_snapshot_id):
+            raise DevelopmentEnvironmentError("Only a new base retained volume may remain pending initialization")
         return state == _PENDING_STATE
 
     def complete(self) -> None:
@@ -159,9 +185,7 @@ class DevelopmentHostStorageInitialization:
 
         if not self.initialization_allowed_get():
             return
-        volume_id = self._stack.output_by_name_map_get(
-            self._identity.compute_stack_name
-        )["RetainedVolumeId"]
+        volume_id = self._stack.output_by_name_map_get(self._identity.compute_stack_name)["RetainedVolumeId"]
         self._stack.apply(
             stack_name=self._identity.compute_stack_name,
             template_path=self._compute_template_path,
@@ -169,24 +193,27 @@ class DevelopmentHostStorageInitialization:
                 "RetainedVolumeFilesystemState": _COMPLETE_STATE,
             },
             must_preserve_resource=False,
-            protected_identity_logical_id_set=(
-                self._compute_stable_identity_logical_id_set
-            ),
+            protected_identity_logical_id_set=(self._compute_stable_identity_logical_id_set),
         )
         self._stack.drift_validate(self._identity.compute_stack_name)
-        current_volume_id = self._stack.output_by_name_map_get(
-            self._identity.compute_stack_name
-        ).get("RetainedVolumeId")
+        current_volume_id = self._stack.output_by_name_map_get(self._identity.compute_stack_name).get(
+            "RetainedVolumeId"
+        )
         if current_volume_id != volume_id or self.initialization_allowed_get():
-            raise DevelopmentEnvironmentError(
-                "Retained-volume filesystem completion was not proven"
-            )
+            raise DevelopmentEnvironmentError("Retained-volume filesystem completion was not proven")
         print(f"OK: retained volume {volume_id} filesystem state is complete")
 
     def _volume_payload_get(self, volume_id: str) -> Mapping[str, object]:
-        payload = self._aws.json_get(
-            ["ec2", "describe-volumes", "--volume-ids", volume_id]
-        )
+        """Read and validate the single AWS volume matching one exact identity.
+
+        Args:
+            volume_id: Exact volume identity.
+
+        Returns:
+            Validated AWS volume response item.
+        """
+
+        payload = self._aws.json_get(["ec2", "describe-volumes", "--volume-ids", volume_id])
         volume_list = payload.get("Volumes")
         if (
             not isinstance(volume_list, list)
@@ -194,13 +221,20 @@ class DevelopmentHostStorageInitialization:
             or not isinstance(volume_list[0], Mapping)
             or volume_list[0].get("VolumeId") != volume_id
         ):
-            raise DevelopmentEnvironmentError(
-                "Retained-volume filesystem authorization target is unavailable"
-            )
+            raise DevelopmentEnvironmentError("Retained-volume filesystem authorization target is unavailable")
         return volume_list[0]
 
 
 def _tag_by_name_map_get(payload: Mapping[str, object]) -> dict[str, str]:
+    """Decode one AWS tag collection into its canonical mapping.
+
+    Args:
+        payload: Structured operation payload.
+
+    Returns:
+        Tag values keyed by name.
+    """
+
     tag_list = payload.get("Tags")
     if not isinstance(tag_list, list):
         raise DevelopmentEnvironmentError("Retained volume tags are malformed")

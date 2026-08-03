@@ -22,33 +22,72 @@ from workflow_infrastructure.development_environment.error import (
 
 
 class InventoryResolverProtocol(Protocol):
+    """Declare the inventory resolver interface."""
+
     def resolve(self, request: CleanupRequest) -> CleanupInventory:
-        """Resolve one exact immutable inventory."""
+        """Resolve one exact immutable inventory.
+
+        Args:
+            request: Validated operation request.
+
+        Returns:
+            One exact immutable inventory.
+        """
 
 
 class InventoryCleanupProtocol(Protocol):
+    """Declare the inventory cleanup interface."""
+
     def delete(self, inventory: CleanupInventory) -> None:
-        """Delete the collaborator's resources."""
+        """Delete the collaborator's resources.
+
+        Args:
+            inventory: Inventory.
+        """
 
 
 class KmsCleanupProtocol(Protocol):
+    """Declare the KMS cleanup interface."""
+
     def retire(self, inventory: CleanupInventory) -> None:
-        """Retire the inventory KMS key."""
+        """Retire the inventory KMS key.
+
+        Args:
+            inventory: Inventory.
+        """
 
 
 class StackCleanupProtocol(Protocol):
+    """Declare the stack cleanup interface."""
+
     def delete(self, stack_name: str) -> None:
-        """Delete one exact stack."""
+        """Delete one exact stack.
+
+        Args:
+            stack_name: Stack name.
+        """
 
 
 class BucketCleanupProtocol(Protocol):
+    """Declare the bucket cleanup interface."""
+
     def delete(self, bucket_name: str) -> None:
-        """Delete one exact bucket."""
+        """Delete one exact bucket.
+
+        Args:
+            bucket_name: Bucket name.
+        """
 
 
 class AbsenceVerifierProtocol(Protocol):
+    """Declare the absence verifier interface."""
+
     def validate(self, inventory: CleanupInventory) -> None:
-        """Require all inventory resources absent or retired."""
+        """Require all inventory resources absent or retired.
+
+        Args:
+            inventory: Inventory.
+        """
 
 
 class DevelopmentEnvironmentCleanupManager:
@@ -68,6 +107,21 @@ class DevelopmentEnvironmentCleanupManager:
         storage: BucketCleanupProtocol,
         verifier: AbsenceVerifierProtocol,
     ) -> None:
+        """Initialize the development environment cleanup manager dependencies.
+
+        Args:
+            account: Account.
+            compute: Compute.
+            identity: Identity.
+            inventory_resolver: Inventory resolver.
+            journal: Journal.
+            kms: Kms.
+            retained: Retained.
+            stack: Stack.
+            storage: Storage.
+            verifier: Verifier.
+        """
+
         self._account = account
         self._compute = compute
         self._identity = identity
@@ -80,7 +134,14 @@ class DevelopmentEnvironmentCleanupManager:
         self._verifier = verifier
 
     def destroy(self, request: CleanupRequest) -> dict[str, object]:
-        """Resume deletion and return the closed goal-delete absence proof."""
+        """Resume deletion and return the closed goal-delete absence proof.
+
+        Args:
+            request: Validated operation request.
+
+        Returns:
+            Closed cleanup receipt proving task resources absent.
+        """
 
         self._request_validate(request, allow_primary=False)
         journal_path, journal = self._journal.load_or_create(request)
@@ -92,7 +153,14 @@ class DevelopmentEnvironmentCleanupManager:
         return {**request.payload_get(), "external_resources_absent": True}
 
     def inventory(self, request: CleanupRequest) -> dict[str, object]:
-        """Return a non-mutating exact inventory for acceptance diagnostics."""
+        """Return a non-mutating exact inventory for acceptance diagnostics.
+
+        Args:
+            request: Validated operation request.
+
+        Returns:
+            A non-mutating exact inventory for acceptance diagnostics.
+        """
 
         self._request_validate(request, allow_primary=True)
         inventory = self._inventory_resolver.resolve(request)
@@ -113,6 +181,13 @@ class DevelopmentEnvironmentCleanupManager:
         }
 
     def _phase_run(self, phase: str, inventory: CleanupInventory) -> None:
+        """Dispatch one journaled cleanup phase to its sole resource owner.
+
+        Args:
+            phase: Phase.
+            inventory: Inventory.
+        """
+
         if phase == "compute":
             self._compute.delete(inventory)
         elif phase == "data-stack":
@@ -130,6 +205,13 @@ class DevelopmentEnvironmentCleanupManager:
             raise DevelopmentEnvironmentError("Task cleanup journal has an unsupported phase")
 
     def _request_validate(self, request: CleanupRequest, *, allow_primary: bool) -> None:
+        """Require the cleanup request to match the sealed environment and operation identity.
+
+        Args:
+            request: Validated operation request.
+            allow_primary: Allow primary.
+        """
+
         if not allow_primary and (self._identity.is_primary or not self._identity.git_worktree):
             raise DevelopmentEnvironmentError("Task cleanup cannot target the primary development environment")
         if request.common_prefix != self._identity.git_worktree:

@@ -62,9 +62,7 @@ class DevelopmentHostBootstrapManager:
         """
 
         if environment_name != "primary" and not environment_name.startswith("w"):
-            raise DevelopmentEnvironmentError(
-                "Bootstrap environment identity is invalid"
-            )
+            raise DevelopmentEnvironmentError("Bootstrap environment identity is invalid")
         self._architecture = architecture
         self._bundle = HostBootstrapBundle(
             bundle_root_path=bundle_root_path,
@@ -83,9 +81,7 @@ class DevelopmentHostBootstrapManager:
             retained_volume_id=retained_volume_id,
             runner=runner,
         )
-        self._k3s = HostK3sBootstrap(
-            bundle=self._bundle, runner=runner, service=service
-        )
+        self._k3s = HostK3sBootstrap(bundle=self._bundle, runner=runner, service=service)
         self._network = HostNetworkBootstrap(service=service)
 
     def run(self) -> None:
@@ -95,7 +91,5 @@ class DevelopmentHostBootstrapManager:
         self._storage.mount()
         self._k3s.install()
         self._network.install()
-        self._bundle.host_artifact_manifest_install(
-            Path("/etc/workflow-infrastructure")
-        )
+        self._bundle.host_artifact_manifest_install(Path("/etc/workflow-infrastructure"))
         print(f"OK: development host bootstrap completed for {self._architecture}")

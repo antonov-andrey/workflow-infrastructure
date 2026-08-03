@@ -15,16 +15,35 @@ from workflow_infrastructure.development_environment.host.storage import (
 
 
 class _Identity:
+    """Declare fixed task identities for retained-volume authorization tests."""
+
     compute_stack_name = "compute-w729c92ceba194ac"
     environment_name = "w729c92ceba194ac"
     git_worktree = "2026-08-01-workflow-platform-hardening"
 
 
 class _Aws:
+    """Serve one synthetic EC2 volume bound to mutable stack state."""
+
     def __init__(self, stack: "_Stack") -> None:
+        """Initialize the AWS dependencies.
+
+        Args:
+            stack: Stack.
+        """
+
         self._stack = stack
 
     def json_get(self, argument_list: list[str]) -> dict[str, object]:
+        """Return the scripted AWS response for retained-volume authorization.
+
+        Args:
+            argument_list: Exact command arguments.
+
+        Returns:
+            Decoded JSON object.
+        """
+
         assert argument_list == [
             "ec2",
             "describe-volumes",
@@ -55,9 +74,7 @@ class _Aws:
                             "FilesystemState": self._stack.state,
                             "ManagedBy": "CloudFormation",
                             "Name": f"retained-{_Identity.environment_name}",
-                            "aws:cloudformation:stack-name": (
-                                _Identity.compute_stack_name
-                            ),
+                            "aws:cloudformation:stack-name": (_Identity.compute_stack_name),
                             "git-worktree": _Identity.git_worktree,
                         }.items()
                     ],
@@ -68,16 +85,43 @@ class _Aws:
 
 
 class _Stack:
+    """Model the compute-stack transition that authorizes a retained filesystem."""
+
     def __init__(self, *, snapshot_id: str = "", state: str = "pending") -> None:
+        """Initialize the stack dependencies.
+
+        Args:
+            snapshot_id: Exact snapshot identity.
+            state: Exact runtime state.
+        """
+
         self.apply_argument_list: list[dict[str, object]] = []
         self.snapshot_id = snapshot_id
         self.state = state
 
     def parameter_by_name_map_get(self, stack_name: str) -> dict[str, str]:
+        """Return retained-volume parameters for the compute stack.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            Stack parameters keyed by name.
+        """
+
         assert stack_name == _Identity.compute_stack_name
         return {"RetainedVolumeFilesystemState": self.state}
 
     def output_by_name_map_get(self, stack_name: str) -> dict[str, str]:
+        """Return retained-volume outputs for the compute stack.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            Stack outputs keyed by name.
+        """
+
         assert stack_name == _Identity.compute_stack_name
         return {
             "InstanceId": "i-0123456789abcdef0",
@@ -88,16 +132,37 @@ class _Stack:
         }
 
     def apply(self, **kwargs: object) -> None:
+        """Record the one stack transition requested by storage initialization.
+
+        Args:
+            **kwargs: Provider keyword arguments.
+        """
+
         self.apply_argument_list.append(kwargs)
         parameter_by_name_map = kwargs["parameter_by_name_map"]
         assert isinstance(parameter_by_name_map, dict)
         self.state = str(parameter_by_name_map["RetainedVolumeFilesystemState"])
 
     def drift_validate(self, stack_name: str) -> None:
+        """Record that the resulting storage stack drift was checked.
+
+        Args:
+            stack_name: Stack name.
+        """
+
         assert stack_name == _Identity.compute_stack_name
 
 
 def _owner_get(stack: _Stack) -> DevelopmentHostStorageInitialization:
+    """Build one retained-volume initialization owner with deterministic boundaries.
+
+    Args:
+        stack: Stack.
+
+    Returns:
+        The owner.
+    """
+
     return DevelopmentHostStorageInitialization(
         aws=_Aws(stack),
         compute_stable_identity_logical_id_set={
@@ -121,9 +186,7 @@ def test_pending_base_volume_advances_once_to_complete() -> None:
 
     assert owner.initialization_allowed_get() is False
     assert len(stack.apply_argument_list) == 1
-    assert stack.apply_argument_list[0]["parameter_by_name_map"] == {
-        "RetainedVolumeFilesystemState": "complete"
-    }
+    assert stack.apply_argument_list[0]["parameter_by_name_map"] == {"RetainedVolumeFilesystemState": "complete"}
     assert stack.apply_argument_list[0]["protected_identity_logical_id_set"] == {
         "DevelopmentInstance",
         "RetainedVolume",

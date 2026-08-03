@@ -27,7 +27,15 @@ UV_SIGNER_WORKFLOW = "astral-sh/uv/.github/workflows/release.yml"
 
 
 def python_download_payload_get(*, architecture: str, metadata: object) -> dict[str, object]:
-    """Select the newest stable exact Python 3.14 GNU/Linux build."""
+    """Select the newest stable exact Python 3.14 GNU/Linux build.
+
+    Args:
+        architecture: Architecture.
+        metadata: Metadata.
+
+    Returns:
+        The newest stable exact Python 3.14 GNU/Linux build.
+    """
 
     if not isinstance(metadata, Mapping):
         raise HostArtifactResolutionError("uv Python metadata root is malformed")
@@ -72,6 +80,14 @@ class PythonArtifactProvider:
         git_ref: GitRefResolver,
         verifier: HostArtifactVerifier,
     ) -> None:
+        """Initialize the python artifact provider dependencies.
+
+        Args:
+            downloader: Downloader.
+            git_ref: Git ref.
+            verifier: Verifier.
+        """
+
         self._downloader = downloader
         self._git_ref = git_ref
         self._verifier = verifier
@@ -79,7 +95,15 @@ class PythonArtifactProvider:
     def resolve(
         self, *, python_architecture: str, uv_architecture: str
     ) -> tuple[HostArtifactIdentity, HostArtifactIdentity, HostArtifactIdentity, str]:
-        """Return uv, uv metadata, Python, and exact Python build."""
+        """Return uv, uv metadata, Python, and exact Python build.
+
+        Args:
+            python_architecture: Python architecture.
+            uv_architecture: Uv architecture.
+
+        Returns:
+            The uv, uv metadata, Python, and exact Python build.
+        """
 
         uv_version, resolved_ref, commit_sha = self._git_ref.latest_tag_resolve(
             repository_url=UV_REPOSITORY_URL,

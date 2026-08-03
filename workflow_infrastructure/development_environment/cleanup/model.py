@@ -25,14 +25,20 @@ class CleanupRequest:
 
     @classmethod
     def from_json(cls, text: str, *, expected_common_prefix: str) -> Self:
-        """Decode one closed request and bind it to the CLI selector."""
+        """Decode one closed request and bind it to the CLI selector.
+
+        Args:
+            text: Text.
+            expected_common_prefix: Expected common prefix.
+
+        Returns:
+            Validated current object.
+        """
 
         try:
             payload = json.loads(text)
         except (TypeError, json.JSONDecodeError) as error:
-            raise DevelopmentEnvironmentError(
-                "Task cleanup requires one exact JSON request on stdin"
-            ) from error
+            raise DevelopmentEnvironmentError("Task cleanup requires one exact JSON request on stdin") from error
         if (
             not isinstance(payload, dict)
             or set(payload) != {"schema_version", "common_prefix", "operation_identity"}
@@ -41,19 +47,20 @@ class CleanupRequest:
             or payload.get("common_prefix") != expected_common_prefix
             or _COMMON_PREFIX_PATTERN.fullmatch(expected_common_prefix) is None
             or not isinstance(payload.get("operation_identity"), str)
-            or _OPERATION_IDENTITY_PATTERN.fullmatch(payload["operation_identity"])
-            is None
+            or _OPERATION_IDENTITY_PATTERN.fullmatch(payload["operation_identity"]) is None
         ):
-            raise DevelopmentEnvironmentError(
-                "Task cleanup request is malformed or has another task identity"
-            )
+            raise DevelopmentEnvironmentError("Task cleanup request is malformed or has another task identity")
         return cls(
             common_prefix=expected_common_prefix,
             operation_identity=payload["operation_identity"],
         )
 
     def payload_get(self) -> dict[str, object]:
-        """Return the canonical protocol payload."""
+        """Return the canonical protocol payload.
+
+        Returns:
+            The canonical protocol payload.
+        """
 
         return asdict(self)
 
@@ -76,7 +83,14 @@ class CleanupInventory:
 
     @classmethod
     def from_payload(cls, payload: object) -> Self:
-        """Decode one exact durable cleanup inventory."""
+        """Decode one exact durable cleanup inventory.
+
+        Args:
+            payload: Structured operation payload.
+
+        Returns:
+            Validated current object.
+        """
 
         field_name_set = {
             "bucket_name_list",
@@ -92,9 +106,7 @@ class CleanupInventory:
             "schema_version",
         }
         if not isinstance(payload, dict) or set(payload) != field_name_set:
-            raise DevelopmentEnvironmentError(
-                "Task cleanup inventory has another shape"
-            )
+            raise DevelopmentEnvironmentError("Task cleanup inventory has another shape")
         bucket_name_list = payload["bucket_name_list"]
         if (
             payload["schema_version"] != 1
@@ -123,7 +135,11 @@ class CleanupInventory:
         )
 
     def payload_get(self) -> dict[str, object]:
-        """Return the canonical JSON representation."""
+        """Return the canonical JSON representation.
+
+        Returns:
+            The canonical JSON representation.
+        """
 
         payload = asdict(self)
         payload["bucket_name_list"] = list(self.bucket_name_list)

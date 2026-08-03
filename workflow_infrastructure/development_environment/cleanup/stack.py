@@ -15,11 +15,22 @@ class StackCleanup:
     """Delete and verify exact task CloudFormation stacks."""
 
     def __init__(self, *, aws: AwsClientProtocol, stack: StackManagerProtocol) -> None:
+        """Initialize the stack cleanup dependencies.
+
+        Args:
+            aws: Aws.
+            stack: Stack.
+        """
+
         self._aws = aws
         self._stack = stack
 
     def delete(self, stack_name: str) -> None:
-        """Idempotently delete one previously ownership-checked stack."""
+        """Idempotently delete one previously ownership-checked stack.
+
+        Args:
+            stack_name: Stack name.
+        """
 
         if not self._stack.payload_get(stack_name, is_required=False):
             return
@@ -36,7 +47,11 @@ class StackCleanup:
         self.absence_validate(stack_name)
 
     def absence_validate(self, stack_name: str) -> None:
-        """Require one exact stack to be absent."""
+        """Require one exact stack to be absent.
+
+        Args:
+            stack_name: Stack name.
+        """
 
         if self._stack.payload_get(stack_name, is_required=False):
             raise DevelopmentEnvironmentError(f"Task stack {stack_name} still exists after deletion")

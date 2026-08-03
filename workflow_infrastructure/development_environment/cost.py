@@ -19,7 +19,11 @@ class ClockProtocol(Protocol):
     """UTC clock required by cost-review records."""
 
     def now(self) -> datetime:
-        """Return the current timezone-aware instant."""
+        """Return the current timezone-aware instant.
+
+        Returns:
+            The current timezone-aware instant.
+        """
 
 
 class DevelopmentCostReviewer:
@@ -33,7 +37,14 @@ class DevelopmentCostReviewer:
         project_root_path: Path,
         region: str,
     ) -> None:
-        """Bind review output to one project and AWS region."""
+        """Bind review output to one project and AWS region.
+
+        Args:
+            aws: Aws.
+            clock: Clock.
+            project_root_path: Exact filesystem path for project root.
+            region: Region.
+        """
 
         self._aws = aws
         self._clock = clock
@@ -269,7 +280,16 @@ class DevelopmentCostReviewer:
         filter_by_field_map: dict[str, str],
         usage_type: str,
     ) -> list[dict[str, str]]:
-        """Return every exact current on-demand price tier for one AWS meter."""
+        """Return every exact current on-demand price tier for one AWS meter.
+
+        Args:
+            service_code: Service code.
+            filter_by_field_map: Filter by field mapping.
+            usage_type: Usage type.
+
+        Returns:
+            Every exact current on-demand price tier for the AWS meter.
+        """
 
         aws_argument_list = [
             "pricing",
@@ -370,7 +390,17 @@ class DevelopmentCostReviewer:
         unit: str,
         usage_type: str,
     ) -> Decimal:
-        """Return one unambiguous price from the exact meter tiers."""
+        """Return one unambiguous price from the exact meter tiers.
+
+        Args:
+            filter_by_field_map: Filter by field mapping.
+            service_code: Service code.
+            unit: Unit.
+            usage_type: Usage type.
+
+        Returns:
+            One unambiguous price from the exact meter tiers.
+        """
 
         price_dimension_list = self.price_dimension_list_get(
             service_code=service_code,

@@ -91,14 +91,22 @@ class RetainedProductReleaseIdentity(Protocol):
 
     @property
     def host_release_root_path(self) -> Path:
-        """Return the retained release collection root."""
+        """Return the retained release collection root.
+
+        Returns:
+            The retained release collection root.
+        """
 
 
 class RetainedProductReleaseValidator:
     """Own exact source, manifest, image, and provenance validation."""
 
     def __init__(self, identity: RetainedProductReleaseIdentity) -> None:
-        """Retain one environment identity whose releases may be accepted."""
+        """Retain one environment identity whose releases may be accepted.
+
+        Args:
+            identity: Identity.
+        """
 
         self._identity = identity
         self._candidate_ledger_validator = RetainedProductCandidateLedgerValidator()
@@ -107,7 +115,14 @@ class RetainedProductReleaseValidator:
         self,
         release_root_path: Path,
     ) -> str:
-        """Validate every persisted identity and tracked source byte of one Product release."""
+        """Validate every persisted identity and tracked source byte of one Product release.
+
+        Args:
+            release_root_path: Exact filesystem path for release root.
+
+        Returns:
+            Resulting text value.
+        """
 
         try:
             resolved_release_root_path = release_root_path.resolve(strict=True)
@@ -393,7 +408,14 @@ class RetainedProductReleaseValidator:
         source_identity_by_name_map: Mapping[str, Mapping[str, str]],
         target_platform: str,
     ) -> None:
-        """Validate exact image bases, Buildx provenance, SBOM flags, and metadata."""
+        """Validate exact image bases, Buildx provenance, SBOM flags, and metadata.
+
+        Args:
+            image_payload_by_name_map: Image payload by name mapping.
+            release_root_path: Exact filesystem path for release root.
+            source_identity_by_name_map: Source identity by name mapping.
+            target_platform: Target platform.
+        """
 
         expected_image_name_set = {
             "apwid-backend",

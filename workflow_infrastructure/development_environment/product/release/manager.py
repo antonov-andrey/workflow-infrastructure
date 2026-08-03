@@ -42,6 +42,18 @@ class DevelopmentRetainedProductReleaseManager:
         reset: RetainedProductReleaseReset,
         validator: RetainedProductReleaseValidator,
     ) -> None:
+        """Initialize the development retained product release manager dependencies.
+
+        Args:
+            host_manifest_validator: Host manifest validator.
+            identity: Identity.
+            is_host_get: Whether host get.
+            pointer: Pointer.
+            recovery: Recovery.
+            reset: Reset.
+            validator: Validator.
+        """
+
         self._host_manifest_validator = host_manifest_validator
         self._identity = identity
         self._is_host_get = is_host_get
@@ -71,7 +83,11 @@ class DevelopmentRetainedProductReleaseManager:
         print(f"OK: Product recovery savepoint for {release_name} is complete")
 
     def activate(self, release_name: str) -> None:
-        """Validate and atomically activate one retained Product release."""
+        """Validate and atomically activate one retained Product release.
+
+        Args:
+            release_name: Release name.
+        """
 
         self._host_only_validate("host-product-release-activate")
         release_root_path = self._identity.host_release_root_path / release_name
@@ -92,7 +108,11 @@ class DevelopmentRetainedProductReleaseManager:
         print(f"OK: retained Product release {release_name} root-volume link is restored")
 
     def reset(self, preserved_release_name: str) -> None:
-        """Remove old retained Product state while preserving one exact candidate."""
+        """Remove old retained Product state while preserving one exact candidate.
+
+        Args:
+            preserved_release_name: Preserved release name.
+        """
 
         self._host_only_validate("host-product-release-reset")
         self._reset.run(preserved_release_name)
@@ -101,5 +121,11 @@ class DevelopmentRetainedProductReleaseManager:
         print("OK: retained Product release and management runtime were reset")
 
     def _host_only_validate(self, operation: str) -> None:
+        """Reject one retained-release operation outside the development host.
+
+        Args:
+            operation: Lifecycle operation name.
+        """
+
         if not self._is_host_get():
             raise DevelopmentEnvironmentError(f"{operation} is supported only on the development host")

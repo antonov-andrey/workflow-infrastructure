@@ -26,16 +26,32 @@ class ComputeProtocol(Protocol):
     """Compute observations and validations required by provisioning."""
 
     def failed_bootstrap_replacement_is_proven(self) -> bool:
-        """Return whether the failed current host is safe to replace."""
+        """Return whether the failed current host is safe to replace.
+
+        Returns:
+            Whether the failed current host is safe to replace.
+        """
 
     def launch_template_update_is_pending(self) -> bool:
-        """Return whether immutable host inputs require replacement."""
+        """Return whether immutable host inputs require replacement.
+
+        Returns:
+            Whether immutable host inputs require replacement.
+        """
 
     def launch_template_version_get(self) -> str:
-        """Return the exact current launch-template version."""
+        """Return the exact current launch-template version.
+
+        Returns:
+            The exact current launch-template version.
+        """
 
     def launch_template_version_validate(self, *, require_latest: bool = True) -> None:
-        """Validate the active launch-template version."""
+        """Validate the active launch-template version.
+
+        Args:
+            require_latest: Require latest.
+        """
 
 
 class CostReviewerProtocol(Protocol):
@@ -65,7 +81,15 @@ class HostArtifactProtocol(Protocol):
         bucket_name: str,
         compute_stack_exists: bool,
     ) -> dict[str, str]:
-        """Publish exact bootstrap objects and return compute parameters."""
+        """Publish exact bootstrap objects and return compute parameters.
+
+        Args:
+            bucket_name: Bucket name.
+            compute_stack_exists: Compute stack exists.
+
+        Returns:
+            Compute-stack parameters for the published bootstrap objects.
+        """
 
 
 class FoundationProtocol(Protocol):
@@ -77,30 +101,51 @@ class FoundationProtocol(Protocol):
         primary_platform_role_arn: str | None = None,
         primary_retained_volume_arn: str | None = None,
     ) -> None:
-        """Apply the primary owner or validate it for a task environment."""
+        """Apply the primary owner or validate it for a task environment.
+
+        Args:
+            primary_platform_role_arn: Primary platform role arn.
+            primary_retained_volume_arn: Primary retained volume arn.
+        """
 
 
 class ReplacementProtocol(Protocol):
     """Guarded replacement transitions used by provisioning."""
 
     def guard_parameter_by_name_map_get(self) -> dict[str, str]:
-        """Return initial fail-safe replacement guard parameters."""
+        """Return initial fail-safe replacement guard parameters.
+
+        Returns:
+            The initial fail-safe replacement guard parameters.
+        """
 
     def recovery_finish(self) -> None:
         """Finish one already-created replacement."""
 
     def parameter_by_name_map_get(self) -> dict[str, str]:
-        """Return exact parameters for the next guarded replacement."""
+        """Return exact parameters for the next guarded replacement.
+
+        Returns:
+            The exact parameters for the next guarded replacement.
+        """
 
     def pending_launch_template_apply(
         self,
         *,
         parameter_by_name_map: dict[str, str],
     ) -> None:
-        """Apply and accept one required launch-template replacement."""
+        """Apply and accept one required launch-template replacement.
+
+        Args:
+            parameter_by_name_map: Parameter by name mapping.
+        """
 
     def stack_apply(self, *, parameter_by_name_map: dict[str, str]) -> None:
-        """Apply one explicit guarded instance replacement."""
+        """Apply one explicit guarded instance replacement.
+
+        Args:
+            parameter_by_name_map: Parameter by name mapping.
+        """
 
     def steady_state_finish(self) -> None:
         """Start and accept steady state."""
@@ -120,7 +165,12 @@ class SourcePublisherProtocol(Protocol):
     """Exact infrastructure source validation boundary."""
 
     def validate_repository(self, repository_path: Path, repository_name: str) -> None:
-        """Validate one clean exact repository source."""
+        """Validate one clean exact repository source.
+
+        Args:
+            repository_path: Exact filesystem path for repository.
+            repository_name: Repository name.
+        """
 
 
 class StackManagerProtocol(Protocol):
@@ -135,10 +185,22 @@ class StackManagerProtocol(Protocol):
         must_preserve_resource: bool,
         protected_identity_logical_id_set: Collection[str] = (),
     ) -> None:
-        """Apply one exact stack transition."""
+        """Apply one exact stack transition.
+
+        Args:
+            stack_name: Stack name.
+            template_path: Exact filesystem path for template.
+            parameter_by_name_map: Parameter by name mapping.
+            must_preserve_resource: Must preserve resource.
+            protected_identity_logical_id_set: Unique protected identity logical identity values.
+        """
 
     def drift_validate(self, stack_name: str) -> None:
-        """Prove the stack has no drift."""
+        """Prove the stack has no drift.
+
+        Args:
+            stack_name: Stack name.
+        """
 
     def existing_resource_identity_validate(
         self,
@@ -146,13 +208,32 @@ class StackManagerProtocol(Protocol):
         current_resource_id_by_logical_name_map: Mapping[str, str],
         previous_resource_id_by_logical_name_map: Mapping[str, str],
     ) -> None:
-        """Prove a preservation-required stack retained physical identities."""
+        """Prove a preservation-required stack retained physical identities.
+
+        Args:
+            current_resource_id_by_logical_name_map: Current resource identity by logical name mapping.
+            previous_resource_id_by_logical_name_map: Previous resource identity by logical name mapping.
+        """
 
     def output_by_name_map_get(self, stack_name: str) -> dict[str, str]:
-        """Return exact stack outputs."""
+        """Return exact stack outputs.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            The exact stack outputs.
+        """
 
     def parameter_by_name_map_get(self, stack_name: str) -> dict[str, str]:
-        """Return exact stack parameters."""
+        """Return exact stack parameters.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            The exact stack parameters.
+        """
 
     def payload_get(
         self,
@@ -160,16 +241,35 @@ class StackManagerProtocol(Protocol):
         *,
         is_required: bool,
     ) -> dict[str, object]:
-        """Return current stack payload or an empty mapping."""
+        """Return current stack payload or an empty mapping.
+
+        Args:
+            stack_name: Stack name.
+            is_required: Whether required.
+
+        Returns:
+            The current stack payload or an empty mapping.
+        """
 
     def resource_id_by_logical_name_map_get(
         self,
         stack_name: str,
     ) -> dict[str, str]:
-        """Return physical identities by logical resource."""
+        """Return physical identities by logical resource.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            The physical identities by logical resource.
+        """
 
     def template_validate(self, template_path: Path) -> None:
-        """Validate one CloudFormation template."""
+        """Validate one CloudFormation template.
+
+        Args:
+            template_path: Exact filesystem path for template.
+        """
 
 
 class DevelopmentProvisioningManager:
@@ -195,7 +295,26 @@ class DevelopmentProvisioningManager:
         source_publisher: SourcePublisherProtocol,
         stack: StackManagerProtocol,
     ) -> None:
-        """Bind provisioning to one exact environment and two stack templates."""
+        """Bind provisioning to one exact environment and two stack templates.
+
+        Args:
+            account: Account.
+            aws_account_id: Exact AWS account identity.
+            aws_region: Aws region.
+            compute: Compute.
+            compute_stable_identity_logical_id_set: Unique compute stable identity logical identity values.
+            compute_template_path: Exact filesystem path for compute template.
+            cost_reviewer: Cost reviewer.
+            data_plane_template_path: Exact filesystem path for data plane template.
+            foundation: Foundation.
+            host_artifact: Host artifact.
+            identity: Identity.
+            project_root_path: Exact filesystem path for project root.
+            replacement: Replacement.
+            retained_volume: Retained volume.
+            source_publisher: Source publisher.
+            stack: Stack.
+        """
 
         self._account = account
         self._aws_account_id = aws_account_id
@@ -349,7 +468,11 @@ class DevelopmentProvisioningManager:
         self,
         parameter_by_name_map: Mapping[str, str],
     ) -> None:
-        """Require an existing compute stack to implement the one current contract."""
+        """Require an existing compute stack to implement the one current contract.
+
+        Args:
+            parameter_by_name_map: Parameter by name mapping.
+        """
 
         manifest_sha256 = parameter_by_name_map.get("HostArtifactManifestSha256")
         encoded_manifest = parameter_by_name_map.get("HostArtifactManifestGzipBase64")
@@ -375,7 +498,12 @@ class DevelopmentProvisioningManager:
         *,
         owner: str,
     ) -> None:
-        """Reject a short-name collision before changing an existing stack."""
+        """Reject a short-name collision before changing an existing stack.
+
+        Args:
+            parameter_by_name_map: Parameter by name mapping.
+            owner: Owner.
+        """
 
         if (
             parameter_by_name_map.get("EnvironmentName") != self._identity.environment_name
@@ -389,7 +517,12 @@ class DevelopmentProvisioningManager:
         *,
         require_port_reservation: bool,
     ) -> None:
-        """Prove the data stack owns this environment and exact tunnel endpoint."""
+        """Prove the data stack owns this environment and exact tunnel endpoint.
+
+        Args:
+            parameter_by_name_map: Parameter by name mapping.
+            require_port_reservation: Require port reservation.
+        """
 
         self._stack_environment_identity_validate(
             parameter_by_name_map,

@@ -40,10 +40,25 @@ class AwsClientProtocol(Protocol):
         *,
         check: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        """Run one AWS CLI command."""
+        """Run one AWS CLI command.
+
+        Args:
+            aws_argument_list: Ordered AWS argument values.
+            check: Whether a nonzero command exit raises an error.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
 
     def json_get(self, aws_argument_list: Sequence[str]) -> dict[str, object]:
-        """Run one AWS CLI command and decode its object response."""
+        """Run one AWS CLI command and decode its object response.
+
+        Args:
+            aws_argument_list: Ordered AWS argument values.
+
+        Returns:
+            Decoded AWS response object.
+        """
 
 
 class ClockProtocol(Protocol):
@@ -53,10 +68,18 @@ class ClockProtocol(Protocol):
         """Return the current UTC instant."""
 
     def monotonic(self) -> float:
-        """Return monotonic seconds."""
+        """Return monotonic seconds.
+
+        Returns:
+            The monotonic seconds.
+        """
 
     def sleep(self, delay_seconds: float) -> None:
-        """Wait for one duration."""
+        """Wait for one duration.
+
+        Args:
+            delay_seconds: Delay in seconds.
+        """
 
 
 class EnvironmentIdentityProtocol(Protocol):
@@ -76,11 +99,26 @@ class CommandRunnerProtocol(Protocol):
         *,
         check: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        """Run one local command."""
+        """Run one local command.
+
+        Args:
+            command_list: Ordered command values.
+            check: Whether a nonzero command exit raises an error.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
 
 
 def _is_data_lake_settings_parameter_change_safe(summary: Mapping[str, object]) -> bool:
-    """Return whether one change is the documented in-place Parameters update."""
+    """Return whether one change is the documented in-place Parameters update.
+
+    Args:
+        summary: Summary.
+
+    Returns:
+        Whether one change is the documented in-place Parameters update.
+    """
 
     return (
         summary.get("action") == "Modify"
@@ -106,7 +144,15 @@ def _protected_identity_change_violation_list_get(
     change_summary_list: Sequence[Mapping[str, object]],
     protected_identity_logical_id_set: Collection[str],
 ) -> list[str]:
-    """Return protected resources whose physical identity may change."""
+    """Return protected resources whose physical identity may change.
+
+    Args:
+        change_summary_list: Ordered change summary values.
+        protected_identity_logical_id_set: Unique protected identity logical identity values.
+
+    Returns:
+        The protected resources whose physical identity may change.
+    """
 
     return sorted(
         str(summary.get("logical_resource_id"))
@@ -119,7 +165,14 @@ def _protected_identity_change_violation_list_get(
 def _stable_data_change_violation_list_get(
     change_summary_list: list[dict[str, object]],
 ) -> list[str]:
-    """Return data-plane changes not proven identity-preserving."""
+    """Return data-plane changes not proven identity-preserving.
+
+    Args:
+        change_summary_list: Ordered change summary values.
+
+    Returns:
+        The data-plane changes not proven identity-preserving.
+    """
 
     summary_by_logical_id_map = {str(summary.get("logical_resource_id")): summary for summary in change_summary_list}
     conditional_safety_by_logical_id_map: dict[str, bool] = {}
@@ -128,6 +181,16 @@ def _stable_data_change_violation_list_get(
         logical_resource_id: str,
         proving_logical_id_set: frozenset[str] = frozenset(),
     ) -> bool:
+        """Prove one conditional change is supported by unchanged identity owners.
+
+        Args:
+            logical_resource_id: Exact logical resource identity.
+            proving_logical_id_set: Unique proving logical identity values.
+
+        Returns:
+            Whether all recursive identity proofs establish an in-place update.
+        """
+
         if logical_resource_id in conditional_safety_by_logical_id_map:
             return conditional_safety_by_logical_id_map[logical_resource_id]
         if logical_resource_id in proving_logical_id_set:
@@ -208,7 +271,16 @@ class DevelopmentStackManager:
         project_root_path: Path,
         runner: CommandRunnerProtocol,
     ) -> None:
-        """Bind stack management to one exact AWS development environment."""
+        """Bind stack management to one exact AWS development environment.
+
+        Args:
+            aws: Aws.
+            aws_region: Aws region.
+            clock: Clock.
+            identity: Identity.
+            project_root_path: Exact filesystem path for project root.
+            runner: Explicit command execution boundary.
+        """
 
         self._aws = aws
         self._aws_region = aws_region
@@ -226,7 +298,15 @@ class DevelopmentStackManager:
         must_preserve_resource: bool,
         protected_identity_logical_id_set: Collection[str] = (),
     ) -> None:
-        """Plan, guard, execute, and verify one CloudFormation change set."""
+        """Plan, guard, execute, and verify one CloudFormation change set.
+
+        Args:
+            stack_name: Stack name.
+            template_path: Exact filesystem path for template.
+            parameter_by_name_map: Parameter by name mapping.
+            must_preserve_resource: Must preserve resource.
+            protected_identity_logical_id_set: Unique protected identity logical identity values.
+        """
 
         stack_payload = self.payload_get(stack_name, is_required=False)
         change_set_type = "UPDATE" if stack_payload else "CREATE"
@@ -383,7 +463,11 @@ class DevelopmentStackManager:
             raise DevelopmentEnvironmentError(f"Stack {stack_name} did not reach a complete state")
 
     def drift_validate(self, stack_name: str) -> None:
-        """Prove one stable stack is available for recovery and in sync."""
+        """Prove one stable stack is available for recovery and in sync.
+
+        Args:
+            stack_name: Stack name.
+        """
 
         stack_payload = self.payload_get(stack_name, is_required=True)
         if stack_payload.get("StackStatus") not in STACK_DRIFT_CHECKABLE_STATUS_SET:
@@ -423,7 +507,14 @@ class DevelopmentStackManager:
         raise DevelopmentEnvironmentError(f"Stack {stack_name} drift detection timed out")
 
     def output_by_name_map_get(self, stack_name: str) -> dict[str, str]:
-        """Return validated stack outputs keyed by logical output name."""
+        """Return validated stack outputs keyed by logical output name.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            The validated stack outputs keyed by logical output name.
+        """
 
         stack_payload = self.payload_get(stack_name, is_required=True)
         output_list = stack_payload.get("Outputs", [])
@@ -444,7 +535,14 @@ class DevelopmentStackManager:
         return output_by_name_map
 
     def parameter_by_name_map_get(self, stack_name: str) -> dict[str, str]:
-        """Return validated effective stack parameters."""
+        """Return validated effective stack parameters.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            The validated effective stack parameters.
+        """
 
         stack_payload = self.payload_get(stack_name, is_required=True)
         parameter_list = stack_payload.get("Parameters", [])
@@ -470,7 +568,15 @@ class DevelopmentStackManager:
         *,
         is_required: bool,
     ) -> dict[str, object]:
-        """Return one exact stack object, or empty when optional and absent."""
+        """Return one exact stack object, or empty when optional and absent.
+
+        Args:
+            stack_name: Stack name.
+            is_required: Whether required.
+
+        Returns:
+            One exact stack object, or empty when optional and absent.
+        """
 
         result = self._aws.run(
             [
@@ -509,7 +615,14 @@ class DevelopmentStackManager:
         self,
         stack_name: str,
     ) -> dict[str, str]:
-        """Return physical resource IDs keyed by logical resource IDs."""
+        """Return physical resource IDs keyed by logical resource IDs.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            The physical resource IDs keyed by logical resource IDs.
+        """
 
         if not self.payload_get(stack_name, is_required=False):
             return {}
@@ -539,7 +652,11 @@ class DevelopmentStackManager:
         return resource_id_by_logical_name_map
 
     def template_validate(self, template_path: Path) -> None:
-        """Run local schema lint and remote CloudFormation validation."""
+        """Run local schema lint and remote CloudFormation validation.
+
+        Args:
+            template_path: Exact filesystem path for template.
+        """
 
         self._runner.run(
             [
@@ -561,7 +678,12 @@ class DevelopmentStackManager:
         current_resource_id_by_logical_name_map: Mapping[str, str],
         previous_resource_id_by_logical_name_map: Mapping[str, str],
     ) -> None:
-        """Prove an update preserved every pre-existing physical identity."""
+        """Prove an update preserved every pre-existing physical identity.
+
+        Args:
+            current_resource_id_by_logical_name_map: Current resource identity by logical name mapping.
+            previous_resource_id_by_logical_name_map: Previous resource identity by logical name mapping.
+        """
 
         changed_logical_id_list = sorted(
             logical_id
@@ -577,7 +699,14 @@ class DevelopmentStackManager:
         self,
         template_path: Path,
     ) -> list[str]:
-        """Return inline or content-addressed S3 template arguments."""
+        """Return inline or content-addressed S3 template arguments.
+
+        Args:
+            template_path: Exact filesystem path for template.
+
+        Returns:
+            The inline or content-addressed S3 template arguments.
+        """
 
         template_bytes = template_path.read_bytes()
         template_byte_count = len(template_bytes)
@@ -650,7 +779,14 @@ class DevelopmentStackManager:
         return ["--template-url", template_url]
 
     def _template_parameter_name_set_get(self, template_argument_list: Sequence[str]) -> set[str]:
-        """Return the parameter names declared by the submitted template."""
+        """Return the parameter names declared by the submitted template.
+
+        Args:
+            template_argument_list: Ordered template argument values.
+
+        Returns:
+            The parameter names declared by the submitted template.
+        """
 
         payload = self._aws.json_get(
             [
@@ -675,7 +811,12 @@ class DevelopmentStackManager:
         stack_name: str,
         change_set_name: str,
     ) -> None:
-        """Delete one unexecuted deterministic change set."""
+        """Delete one unexecuted deterministic change set.
+
+        Args:
+            stack_name: Stack name.
+            change_set_name: Change set name.
+        """
 
         self._aws.run(
             [

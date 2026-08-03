@@ -35,40 +35,38 @@ class TaskCleanupBinding:
     """Require the goal-lifecycle receipt bound to this exact task manifest."""
 
     def __init__(self, *, project_root_path: Path) -> None:
+        """Initialize the task cleanup binding dependencies.
+
+        Args:
+            project_root_path: Exact filesystem path for project root.
+        """
+
         self._project_root_path = project_root_path.absolute()
 
     def validate(self, *, common_prefix: str) -> Mapping[str, object]:
+        """Validate the task cleanup binding contract.
+
+        Args:
+            common_prefix: Exact task common prefix.
+
+        Returns:
+            Resulting mapping str object.
+        """
+
         try:
             self._project_root_path = self._project_root_path.resolve(strict=True)
         except OSError as error:
-            raise DevelopmentEnvironmentError(
-                "Task project root is unavailable"
-            ) from error
+            raise DevelopmentEnvironmentError("Task project root is unavailable") from error
         manifest_path = self._project_root_path / BOOTSTRAP_MANIFEST_NAME
-        if (
-            manifest_path.is_symlink()
-            or not manifest_path.is_file()
-            or manifest_path.stat().st_nlink != 1
-        ):
+        if manifest_path.is_symlink() or not manifest_path.is_file() or manifest_path.stat().st_nlink != 1:
             raise DevelopmentEnvironmentError("Task bootstrap manifest is unavailable")
         common_directory = self.common_directory_get()
-        receipt_path = (
-            common_directory
-            / "agent-workflows"
-            / "cleanup-binding"
-            / f"{common_prefix}.json"
-        )
+        receipt_path = common_directory / "agent-workflows" / "cleanup-binding" / f"{common_prefix}.json"
         try:
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise DevelopmentEnvironmentError(
-                "Task cleanup binding receipt is unavailable"
-            ) from error
-        provider_state_generation = (
-            receipt.get("provider_state_generation")
-            if isinstance(receipt, dict)
-            else None
-        )
+            raise DevelopmentEnvironmentError("Task cleanup binding receipt is unavailable") from error
+        provider_state_generation = receipt.get("provider_state_generation") if isinstance(receipt, dict) else None
         expected_cleanup_sha256 = hashlib.sha256(
             b"\0".join(item.encode("utf-8") for item in CLEANUP_COMMAND_ARGUMENT_LIST)
         ).hexdigest()
@@ -85,21 +83,19 @@ class TaskCleanupBinding:
             or provider_state_generation < 1
             or not _sha256_is_valid(receipt.get("sealed_specification_sha256"))
         ):
-            raise DevelopmentEnvironmentError(
-                "Task cleanup binding receipt is stale or malformed"
-            )
+            raise DevelopmentEnvironmentError("Task cleanup binding receipt is stale or malformed")
         return receipt
 
     def common_directory_get(self) -> Path:
-        """Return the exact Git common directory that owns private receipts."""
+        """Return the exact Git common directory that owns private receipts.
+
+        Returns:
+            The exact Git common directory that owns private receipts.
+        """
 
         environment = os.environ.copy()
         for name in tuple(environment):
-            if (
-                name == "GIT_DIR"
-                or name == "GIT_WORK_TREE"
-                or name.startswith("GIT_CONFIG")
-            ):
+            if name == "GIT_DIR" or name == "GIT_WORK_TREE" or name.startswith("GIT_CONFIG"):
                 environment.pop(name, None)
         result = subprocess.run(
             [
@@ -116,20 +112,21 @@ class TaskCleanupBinding:
             text=True,
         )
         if result.returncode != 0:
-            raise DevelopmentEnvironmentError(
-                "Task Git common directory is unavailable"
-            )
+            raise DevelopmentEnvironmentError("Task Git common directory is unavailable")
         try:
             return Path(result.stdout.strip()).resolve(strict=True)
         except OSError as error:
-            raise DevelopmentEnvironmentError(
-                "Task Git common directory is unavailable"
-            ) from error
+            raise DevelopmentEnvironmentError("Task Git common directory is unavailable") from error
 
 
 def _sha256_is_valid(value: object) -> bool:
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
+    """Recognize one canonical lowercase SHA-256 hexadecimal identity.
+
+    Args:
+        value: Candidate value.
+
+    Returns:
+        Whether the value is exactly 64 lowercase hexadecimal characters.
+    """
+
+    return isinstance(value, str) and len(value) == 64 and all(character in "0123456789abcdef" for character in value)

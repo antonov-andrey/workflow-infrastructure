@@ -79,12 +79,27 @@ class _S3Aws:
     """Stateful AWS boundary for one versioned bucket cleanup."""
 
     def __init__(self, *, delete_error: bool = False) -> None:
+        """Initialize the S3 AWS dependencies.
+
+        Args:
+            delete_error: Delete error.
+        """
+
         self.bucket_exists = True
         self.delete_error = delete_error
         self.upload_by_id = {"upload-1": "partial/file"}
         self.object_set = {("data/file", "v1"), ("data/file", "delete-marker")}
 
     def json_get(self, argument_list: list[str]) -> dict[str, object]:
+        """Return the scripted cleanup-inventory AWS response.
+
+        Args:
+            argument_list: Exact command arguments.
+
+        Returns:
+            Decoded JSON object.
+        """
+
         if argument_list[:2] == ["s3api", "list-multipart-uploads"]:
             return {"Uploads": [{"Key": key, "UploadId": upload_id} for upload_id, key in self.upload_by_id.items()]}
         if argument_list[:2] == ["s3api", "list-object-versions"]:
@@ -99,6 +114,16 @@ class _S3Aws:
         raise AssertionError(argument_list)
 
     def run(self, argument_list: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        """Run the S3 AWS operation.
+
+        Args:
+            argument_list: Exact command arguments.
+            check: Whether a nonzero command exit raises an error.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
+
         del check
         operation = tuple(argument_list[:2])
         if operation == ("s3api", "head-bucket"):
@@ -157,10 +182,29 @@ class _ComputeAws:
     """Return one EC2 tombstone and no active Session Manager sessions."""
 
     def json_get(self, argument_list: list[str]) -> dict[str, object]:
+        """Return the scripted versioned-bucket AWS response.
+
+        Args:
+            argument_list: Exact command arguments.
+
+        Returns:
+            Decoded JSON object.
+        """
+
         assert argument_list[:3] == ["ssm", "describe-sessions", "--state"]
         return {"Sessions": []}
 
     def run(self, argument_list: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        """Run the compute AWS operation.
+
+        Args:
+            argument_list: Exact command arguments.
+            check: Whether a nonzero command exit raises an error.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
+
         del check
         assert argument_list[:2] == ["ec2", "describe-instances"]
         return subprocess.CompletedProcess(
@@ -232,10 +276,26 @@ class _KmsAws:
     """Stateful KMS boundary for alias-fencing and delayed physical deletion."""
 
     def __init__(self, *, alias_target_key_id: str | None, key_state: str) -> None:
+        """Initialize the KMS AWS dependencies.
+
+        Args:
+            alias_target_key_id: Exact alias target key identity.
+            key_state: Key state.
+        """
+
         self.alias_target_key_id = alias_target_key_id
         self.key_state = key_state
 
     def json_get(self, argument_list: list[str]) -> dict[str, object]:
+        """Return the scripted KMS cleanup AWS response.
+
+        Args:
+            argument_list: Exact command arguments.
+
+        Returns:
+            Decoded JSON object.
+        """
+
         assert argument_list == ["kms", "list-aliases"]
         alias_list = []
         if self.alias_target_key_id is not None:
@@ -248,6 +308,16 @@ class _KmsAws:
         return {"Aliases": alias_list}
 
     def run(self, argument_list: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        """Run the KMS AWS operation.
+
+        Args:
+            argument_list: Exact command arguments.
+            check: Whether a nonzero command exit raises an error.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
+
         del check
         if argument_list[:2] == ["kms", "describe-key"]:
             if self.key_state == "absent":
@@ -274,6 +344,12 @@ class _KmsAws:
 
 
 def _cleanup_inventory_get() -> CleanupInventory:
+    """Build one complete task-environment cleanup inventory fixture.
+
+    Returns:
+        The cleanup inventory.
+    """
+
     return CleanupInventory(
         bucket_name_list=("bucket-a", "bucket-b", "bucket-c", "bucket-d"),
         common_prefix=COMMON_PREFIX,
@@ -306,19 +382,39 @@ def test_kms_cleanup_rejects_expected_alias_retargeting() -> None:
 
 
 class _Account:
+    """Accept the fixed test operator context without external AWS access."""
+
     def local_operator_context_validate(self) -> None:
+        """Accept the fixed test account and region without external I/O."""
+
         return None
 
 
 class _Binding:
+    """Expose the prepared Git common directory for cleanup state."""
+
     def __init__(self, common_directory: Path) -> None:
+        """Initialize the binding dependencies.
+
+        Args:
+            common_directory: Common directory.
+        """
+
         self.common_directory = common_directory
 
     def common_directory_get(self) -> Path:
+        """Expose the prepared shared Git directory for cleanup binding storage.
+
+        Returns:
+            Prepared shared Git directory.
+        """
+
         return self.common_directory
 
 
 class _Identity:
+    """Declare every exact identity expected in the cleanup inventory."""
+
     compute_stack_name = "compute-w0123456789abcde"
     data_plane_stack_name = "data-w0123456789abcde"
     environment_name = "w0123456789abcde"
@@ -327,59 +423,158 @@ class _Identity:
 
 
 class _Unused:
+    """Fail immediately when cleanup reaches an unexpected dependency."""
+
     def __getattr__(self, name: str) -> object:
+        """Provide the requested test-double attribute.
+
+        Args:
+            name: Canonical name.
+
+        Returns:
+            Requested unused test-double attribute value.
+        """
+
         raise AssertionError(name)
 
 
 class _InventoryResolver:
+    """Return one exact cleanup inventory after validating its request identity."""
+
     def __init__(self, inventory: CleanupInventory) -> None:
+        """Initialize the inventory resolver dependencies.
+
+        Args:
+            inventory: Inventory.
+        """
+
         self._inventory = inventory
 
     def resolve(self, request: CleanupRequest) -> CleanupInventory:
+        """Resolve the inventory resolver result.
+
+        Args:
+            request: Validated operation request.
+
+        Returns:
+            The inventory resolver result.
+        """
+
         assert request.common_prefix == self._inventory.common_prefix
         return self._inventory
 
 
 class _InventoryCleanup:
+    """Append one named cleanup phase for a singleton task resource."""
+
     def __init__(self, operation_list: list[str], label: str) -> None:
+        """Initialize the inventory cleanup dependencies.
+
+        Args:
+            operation_list: Ordered operation values.
+            label: Diagnostic owner label.
+        """
+
         self._operation_list = operation_list
         self._label = label
 
     def delete(self, inventory: CleanupInventory) -> None:
+        """Delete the inventory cleanup target.
+
+        Args:
+            inventory: Inventory.
+        """
+
         assert inventory.common_prefix == COMMON_PREFIX
         self._operation_list.append(self._label)
 
 
 class _StorageCleanup:
+    """Record each task bucket deleted by the storage phase."""
+
     def __init__(self, operation_list: list[str]) -> None:
+        """Initialize the storage cleanup dependencies.
+
+        Args:
+            operation_list: Ordered operation values.
+        """
+
         self._operation_list = operation_list
 
     def delete(self, bucket_name: str) -> None:
+        """Delete the storage cleanup target.
+
+        Args:
+            bucket_name: Bucket name.
+        """
+
         self._operation_list.append(f"bucket:{bucket_name}")
 
 
 class _StackCleanup:
+    """Record each task stack deleted by a stack phase."""
+
     def __init__(self, operation_list: list[str]) -> None:
+        """Initialize the stack cleanup dependencies.
+
+        Args:
+            operation_list: Ordered operation values.
+        """
+
         self._operation_list = operation_list
 
     def delete(self, stack_name: str) -> None:
+        """Delete the stack cleanup target.
+
+        Args:
+            stack_name: Stack name.
+        """
+
         self._operation_list.append(f"stack:{stack_name}")
 
 
 class _KmsCleanup:
+    """Record retirement of the task-owned KMS key."""
+
     def __init__(self, operation_list: list[str]) -> None:
+        """Initialize the KMS cleanup dependencies.
+
+        Args:
+            operation_list: Ordered operation values.
+        """
+
         self._operation_list = operation_list
 
     def retire(self, inventory: CleanupInventory) -> None:
+        """Retire the KMS cleanup target.
+
+        Args:
+            inventory: Inventory.
+        """
+
         assert inventory.common_prefix == COMMON_PREFIX
         self._operation_list.append("kms")
 
 
 class _Verifier:
+    """Record final absence verification after all cleanup phases."""
+
     def __init__(self, operation_list: list[str]) -> None:
+        """Initialize the verifier dependencies.
+
+        Args:
+            operation_list: Ordered operation values.
+        """
+
         self._operation_list = operation_list
 
     def validate(self, inventory: CleanupInventory) -> None:
+        """Validate the verifier contract.
+
+        Args:
+            inventory: Inventory.
+        """
+
         assert inventory.common_prefix == COMMON_PREFIX
         self._operation_list.append("verify")
 
@@ -387,7 +582,11 @@ class _Verifier:
 def test_cleanup_journal_resumes_each_phase_and_binds_operation(
     tmp_path: Path,
 ) -> None:
-    """A repeated hook resumes the same journal and never repeats completed phases."""
+    """A repeated hook resumes the same journal and never repeats completed phases.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     inventory = CleanupInventory(
         bucket_name_list=("bucket-a", "bucket-b", "bucket-c", "bucket-d"),

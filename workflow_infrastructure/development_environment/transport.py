@@ -24,7 +24,14 @@ class AwsClientProtocol(Protocol):
     """AWS command surface required by the transport."""
 
     def json_get(self, aws_argument_list: Sequence[str]) -> dict[str, object]:
-        """Run one AWS CLI command and decode its object response."""
+        """Run one AWS CLI command and decode its object response.
+
+        Args:
+            aws_argument_list: Ordered AWS argument values.
+
+        Returns:
+            Decoded AWS response object.
+        """
 
     def run(
         self,
@@ -32,17 +39,33 @@ class AwsClientProtocol(Protocol):
         *,
         check: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        """Run one AWS CLI command."""
+        """Run one AWS CLI command.
+
+        Args:
+            aws_argument_list: Ordered AWS argument values.
+            check: Whether a nonzero command exit raises an error.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
 
 
 class ClockProtocol(Protocol):
     """Monotonic time surface required by command polling."""
 
     def monotonic(self) -> float:
-        """Return monotonic seconds."""
+        """Return monotonic seconds.
+
+        Returns:
+            The monotonic seconds.
+        """
 
     def sleep(self, delay_seconds: float) -> None:
-        """Advance or wait by one duration."""
+        """Advance or wait by one duration.
+
+        Args:
+            delay_seconds: Delay in seconds.
+        """
 
 
 class EnvironmentIdentityProtocol(Protocol):
@@ -61,7 +84,16 @@ class CommandRunnerProtocol(Protocol):
         check: bool = True,
         should_capture: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        """Run one local command."""
+        """Run one local command.
+
+        Args:
+            command_list: Ordered command values.
+            check: Whether a nonzero command exit raises an error.
+            should_capture: Whether stdout and stderr should be captured.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
 
 
 class DevelopmentSsmTransport:
@@ -78,7 +110,17 @@ class DevelopmentSsmTransport:
         instance_id_get: Callable[[], str],
         runner: CommandRunnerProtocol,
     ) -> None:
-        """Bind every transport operation to explicit environment dependencies."""
+        """Bind every transport operation to explicit environment dependencies.
+
+        Args:
+            aws: Aws.
+            aws_profile: Aws profile.
+            aws_region: Aws region.
+            clock: Clock.
+            identity: Identity.
+            instance_id_get: Instance identity get.
+            runner: Explicit command execution boundary.
+        """
 
         self._aws = aws
         self._aws_profile = aws_profile
@@ -89,7 +131,11 @@ class DevelopmentSsmTransport:
         self._runner = runner
 
     def ssh_control_session(self) -> SshControlSession:
-        """Return one not-yet-opened ephemeral SSH control session."""
+        """Return one not-yet-opened ephemeral SSH control session.
+
+        Returns:
+            One not-yet-opened ephemeral SSH control session.
+        """
 
         return SshControlSession(transport=self)
 
@@ -100,7 +146,16 @@ class DevelopmentSsmTransport:
         ssh_control_path: Path,
         should_capture: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        """Run one exact remote command through an open control socket."""
+        """Run one exact remote command through an open control socket.
+
+        Args:
+            remote_command_list: Ordered remote command values.
+            ssh_control_path: Exact filesystem path for ssh control.
+            should_capture: Whether stdout and stderr should be captured.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
 
         return self._runner.run(
             [
@@ -114,7 +169,14 @@ class DevelopmentSsmTransport:
         )
 
     def ssm_command_start(self, shell_command_list: list[str]) -> str:
-        """Start one bounded AWS-RunShellScript invocation."""
+        """Start one bounded AWS-RunShellScript invocation.
+
+        Args:
+            shell_command_list: Ordered shell command values.
+
+        Returns:
+            Resulting text value.
+        """
 
         payload = self._aws.json_get(
             [
@@ -140,7 +202,11 @@ class DevelopmentSsmTransport:
         return command_id
 
     def ssm_shell_run(self, shell_command_list: list[str]) -> None:
-        """Run one SSM shell command and stream its completed output."""
+        """Run one SSM shell command and stream its completed output.
+
+        Args:
+            shell_command_list: Ordered shell command values.
+        """
 
         payload = self.ssm_shell_result_get(shell_command_list)
         print(payload.get("StandardOutputContent", ""), end="")
@@ -154,7 +220,15 @@ class DevelopmentSsmTransport:
         *,
         timeout_seconds: int | None = None,
     ) -> dict[str, object]:
-        """Run one SSM shell command and return its successful invocation."""
+        """Run one SSM shell command and return its successful invocation.
+
+        Args:
+            shell_command_list: Ordered shell command values.
+            timeout_seconds: Timeout in seconds.
+
+        Returns:
+            Successful SSM command invocation payload.
+        """
 
         effective_timeout_seconds = SSM_COMMAND_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
         command_id = self.ssm_command_start(shell_command_list)
@@ -194,7 +268,15 @@ class DevelopmentSsmTransport:
         command_id: str,
         instance_id: str,
     ) -> dict[str, object] | None:
-        """Inspect one invocation while tolerating its registration delay."""
+        """Inspect one invocation while tolerating its registration delay.
+
+        Args:
+            command_id: Exact command identity.
+            instance_id: Exact instance identity.
+
+        Returns:
+            Current SSM command invocation payload.
+        """
 
         result = self._aws.run(
             [
@@ -233,13 +315,21 @@ class SshControlSession:
     """Own one ephemeral key and multiplexed SSH-over-SSM control connection."""
 
     def __init__(self, *, transport: DevelopmentSsmTransport) -> None:
-        """Bind the session to one transport owner."""
+        """Bind the session to one transport owner.
+
+        Args:
+            transport: Transport.
+        """
 
         self._transport = transport
         self._temporary_directory: tempfile.TemporaryDirectory[str] | None = None
 
     def __enter__(self) -> Path:
-        """Publish an ephemeral key and open one multiplexed SSH session."""
+        """Publish an ephemeral key and open one multiplexed SSH session.
+
+        Returns:
+            Resolved filesystem path.
+        """
 
         self._temporary_directory = tempfile.TemporaryDirectory()
         temporary_root_path = Path(self._temporary_directory.name)
@@ -328,7 +418,13 @@ class SshControlSession:
         exc_value: object,
         traceback: object,
     ) -> None:
-        """Close the control connection and delete ephemeral key material."""
+        """Close the control connection and delete ephemeral key material.
+
+        Args:
+            exc_type: Exc type.
+            exc_value: Exc value.
+            traceback: Traceback.
+        """
 
         del exc_type, exc_value, traceback
         if self._temporary_directory is None:

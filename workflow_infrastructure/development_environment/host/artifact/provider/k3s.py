@@ -43,13 +43,29 @@ class K3sArtifactProvider:
         trust_root_path: Path,
         verifier: HostArtifactVerifier,
     ) -> None:
+        """Initialize the k3s artifact provider dependencies.
+
+        Args:
+            downloader: Downloader.
+            git_ref: Git ref.
+            trust_root_path: Exact filesystem path for trust root.
+            verifier: Verifier.
+        """
+
         self._downloader = downloader
         self._git_ref = git_ref
         self._trust_root_path = trust_root_path
         self._verifier = verifier
 
     def resolve(self, architecture: str) -> dict[str, HostArtifactIdentity]:
-        """Return exact K3s binary and vendor checksum identities."""
+        """Return exact K3s binary and vendor checksum identities.
+
+        Args:
+            architecture: Architecture.
+
+        Returns:
+            The exact K3s binary and vendor checksum identities.
+        """
 
         version, resolved_ref, commit_sha = self._git_ref.latest_tag_resolve(
             repository_url=K3S_REPOSITORY_URL,
@@ -132,7 +148,18 @@ class K3sArtifactProvider:
         resolved_ref: str,
         version: str,
     ) -> tuple[dict[str, str], str]:
-        """Return one reviewed K3s release identity from repository trust."""
+        """Return one reviewed K3s release identity from repository trust.
+
+        Args:
+            binary_name: Binary name.
+            checksum_name: Checksum name.
+            commit_sha: Commit sha.
+            resolved_ref: Resolved ref.
+            version: Version.
+
+        Returns:
+            One reviewed K3s release identity from repository trust.
+        """
 
         try:
             trust_bytes = (self._trust_root_path / "k3s-release.json").read_bytes()

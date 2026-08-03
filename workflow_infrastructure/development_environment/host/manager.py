@@ -32,10 +32,18 @@ class ClockProtocol(Protocol):
     """Clock surface consumed by host lifecycle."""
 
     def now(self) -> datetime:
-        """Return the current UTC instant."""
+        """Return the current UTC instant.
+
+        Returns:
+            The current UTC instant.
+        """
 
     def sleep(self, delay_seconds: float) -> None:
-        """Wait for a bounded duration."""
+        """Wait for a bounded duration.
+
+        Args:
+            delay_seconds: Delay in seconds.
+        """
 
 
 class CommandResultProtocol(Protocol):
@@ -56,7 +64,16 @@ class CommandRunnerProtocol(Protocol):
         check: bool = True,
         should_capture: bool = True,
     ) -> CommandResultProtocol:
-        """Run one host-local command."""
+        """Run one host-local command.
+
+        Args:
+            command_list: Ordered command values.
+            check: Whether a nonzero command exit raises an error.
+            should_capture: Whether stdout and stderr should be captured.
+
+        Returns:
+            Resulting command result protocol.
+        """
 
 
 class EnvironmentIdentityProtocol(Protocol):
@@ -77,24 +94,44 @@ class ProductToolProtocol(Protocol):
         command: str,
         *argument_list: str,
     ) -> list[str]:
-        """Return one exact Product tool command."""
+        """Return one exact Product tool command.
+
+        Args:
+            command: Command.
+            *argument_list: Exact command arguments.
+
+        Returns:
+            One exact Product tool command.
+        """
 
     def path_get(self) -> Path:
-        """Return the exact current Product tool path."""
+        """Return the exact current Product tool path.
+
+        Returns:
+            The exact current Product tool path.
+        """
 
 
 class ProductRecoveryStateProtocol(Protocol):
     """Retained Product recovery state consumed by host lifecycle."""
 
     def recovery_status_get(self) -> str:
-        """Return retained Product recovery state."""
+        """Return retained Product recovery state.
+
+        Returns:
+            The retained Product recovery state.
+        """
 
 
 class StopLeaseProtocol(Protocol):
     """Renewable stop-lease boundary consumed by host lifecycle."""
 
     def upsert(self, *, duration: timedelta | None = None) -> None:
-        """Create or renew the stop lease."""
+        """Create or renew the stop lease.
+
+        Args:
+            duration: Duration.
+        """
 
 
 class DevelopmentHostManager:
@@ -113,7 +150,19 @@ class DevelopmentHostManager:
         runner: CommandRunnerProtocol,
         stop_lease: StopLeaseProtocol,
     ) -> None:
-        """Initialize host-local lifecycle from explicit collaborators."""
+        """Initialize host-local lifecycle from explicit collaborators.
+
+        Args:
+            aws_region: Aws region.
+            clock: Clock.
+            identity: Identity.
+            is_host: Whether host.
+            product_recovery_state: Product recovery state.
+            product_tool: Product tool.
+            project_root_path: Exact filesystem path for project root.
+            runner: Explicit command execution boundary.
+            stop_lease: Stop lease.
+        """
 
         self._aws_region = aws_region
         self._clock = clock
@@ -144,7 +193,11 @@ class DevelopmentHostManager:
         )
 
     def host_product_activity_get(self) -> str:
-        """Return fail-closed Product activity for the lifecycle controller."""
+        """Return fail-closed Product activity for the lifecycle controller.
+
+        Returns:
+            The fail-closed Product activity for the lifecycle controller.
+        """
 
         try:
             if self._product_recovery_state.status_get() == "pending":
@@ -189,7 +242,11 @@ class DevelopmentHostManager:
         return status
 
     def host_product_maintenance_run(self) -> bool:
-        """Run Product retention only after the lifecycle owner proves idle."""
+        """Run Product retention only after the lifecycle owner proves idle.
+
+        Returns:
+            Whether Product retention completed successfully while idle.
+        """
 
         result = self._runner.run(
             self._product_tool.command_list_get("maintenance"),
@@ -203,7 +260,14 @@ class DevelopmentHostManager:
         return True
 
     def host_session_is_busy(self, instance_id: str) -> bool:
-        """Fail closed unless Session Manager proves that no session exists."""
+        """Fail closed unless Session Manager proves that no session exists.
+
+        Args:
+            instance_id: Exact instance identity.
+
+        Returns:
+            Whether the instance must be treated as busy.
+        """
 
         try:
             return self._active_session_count_get(instance_id) > 0
@@ -241,7 +305,11 @@ class DevelopmentHostManager:
         print(f"OK: exact Helm {helm_version} is installed")
 
     def host_artifact_manifest_get(self) -> dict[str, object]:
-        """Return the immutable launch manifest installed on this exact host."""
+        """Return the immutable launch manifest installed on this exact host.
+
+        Returns:
+            The immutable launch manifest installed on this exact host.
+        """
 
         try:
             manifest_json = HOST_ARTIFACT_MANIFEST_PATH.read_text(encoding="utf-8")
@@ -319,7 +387,14 @@ WantedBy=multi-user.target
         self._runner.run(["systemctl", "poweroff"], should_capture=False)
 
     def instance_metadata_get(self, path: str) -> str:
-        """Read one nonempty value through IMDSv2."""
+        """Read one nonempty value through IMDSv2.
+
+        Args:
+            path: Exact filesystem path.
+
+        Returns:
+            One nonempty value through IMDSv2.
+        """
 
         token_result = self._runner.run(
             [
@@ -351,7 +426,14 @@ WantedBy=multi-user.target
         return value
 
     def _active_session_count_get(self, instance_id: str) -> int:
-        """Return active Session Manager session count through the instance role."""
+        """Return active Session Manager session count through the instance role.
+
+        Args:
+            instance_id: Exact instance identity.
+
+        Returns:
+            The active Session Manager session count through the instance role.
+        """
 
         result = self._runner.run(
             [
@@ -378,7 +460,11 @@ WantedBy=multi-user.target
         return len(session_list)
 
     def _node_name_get(self) -> str:
-        """Return the single local k3s node name."""
+        """Return the single local k3s node name.
+
+        Returns:
+            The single local k3s node name.
+        """
 
         result = self._runner.run(
             [
@@ -399,7 +485,14 @@ WantedBy=multi-user.target
         self,
         host_artifact_manifest: Mapping[str, object],
     ) -> str:
-        """Validate preinstalled Helm against immutable launch input."""
+        """Validate preinstalled Helm against immutable launch input.
+
+        Args:
+            host_artifact_manifest: Host artifact manifest.
+
+        Returns:
+            Resulting text value.
+        """
 
         artifact_by_name_map = host_artifact_manifest.get("artifact_by_name_map")
         helm_artifact = artifact_by_name_map.get("helm") if isinstance(artifact_by_name_map, dict) else None

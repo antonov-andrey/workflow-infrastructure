@@ -32,14 +32,27 @@ class CommandRunnerProtocol(Protocol):
         check: bool = True,
         should_capture: bool = True,
     ) -> CommandResultProtocol:
-        """Run one local command."""
+        """Run one local command.
+
+        Args:
+            command_list: Ordered command values.
+            check: Whether a nonzero command exit raises an error.
+            should_capture: Whether stdout and stderr should be captured.
+
+        Returns:
+            Resulting command result protocol.
+        """
 
 
 class ComputeManagerProtocol(Protocol):
     """Compute identity and readiness consumed by interactive access."""
 
     def instance_id_get(self) -> str:
-        """Return the exact current instance ID."""
+        """Return the exact current instance ID.
+
+        Returns:
+            The exact current instance ID.
+        """
 
     def online_wait(self) -> None:
         """Wait for EC2 and Session Manager readiness."""
@@ -56,7 +69,11 @@ class SsmTransportProtocol(Protocol):
     """SSH-over-SSM control-session boundary."""
 
     def ssh_control_session(self) -> AbstractContextManager[Path]:
-        """Return a context manager yielding one SSH control-socket path."""
+        """Return a context manager yielding one SSH control-socket path.
+
+        Returns:
+            A context manager yielding one SSH control-socket path.
+        """
 
 
 class DevelopmentAccessManager:
@@ -74,7 +91,18 @@ class DevelopmentAccessManager:
         runner: CommandRunnerProtocol,
         transport: SsmTransportProtocol,
     ) -> None:
-        """Initialize access from explicit identity and transport boundaries."""
+        """Initialize access from explicit identity and transport boundaries.
+
+        Args:
+            account: Account.
+            aws_profile: Aws profile.
+            aws_region: Aws region.
+            compute: Compute.
+            identity: Identity.
+            port_forward_document_name: Port forward document name.
+            runner: Explicit command execution boundary.
+            transport: Transport.
+        """
 
         self._account = account
         self._aws_profile = aws_profile
@@ -86,7 +114,11 @@ class DevelopmentAccessManager:
         self._transport = transport
 
     def connect(self) -> int:
-        """Open the Product HTTP tunnel through Session Manager."""
+        """Open the Product HTTP tunnel through Session Manager.
+
+        Returns:
+            Session Manager port-forward process exit status.
+        """
 
         self._account.local_operator_context_validate()
         result = self._runner.run(
@@ -117,7 +149,11 @@ class DevelopmentAccessManager:
         return result.returncode
 
     def console(self) -> int:
-        """Open an ordinary Session Manager console."""
+        """Open an ordinary Session Manager console.
+
+        Returns:
+            Session Manager console process exit status.
+        """
 
         self._account.local_operator_context_validate()
         result = self._runner.run(
@@ -138,7 +174,14 @@ class DevelopmentAccessManager:
         return result.returncode
 
     def ssh(self, ssh_argument_list: list[str]) -> int:
-        """Run one SSH client command through ephemeral SSH-over-SSM."""
+        """Run one SSH client command through ephemeral SSH-over-SSM.
+
+        Args:
+            ssh_argument_list: Ordered ssh argument values.
+
+        Returns:
+            SSH client process exit status.
+        """
 
         self._account.local_operator_context_validate()
         self._compute.online_wait()

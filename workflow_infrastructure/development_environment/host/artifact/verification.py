@@ -20,16 +20,34 @@ from workflow_infrastructure.development_environment.host.artifact.model import 
 
 
 class CommandResultProtocol(Protocol):
+    """Declare the command result interface."""
+
     stdout: str
 
 
 class CommandRunnerProtocol(Protocol):
+    """Declare the command runner interface."""
+
     def run(self, command_list: Sequence[str]) -> CommandResultProtocol:
-        """Run one local command."""
+        """Run one local command.
+
+        Args:
+            command_list: Ordered command values.
+
+        Returns:
+            Resulting command result protocol.
+        """
 
 
 def primary_key_fingerprint_list_get(gpg_colon_output: str) -> list[str]:
-    """Return fingerprints bound only to primary public-key records."""
+    """Return fingerprints bound only to primary public-key records.
+
+    Args:
+        gpg_colon_output: Gpg colon output.
+
+    Returns:
+        The fingerprints bound only to primary public-key records.
+    """
 
     primary_fingerprint_list: list[str] = []
     primary_fingerprint_is_pending = False
@@ -51,7 +69,15 @@ def primary_key_fingerprint_list_get(gpg_colon_output: str) -> list[str]:
 
 
 def checksum_file_sha256_get(*, artifact_name: str, checksum_path: Path) -> str:
-    """Return one unique SHA-256 entry from vendor checksum metadata."""
+    """Return one unique SHA-256 entry from vendor checksum metadata.
+
+    Args:
+        artifact_name: Artifact name.
+        checksum_path: Exact filesystem path for checksum.
+
+    Returns:
+        One unique SHA-256 entry from vendor checksum metadata.
+    """
 
     try:
         line_list = checksum_path.read_text(encoding="utf-8").splitlines()
@@ -76,11 +102,27 @@ class HostArtifactVerifier:
         downloader: HostArtifactDownloader,
         runner: CommandRunnerProtocol,
     ) -> None:
+        """Initialize the host artifact verifier dependencies.
+
+        Args:
+            downloader: Downloader.
+            runner: Explicit command execution boundary.
+        """
+
         self._downloader = downloader
         self._runner = runner
 
     def github_release_asset_sha256_get(self, *, asset_name: str, repository: str, version: str) -> str:
-        """Return GitHub's exact digest for one release asset."""
+        """Return GitHub's exact digest for one release asset.
+
+        Args:
+            asset_name: Asset name.
+            repository: Exact Git repository root.
+            version: Version.
+
+        Returns:
+            The gitHub's exact digest for one release asset.
+        """
 
         encoded_version = urllib.parse.quote(version, safe="")
         url = f"https://api.github.com/repos/{repository}/releases/tags/{encoded_version}"
@@ -116,7 +158,14 @@ class HostArtifactVerifier:
         signer_workflow: str,
         source_commit_sha: str,
     ) -> None:
-        """Verify an artifact against one authorized GitHub workflow."""
+        """Verify an artifact against one authorized GitHub workflow.
+
+        Args:
+            artifact_path: Exact filesystem path for artifact.
+            repository: Exact Git repository root.
+            signer_workflow: Signer workflow.
+            source_commit_sha: Source commit sha.
+        """
 
         self._runner.run(
             [
@@ -134,7 +183,12 @@ class HostArtifactVerifier:
         )
 
     def signing_key_validate(self, *, key_path: Path, expected_primary_fingerprint: str) -> None:
-        """Require a downloaded keyring to contain one trusted primary key."""
+        """Require a downloaded keyring to contain one trusted primary key.
+
+        Args:
+            key_path: Exact filesystem path for key.
+            expected_primary_fingerprint: Expected primary fingerprint.
+        """
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             home_path = Path(temporary_directory)
@@ -162,7 +216,14 @@ class HostArtifactVerifier:
         key_path: Path,
         signature_path: Path,
     ) -> None:
-        """Verify a detached signature under one repository trust root."""
+        """Verify a detached signature under one repository trust root.
+
+        Args:
+            artifact_path: Exact filesystem path for artifact.
+            expected_primary_fingerprint: Expected primary fingerprint.
+            key_path: Exact filesystem path for key.
+            signature_path: Exact filesystem path for signature.
+        """
 
         if not key_path.is_file():
             raise HostArtifactResolutionError(f"Release signing trust root is unavailable: {key_path}")
@@ -206,7 +267,12 @@ class HostArtifactVerifier:
             )
 
     def inrelease_signature_validate(self, *, inrelease_path: Path, signing_key_path: Path) -> None:
-        """Verify one clear-signed APT InRelease document."""
+        """Verify one clear-signed APT InRelease document.
+
+        Args:
+            inrelease_path: Exact filesystem path for inrelease.
+            signing_key_path: Exact filesystem path for signing key.
+        """
 
         with tempfile.TemporaryDirectory() as temporary_directory:
             keyring_path = Path(temporary_directory) / "release.gpg"

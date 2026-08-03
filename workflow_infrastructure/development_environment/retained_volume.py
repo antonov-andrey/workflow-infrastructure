@@ -21,10 +21,25 @@ class AwsClientProtocol(Protocol):
         *,
         check: bool = True,
     ) -> subprocess.CompletedProcess[str]:
-        """Run one AWS CLI command."""
+        """Run one AWS CLI command.
+
+        Args:
+            aws_argument_list: Ordered AWS argument values.
+            check: Whether a nonzero command exit raises an error.
+
+        Returns:
+            Completed text-mode subprocess result.
+        """
 
     def json_get(self, aws_argument_list: Sequence[str]) -> dict[str, object]:
-        """Run one AWS CLI command and decode its object response."""
+        """Run one AWS CLI command and decode its object response.
+
+        Args:
+            aws_argument_list: Ordered AWS argument values.
+
+        Returns:
+            Decoded AWS response object.
+        """
 
 
 class EnvironmentIdentityProtocol(Protocol):
@@ -39,13 +54,27 @@ class StackManagerProtocol(Protocol):
     """CloudFormation state surface required by retained volumes."""
 
     def output_by_name_map_get(self, stack_name: str) -> dict[str, str]:
-        """Return exact stack outputs."""
+        """Return exact stack outputs.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            The exact stack outputs.
+        """
 
     def resource_id_by_logical_name_map_get(
         self,
         stack_name: str,
     ) -> dict[str, str]:
-        """Return physical resources by logical identity."""
+        """Return physical resources by logical identity.
+
+        Args:
+            stack_name: Stack name.
+
+        Returns:
+            The physical resources by logical identity.
+        """
 
 
 class DevelopmentRetainedVolumeManager:
@@ -62,7 +91,17 @@ class DevelopmentRetainedVolumeManager:
         instance_state_get: Callable[[str], str],
         stack: StackManagerProtocol,
     ) -> None:
-        """Bind retained storage to one exact development environment."""
+        """Bind retained storage to one exact development environment.
+
+        Args:
+            account_id: Exact account identity.
+            aws: Aws.
+            aws_region: Aws region.
+            foundation_stack_name: Foundation stack name.
+            identity: Identity.
+            instance_state_get: Instance state get.
+            stack: Stack.
+        """
 
         self._account_id = account_id
         self._aws = aws
@@ -161,7 +200,14 @@ class DevelopmentRetainedVolumeManager:
         *,
         snapshot_id: str,
     ) -> tuple[str, dict[str, str]]:
-        """Select the next declarative restored-volume slot."""
+        """Select the next declarative restored-volume slot.
+
+        Args:
+            snapshot_id: Exact snapshot identity.
+
+        Returns:
+            The next declarative restored-volume slot.
+        """
 
         output_by_name_map = self._stack.output_by_name_map_get(self._identity.compute_stack_name)
         source_volume_id = output_by_name_map.get("RetainedVolumeId")
@@ -193,7 +239,12 @@ class DevelopmentRetainedVolumeManager:
         snapshot_id: str,
         source_volume_id: str,
     ) -> None:
-        """Prove restore created a distinct exact-snapshot volume."""
+        """Prove restore created a distinct exact-snapshot volume.
+
+        Args:
+            snapshot_id: Exact snapshot identity.
+            source_volume_id: Exact source volume identity.
+        """
 
         output_by_name_map = self._stack.output_by_name_map_get(self._identity.compute_stack_name)
         restored_volume_id = output_by_name_map.get("RetainedVolumeId")
@@ -210,7 +261,11 @@ class DevelopmentRetainedVolumeManager:
             raise DevelopmentEnvironmentError("Restored retained volume does not match the exact snapshot contract")
 
     def regular_backup_exclude(self, *, volume_id: str) -> None:
-        """Remove one no-longer-current volume from primary regular backup."""
+        """Remove one no-longer-current volume from primary regular backup.
+
+        Args:
+            volume_id: Exact volume identity.
+        """
 
         state, attachment_list = self.state_get(volume_id=volume_id)
         if state != "available" or attachment_list:
@@ -230,7 +285,11 @@ class DevelopmentRetainedVolumeManager:
             raise DevelopmentEnvironmentError("Previous retained volume still belongs to the regular backup set")
 
     def retired_cleanup(self, *, current_volume_id: str) -> None:
-        """Delete stale, detached rollback volumes before the next rollback."""
+        """Delete stale, detached rollback volumes before the next rollback.
+
+        Args:
+            current_volume_id: Exact current volume identity.
+        """
 
         _retained_volume_id_validate(current_volume_id)
         current_volume_payload = self.payload_get(volume_id=current_volume_id)
@@ -283,7 +342,11 @@ class DevelopmentRetainedVolumeManager:
             print(f"OK: stale retained rollback volume {volume_id} deleted")
 
     def regular_backup_status_get(self) -> dict[str, str]:
-        """Return exact primary-only AWS Backup policy status."""
+        """Return exact primary-only AWS Backup policy status.
+
+        Returns:
+            The exact primary-only AWS Backup policy status.
+        """
 
         compute_resource_id_by_logical_name_map = self._stack.resource_id_by_logical_name_map_get(
             self._identity.compute_stack_name
@@ -408,7 +471,14 @@ class DevelopmentRetainedVolumeManager:
             raise DevelopmentEnvironmentError("A non-primary retained volume belongs to the regular backup policy")
 
     def latest_snapshot_id_get(self, volume_id: str) -> str:
-        """Return the newest owned snapshot for one retained volume."""
+        """Return the newest owned snapshot for one retained volume.
+
+        Args:
+            volume_id: Exact volume identity.
+
+        Returns:
+            The newest owned snapshot for one retained volume.
+        """
 
         payload = self._aws.json_get(
             [
@@ -432,7 +502,11 @@ class DevelopmentRetainedVolumeManager:
         return snapshot_id if isinstance(snapshot_id, str) else ""
 
     def volume_id_validate(self, volume_id: str) -> None:
-        """Reject malformed EBS volume identities before any use."""
+        """Reject malformed EBS volume identities before any use.
+
+        Args:
+            volume_id: Exact volume identity.
+        """
 
         _retained_volume_id_validate(volume_id)
 
@@ -441,7 +515,14 @@ class DevelopmentRetainedVolumeManager:
         *,
         volume_id: str,
     ) -> tuple[str, list[dict[str, object]]]:
-        """Return exact EBS state and validated attachment records."""
+        """Return exact EBS state and validated attachment records.
+
+        Args:
+            volume_id: Exact volume identity.
+
+        Returns:
+            The exact EBS state and validated attachment records.
+        """
 
         volume = self.payload_get(volume_id=volume_id)
         state = volume.get("State")
@@ -455,7 +536,14 @@ class DevelopmentRetainedVolumeManager:
         return state, list(attachment_list)
 
     def payload_get(self, *, volume_id: str) -> dict[str, object]:
-        """Return one exact retained EBS volume payload."""
+        """Return one exact retained EBS volume payload.
+
+        Args:
+            volume_id: Exact volume identity.
+
+        Returns:
+            One exact retained EBS volume payload.
+        """
 
         payload = self._aws.json_get(["ec2", "describe-volumes", "--volume-ids", volume_id])
         volume_list = payload.get("Volumes", [])
@@ -469,7 +557,12 @@ class DevelopmentRetainedVolumeManager:
         snapshot_id: str,
         source_volume_id: str,
     ) -> None:
-        """Prove one snapshot is a usable encrypted restore source."""
+        """Prove one snapshot is a usable encrypted restore source.
+
+        Args:
+            snapshot_id: Exact snapshot identity.
+            source_volume_id: Exact source volume identity.
+        """
 
         source_payload = self.payload_get(volume_id=source_volume_id)
         payload = self._aws.json_get(["ec2", "describe-snapshots", "--snapshot-ids", snapshot_id])
@@ -490,7 +583,14 @@ class DevelopmentRetainedVolumeManager:
 
 
 def _tag_by_name_map_get(payload: dict[str, object]) -> dict[str, str]:
-    """Return validated text tags from one AWS resource payload."""
+    """Return validated text tags from one AWS resource payload.
+
+    Args:
+        payload: Structured operation payload.
+
+    Returns:
+        The validated text tags from one AWS resource payload.
+    """
 
     return {
         tag["Key"]: tag["Value"]
@@ -500,7 +600,11 @@ def _tag_by_name_map_get(payload: dict[str, object]) -> dict[str, str]:
 
 
 def _retained_volume_id_validate(volume_id: str) -> None:
-    """Reject malformed EBS volume identities before destructive actions."""
+    """Reject malformed EBS volume identities before destructive actions.
+
+    Args:
+        volume_id: Exact volume identity.
+    """
 
     if re.fullmatch(r"vol-[0-9a-f]+", volume_id) is None:
         raise DevelopmentEnvironmentError(f"Retained EBS volume ID is malformed: {volume_id}")
