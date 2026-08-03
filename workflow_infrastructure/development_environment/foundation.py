@@ -6,6 +6,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Protocol
 
+from workflow_infrastructure.development_environment.error import (
+    DevelopmentEnvironmentError,
+)
+
 
 class AccountVerifierProtocol(Protocol):
     def account_foundation_validate(self) -> None:
@@ -36,9 +40,7 @@ class StackManagerProtocol(Protocol):
     def parameter_by_name_map_get(self, stack_name: str) -> dict[str, str]:
         """Return stack parameters."""
 
-    def payload_get(
-        self, stack_name: str, *, is_required: bool
-    ) -> Mapping[str, object]:
+    def payload_get(self, stack_name: str, *, is_required: bool) -> Mapping[str, object]:
         """Return an existing stack or an empty mapping."""
 
     def template_validate(self, template_path: Path) -> None:
@@ -72,6 +74,9 @@ class DevelopmentAccountFoundationManager:
         """Apply the primary-owned state or validate it without competing writes."""
 
         if not self._identity.is_primary:
+            if not self.exists():
+                raise DevelopmentEnvironmentError("Account-foundation stack is unavailable")
+            self._stack.drift_validate(self.STACK_NAME)
             self._account.account_foundation_validate()
             return
         parameter_by_name_map = {
@@ -80,15 +85,11 @@ class DevelopmentAccountFoundationManager:
         }
         if self.exists():
             current = self._stack.parameter_by_name_map_get(self.STACK_NAME)
-            parameter_by_name_map.update(
-                {name: current.get(name, "") for name in parameter_by_name_map}
-            )
+            parameter_by_name_map.update({name: current.get(name, "") for name in parameter_by_name_map})
         if primary_platform_role_arn is not None:
             parameter_by_name_map["PrimaryPlatformRoleArn"] = primary_platform_role_arn
         if primary_retained_volume_arn is not None:
-            parameter_by_name_map["PrimaryRetainedVolumeArn"] = (
-                primary_retained_volume_arn
-            )
+            parameter_by_name_map["PrimaryRetainedVolumeArn"] = primary_retained_volume_arn
         self._stack.template_validate(self._template_path)
         self._stack.apply(
             stack_name=self.STACK_NAME,

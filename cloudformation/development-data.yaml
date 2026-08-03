@@ -25,11 +25,34 @@ Parameters:
     Default: http://localhost:8080
     Description: Browser origin allowed to use direct S3 credentials.
 
+  LocalHttpPort:
+    Type: Number
+    Default: 8080
+    MinValue: 1024
+    MaxValue: 65535
+    Description: Account-unique local and remote SSM tunnel port reserved by this environment.
+
 Conditions:
   IsPrimaryEnvironment: !Equals [!Ref EnvironmentName, primary]
   IsNonPrimaryEnvironment: !Not [!Condition IsPrimaryEnvironment]
 
 Resources:
+  HttpPortReservation:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /development/http-port/${LocalHttpPort}
+      Type: String
+      Value: !If
+        - IsPrimaryEnvironment
+        - primary
+        - !Ref GitWorktree
+      Description: Exact development environment that owns this SSM tunnel port.
+      Tags:
+        Name: !Sub http-port-${LocalHttpPort}
+        EnvironmentClass: development
+        EnvironmentName: !Ref EnvironmentName
+        ManagedBy: CloudFormation
+
   LakeFormationDataAccessRole:
     Type: AWS::IAM::Role
     Properties:
@@ -1271,6 +1294,8 @@ Resources:
 Outputs:
   AccountId:
     Value: !Ref AWS::AccountId
+  LocalHttpPort:
+    Value: !Ref LocalHttpPort
   EnvironmentName:
     Value: !Ref EnvironmentName
   GitWorktree:

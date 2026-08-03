@@ -77,17 +77,6 @@ class DevelopmentCostReviewer:
         snapshot_source_volume_gib_count_max = Decimal(80)
         snapshot_stored_gib_count_max = snapshot_retention_count * snapshot_source_volume_gib_count_max
         usage_price_meter_spec_by_service_name_map = {
-            "api_gateway": {
-                "rest_api_request": (
-                    "AmazonApiGateway",
-                    {
-                        "operation": "ApiGatewayRequest",
-                        "regionCode": self._region,
-                        "usagetype": "USE1-ApiGatewayRequest",
-                    },
-                    "USE1-ApiGatewayRequest",
-                ),
-            },
             "athena": {
                 "data_scanned": (
                     "AmazonAthena",

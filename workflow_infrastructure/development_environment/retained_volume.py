@@ -75,9 +75,7 @@ class DevelopmentRetainedVolumeManager:
     def attachment_validate(self) -> None:
         """Prove current retained volume attachment identity."""
 
-        output_by_name_map = self._stack.output_by_name_map_get(
-            self._identity.compute_stack_name
-        )
+        output_by_name_map = self._stack.output_by_name_map_get(self._identity.compute_stack_name)
         instance_id = output_by_name_map["InstanceId"]
         volume_id = output_by_name_map["RetainedVolumeId"]
         state, attachment_list = self.state_get(volume_id=volume_id)
@@ -91,22 +89,17 @@ class DevelopmentRetainedVolumeManager:
             or attachment_list[0].get("VolumeId") != volume_id
         ):
             raise DevelopmentEnvironmentError(
-                "Retained EBS volume is not exactly attached to the current "
-                "stack instance"
+                "Retained EBS volume is not exactly attached to the current " "stack instance"
             )
 
     def detach_for_replacement(self) -> None:
         """Detach only after the old instance is proven stopped."""
 
-        output_by_name_map = self._stack.output_by_name_map_get(
-            self._identity.compute_stack_name
-        )
+        output_by_name_map = self._stack.output_by_name_map_get(self._identity.compute_stack_name)
         instance_id = output_by_name_map["InstanceId"]
         volume_id = output_by_name_map["RetainedVolumeId"]
         if self._instance_state_get(instance_id) != "stopped":
-            raise DevelopmentEnvironmentError(
-                "Retained EBS volume can be detached only from a stopped instance"
-            )
+            raise DevelopmentEnvironmentError("Retained EBS volume can be detached only from a stopped instance")
         state, attachment_list = self.state_get(volume_id=volume_id)
         if not attachment_list and state == "available":
             return
@@ -118,9 +111,7 @@ class DevelopmentRetainedVolumeManager:
             or attachment_list[0].get("State") != "attached"
             or attachment_list[0].get("DeleteOnTermination") is not False
         ):
-            raise DevelopmentEnvironmentError(
-                "Retained EBS volume has an unexpected attachment boundary"
-            )
+            raise DevelopmentEnvironmentError("Retained EBS volume has an unexpected attachment boundary")
         self._aws.run(
             [
                 "ec2",
@@ -136,16 +127,12 @@ class DevelopmentRetainedVolumeManager:
         self._aws.run(["ec2", "wait", "volume-available", "--volume-ids", volume_id])
         state, attachment_list = self.state_get(volume_id=volume_id)
         if state != "available" or attachment_list:
-            raise DevelopmentEnvironmentError(
-                "Retained EBS volume detachment was not proven"
-            )
+            raise DevelopmentEnvironmentError("Retained EBS volume detachment was not proven")
 
     def attachment_ensure(self) -> None:
         """Recover the stack-declared attachment after failed replacement."""
 
-        output_by_name_map = self._stack.output_by_name_map_get(
-            self._identity.compute_stack_name
-        )
+        output_by_name_map = self._stack.output_by_name_map_get(self._identity.compute_stack_name)
         instance_id = output_by_name_map["InstanceId"]
         volume_id = output_by_name_map["RetainedVolumeId"]
         state, attachment_list = self.state_get(volume_id=volume_id)
@@ -153,9 +140,7 @@ class DevelopmentRetainedVolumeManager:
             self.attachment_validate()
             return
         if state != "available":
-            raise DevelopmentEnvironmentError(
-                "Retained EBS volume cannot be reattached from its current state"
-            )
+            raise DevelopmentEnvironmentError("Retained EBS volume cannot be reattached from its current state")
         self._aws.run(
             [
                 "ec2",
@@ -178,17 +163,11 @@ class DevelopmentRetainedVolumeManager:
     ) -> tuple[str, dict[str, str]]:
         """Select the next declarative restored-volume slot."""
 
-        output_by_name_map = self._stack.output_by_name_map_get(
-            self._identity.compute_stack_name
-        )
+        output_by_name_map = self._stack.output_by_name_map_get(self._identity.compute_stack_name)
         source_volume_id = output_by_name_map.get("RetainedVolumeId")
         current_slot = output_by_name_map.get("RetainedVolumeSlot", "base")
-        if not isinstance(source_volume_id, str) or not source_volume_id.startswith(
-            "vol-"
-        ):
-            raise DevelopmentEnvironmentError(
-                "Compute stack retained-volume output is malformed"
-            )
+        if not isinstance(source_volume_id, str) or not source_volume_id.startswith("vol-"):
+            raise DevelopmentEnvironmentError("Compute stack retained-volume output is malformed")
         next_slot_by_current_slot_map = {
             "a": "b",
             "b": "a",
@@ -197,9 +176,7 @@ class DevelopmentRetainedVolumeManager:
         try:
             next_slot = next_slot_by_current_slot_map[current_slot]
         except KeyError as error:
-            raise DevelopmentEnvironmentError(
-                "Compute stack retained-volume slot is malformed"
-            ) from error
+            raise DevelopmentEnvironmentError("Compute stack retained-volume slot is malformed") from error
         self._snapshot_source_validate(
             snapshot_id=snapshot_id,
             source_volume_id=source_volume_id,
@@ -218,43 +195,26 @@ class DevelopmentRetainedVolumeManager:
     ) -> None:
         """Prove restore created a distinct exact-snapshot volume."""
 
-        output_by_name_map = self._stack.output_by_name_map_get(
-            self._identity.compute_stack_name
-        )
+        output_by_name_map = self._stack.output_by_name_map_get(self._identity.compute_stack_name)
         restored_volume_id = output_by_name_map.get("RetainedVolumeId")
-        if (
-            not isinstance(restored_volume_id, str)
-            or restored_volume_id == source_volume_id
-        ):
-            raise DevelopmentEnvironmentError(
-                "Snapshot restore did not create a distinct retained volume"
-            )
+        if not isinstance(restored_volume_id, str) or restored_volume_id == source_volume_id:
+            raise DevelopmentEnvironmentError("Snapshot restore did not create a distinct retained volume")
         payload = self.payload_get(volume_id=restored_volume_id)
         tag_by_name_map = _tag_by_name_map_get(payload)
         if (
             payload.get("SnapshotId") != snapshot_id
             or payload.get("Encrypted") is not True
-            or (
-                self._identity.environment_name == "primary"
-                and tag_by_name_map.get("regular-backup") != "primary"
-            )
-            or (
-                self._identity.environment_name != "primary"
-                and "regular-backup" in tag_by_name_map
-            )
+            or (self._identity.environment_name == "primary" and tag_by_name_map.get("regular-backup") != "primary")
+            or (self._identity.environment_name != "primary" and "regular-backup" in tag_by_name_map)
         ):
-            raise DevelopmentEnvironmentError(
-                "Restored retained volume does not match the exact snapshot contract"
-            )
+            raise DevelopmentEnvironmentError("Restored retained volume does not match the exact snapshot contract")
 
     def regular_backup_exclude(self, *, volume_id: str) -> None:
         """Remove one no-longer-current volume from primary regular backup."""
 
         state, attachment_list = self.state_get(volume_id=volume_id)
         if state != "available" or attachment_list:
-            raise DevelopmentEnvironmentError(
-                "Previous retained volume cannot leave the backup set while attached"
-            )
+            raise DevelopmentEnvironmentError("Previous retained volume cannot leave the backup set while attached")
         self._aws.run(
             [
                 "ec2",
@@ -267,9 +227,7 @@ class DevelopmentRetainedVolumeManager:
         )
         payload = self.payload_get(volume_id=volume_id)
         if "regular-backup" in _tag_by_name_map_get(payload):
-            raise DevelopmentEnvironmentError(
-                "Previous retained volume still belongs to the regular backup set"
-            )
+            raise DevelopmentEnvironmentError("Previous retained volume still belongs to the regular backup set")
 
     def retired_cleanup(self, *, current_volume_id: str) -> None:
         """Delete stale, detached rollback volumes before the next rollback."""
@@ -283,28 +241,19 @@ class DevelopmentRetainedVolumeManager:
                 "--filters",
                 f"Name=tag:Name,Values=retained-{self._identity.environment_name}",
                 "Name=tag:EnvironmentClass,Values=development",
-                (
-                    "Name=tag:EnvironmentName,Values="
-                    f"{self._identity.environment_name}"
-                ),
+                ("Name=tag:EnvironmentName,Values=" f"{self._identity.environment_name}"),
                 "Name=tag:ManagedBy,Values=CloudFormation",
             ]
         )
         volume_list = payload.get("Volumes", [])
-        if not isinstance(volume_list, list) or any(
-            not isinstance(volume, dict) for volume in volume_list
-        ):
-            raise DevelopmentEnvironmentError(
-                "Retained rollback volume inventory is malformed"
-            )
+        if not isinstance(volume_list, list) or any(not isinstance(volume, dict) for volume in volume_list):
+            raise DevelopmentEnvironmentError("Retained rollback volume inventory is malformed")
         for volume_payload in volume_list:
             volume_id = volume_payload.get("VolumeId")
             if volume_id == current_volume_id:
                 continue
             if not isinstance(volume_id, str):
-                raise DevelopmentEnvironmentError(
-                    "Retained rollback volume identity is malformed"
-                )
+                raise DevelopmentEnvironmentError("Retained rollback volume identity is malformed")
             _retained_volume_id_validate(volume_id)
             tag_by_name_map = _tag_by_name_map_get(volume_payload)
             required_tag_by_name_map = {
@@ -317,24 +266,18 @@ class DevelopmentRetainedVolumeManager:
             if self._identity.git_worktree:
                 required_tag_by_name_map["git-worktree"] = self._identity.git_worktree
             if any(
-                tag_by_name_map.get(tag_name) != tag_value
-                for tag_name, tag_value in required_tag_by_name_map.items()
+                tag_by_name_map.get(tag_name) != tag_value for tag_name, tag_value in required_tag_by_name_map.items()
             ):
-                raise DevelopmentEnvironmentError(
-                    f"Retained rollback volume {volume_id} ownership is ambiguous"
-                )
+                raise DevelopmentEnvironmentError(f"Retained rollback volume {volume_id} ownership is ambiguous")
             if (
                 volume_payload.get("State") != "available"
                 or volume_payload.get("Attachments") != []
                 or volume_payload.get("Encrypted") is not True
                 or volume_payload.get("Size") != current_volume_payload.get("Size")
-                or volume_payload.get("KmsKeyId")
-                != current_volume_payload.get("KmsKeyId")
+                or volume_payload.get("KmsKeyId") != current_volume_payload.get("KmsKeyId")
                 or "regular-backup" in tag_by_name_map
             ):
-                raise DevelopmentEnvironmentError(
-                    f"Retained rollback volume {volume_id} is not safe to replace"
-                )
+                raise DevelopmentEnvironmentError(f"Retained rollback volume {volume_id} is not safe to replace")
             self._aws.run(["ec2", "delete-volume", "--volume-id", volume_id])
             self._aws.run(["ec2", "wait", "volume-deleted", "--volume-ids", volume_id])
             print(f"OK: stale retained rollback volume {volume_id} deleted")
@@ -342,10 +285,8 @@ class DevelopmentRetainedVolumeManager:
     def regular_backup_status_get(self) -> dict[str, str]:
         """Return exact primary-only AWS Backup policy status."""
 
-        compute_resource_id_by_logical_name_map = (
-            self._stack.resource_id_by_logical_name_map_get(
-                self._identity.compute_stack_name
-            )
+        compute_resource_id_by_logical_name_map = self._stack.resource_id_by_logical_name_map_get(
+            self._identity.compute_stack_name
         )
         backup_logical_name_set = {
             "RetainedBackupPlan",
@@ -353,9 +294,7 @@ class DevelopmentRetainedVolumeManager:
             "RetainedBackupSelection",
             "RetainedBackupVault",
         }
-        present_compute_backup_name_set = (
-            backup_logical_name_set & compute_resource_id_by_logical_name_map.keys()
-        )
+        present_compute_backup_name_set = backup_logical_name_set & compute_resource_id_by_logical_name_map.keys()
         if present_compute_backup_name_set:
             raise DevelopmentEnvironmentError(
                 "Environment compute stack competes with account-foundation AWS Backup ownership"
@@ -367,36 +306,20 @@ class DevelopmentRetainedVolumeManager:
                 "selection_id": "",
                 "state": "NOT_APPLICABLE",
             }
-        resource_id_by_logical_name_map = (
-            self._stack.resource_id_by_logical_name_map_get(self._foundation_stack_name)
-        )
+        resource_id_by_logical_name_map = self._stack.resource_id_by_logical_name_map_get(self._foundation_stack_name)
         if backup_logical_name_set - resource_id_by_logical_name_map.keys():
-            raise DevelopmentEnvironmentError(
-                "Account-foundation stack has an incomplete AWS Backup policy"
-            )
-        output_by_name_map = self._stack.output_by_name_map_get(
-            self._identity.compute_stack_name
-        )
+            raise DevelopmentEnvironmentError("Account-foundation stack has an incomplete AWS Backup policy")
+        output_by_name_map = self._stack.output_by_name_map_get(self._identity.compute_stack_name)
         volume_id = output_by_name_map.get("RetainedVolumeId")
         if not isinstance(volume_id, str):
-            raise DevelopmentEnvironmentError(
-                "Primary compute stack has no retained volume identity"
-            )
+            raise DevelopmentEnvironmentError("Primary compute stack has no retained volume identity")
         plan_id = resource_id_by_logical_name_map["RetainedBackupPlan"]
         vault_name = resource_id_by_logical_name_map["RetainedBackupVault"]
-        plan_payload = self._aws.json_get(
-            ["backup", "get-backup-plan", "--backup-plan-id", plan_id]
-        )
+        plan_payload = self._aws.json_get(["backup", "get-backup-plan", "--backup-plan-id", plan_id])
         backup_plan = plan_payload.get("BackupPlan")
         rule_list = backup_plan.get("Rules") if isinstance(backup_plan, dict) else None
-        if (
-            not isinstance(rule_list, list)
-            or len(rule_list) != 1
-            or not isinstance(rule_list[0], dict)
-        ):
-            raise DevelopmentEnvironmentError(
-                "AWS Backup retained-volume plan response is malformed"
-            )
+        if not isinstance(rule_list, list) or len(rule_list) != 1 or not isinstance(rule_list[0], dict):
+            raise DevelopmentEnvironmentError("AWS Backup retained-volume plan response is malformed")
         rule = rule_list[0]
         lifecycle = rule.get("Lifecycle")
         if (
@@ -416,9 +339,7 @@ class DevelopmentRetainedVolumeManager:
             or not isinstance(lifecycle, dict)
             or lifecycle.get("DeleteAfterDays") != 7
         ):
-            raise DevelopmentEnvironmentError(
-                "AWS Backup retained-volume plan differs from the development policy"
-            )
+            raise DevelopmentEnvironmentError("AWS Backup retained-volume plan differs from the development policy")
         selection_list_payload = self._aws.json_get(
             [
                 "backup",
@@ -432,21 +353,16 @@ class DevelopmentRetainedVolumeManager:
             [
                 item
                 for item in selection_list
-                if isinstance(item, dict)
-                and item.get("SelectionName") == "primary-retained-volume"
+                if isinstance(item, dict) and item.get("SelectionName") == "primary-retained-volume"
             ]
             if isinstance(selection_list, list)
             else []
         )
         if len(matching_selection_list) != 1:
-            raise DevelopmentEnvironmentError(
-                "AWS Backup primary retained-volume selection is unavailable"
-            )
+            raise DevelopmentEnvironmentError("AWS Backup primary retained-volume selection is unavailable")
         selection_id = matching_selection_list[0].get("SelectionId")
         if not isinstance(selection_id, str) or not selection_id:
-            raise DevelopmentEnvironmentError(
-                "AWS Backup primary retained-volume selection has no identity"
-            )
+            raise DevelopmentEnvironmentError("AWS Backup primary retained-volume selection has no identity")
         selection_payload = self._aws.json_get(
             [
                 "backup",
@@ -458,9 +374,7 @@ class DevelopmentRetainedVolumeManager:
             ]
         )
         backup_selection = selection_payload.get("BackupSelection")
-        expected_resource_arn = (
-            f"arn:aws:ec2:{self._aws_region}:{self._account_id}:" f"volume/{volume_id}"
-        )
+        expected_resource_arn = f"arn:aws:ec2:{self._aws_region}:{self._account_id}:" f"volume/{volume_id}"
         if (
             not isinstance(backup_selection, dict)
             or backup_selection.get("SelectionName") != "primary-retained-volume"
@@ -469,9 +383,7 @@ class DevelopmentRetainedVolumeManager:
             or not isinstance(backup_selection.get("IamRoleArn"), str)
             or not backup_selection["IamRoleArn"].endswith("/backup-primary-retained")
         ):
-            raise DevelopmentEnvironmentError(
-                "AWS Backup primary retained-volume selection is malformed"
-            )
+            raise DevelopmentEnvironmentError("AWS Backup primary retained-volume selection is malformed")
         return {
             "mode": "aws_backup",
             "plan_id": plan_id,
@@ -483,25 +395,17 @@ class DevelopmentRetainedVolumeManager:
         """Require AWS Backup only for the primary development server."""
 
         status = self.regular_backup_status_get()
-        output_by_name_map = self._stack.output_by_name_map_get(
-            self._identity.compute_stack_name
-        )
+        output_by_name_map = self._stack.output_by_name_map_get(self._identity.compute_stack_name)
         volume_id = output_by_name_map.get("RetainedVolumeId")
         if not isinstance(volume_id, str):
-            raise DevelopmentEnvironmentError(
-                "Compute stack has no retained volume identity"
-            )
+            raise DevelopmentEnvironmentError("Compute stack has no retained volume identity")
         volume_payload = self.payload_get(volume_id=volume_id)
         backup_tag_value = _tag_by_name_map_get(volume_payload).get("regular-backup")
         if self._identity.environment_name == "primary":
             if status["state"] != "ACTIVE" or backup_tag_value != "primary":
-                raise DevelopmentEnvironmentError(
-                    "Primary retained volume is outside the active AWS Backup policy"
-                )
+                raise DevelopmentEnvironmentError("Primary retained volume is outside the active AWS Backup policy")
         elif backup_tag_value is not None:
-            raise DevelopmentEnvironmentError(
-                "A non-primary retained volume belongs to the regular backup policy"
-            )
+            raise DevelopmentEnvironmentError("A non-primary retained volume belongs to the regular backup policy")
 
     def latest_snapshot_id_get(self, volume_id: str) -> str:
         """Return the newest owned snapshot for one retained volume."""
@@ -527,8 +431,7 @@ class DevelopmentRetainedVolumeManager:
         snapshot_id = snapshot_payload.get("SnapshotId", "")
         return snapshot_id if isinstance(snapshot_id, str) else ""
 
-    @staticmethod
-    def volume_id_validate(volume_id: str) -> None:
+    def volume_id_validate(self, volume_id: str) -> None:
         """Reject malformed EBS volume identities before any use."""
 
         _retained_volume_id_validate(volume_id)
@@ -554,18 +457,10 @@ class DevelopmentRetainedVolumeManager:
     def payload_get(self, *, volume_id: str) -> dict[str, object]:
         """Return one exact retained EBS volume payload."""
 
-        payload = self._aws.json_get(
-            ["ec2", "describe-volumes", "--volume-ids", volume_id]
-        )
+        payload = self._aws.json_get(["ec2", "describe-volumes", "--volume-ids", volume_id])
         volume_list = payload.get("Volumes", [])
-        if (
-            not isinstance(volume_list, list)
-            or len(volume_list) != 1
-            or not isinstance(volume_list[0], dict)
-        ):
-            raise DevelopmentEnvironmentError(
-                "Retained EBS volume response is malformed"
-            )
+        if not isinstance(volume_list, list) or len(volume_list) != 1 or not isinstance(volume_list[0], dict):
+            raise DevelopmentEnvironmentError("Retained EBS volume response is malformed")
         return volume_list[0]
 
     def _snapshot_source_validate(
@@ -577,18 +472,10 @@ class DevelopmentRetainedVolumeManager:
         """Prove one snapshot is a usable encrypted restore source."""
 
         source_payload = self.payload_get(volume_id=source_volume_id)
-        payload = self._aws.json_get(
-            ["ec2", "describe-snapshots", "--snapshot-ids", snapshot_id]
-        )
+        payload = self._aws.json_get(["ec2", "describe-snapshots", "--snapshot-ids", snapshot_id])
         snapshot_list = payload.get("Snapshots", [])
-        if (
-            not isinstance(snapshot_list, list)
-            or len(snapshot_list) != 1
-            or not isinstance(snapshot_list[0], dict)
-        ):
-            raise DevelopmentEnvironmentError(
-                "Retained EBS snapshot response is malformed"
-            )
+        if not isinstance(snapshot_list, list) or len(snapshot_list) != 1 or not isinstance(snapshot_list[0], dict):
+            raise DevelopmentEnvironmentError("Retained EBS snapshot response is malformed")
         snapshot_payload = snapshot_list[0]
         if (
             snapshot_payload.get("SnapshotId") != snapshot_id
@@ -599,9 +486,7 @@ class DevelopmentRetainedVolumeManager:
             or not isinstance(source_payload.get("Size"), int)
             or snapshot_payload["VolumeSize"] > source_payload["Size"]
         ):
-            raise DevelopmentEnvironmentError(
-                "Retained EBS snapshot is not an exact usable encrypted source"
-            )
+            raise DevelopmentEnvironmentError("Retained EBS snapshot is not an exact usable encrypted source")
 
 
 def _tag_by_name_map_get(payload: dict[str, object]) -> dict[str, str]:
@@ -610,9 +495,7 @@ def _tag_by_name_map_get(payload: dict[str, object]) -> dict[str, str]:
     return {
         tag["Key"]: tag["Value"]
         for tag in payload.get("Tags", [])
-        if isinstance(tag, dict)
-        and isinstance(tag.get("Key"), str)
-        and isinstance(tag.get("Value"), str)
+        if isinstance(tag, dict) and isinstance(tag.get("Key"), str) and isinstance(tag.get("Value"), str)
     }
 
 
@@ -620,6 +503,4 @@ def _retained_volume_id_validate(volume_id: str) -> None:
     """Reject malformed EBS volume identities before destructive actions."""
 
     if re.fullmatch(r"vol-[0-9a-f]+", volume_id) is None:
-        raise DevelopmentEnvironmentError(
-            f"Retained EBS volume ID is malformed: {volume_id}"
-        )
+        raise DevelopmentEnvironmentError(f"Retained EBS volume ID is malformed: {volume_id}")

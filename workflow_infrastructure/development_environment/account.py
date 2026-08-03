@@ -67,8 +67,7 @@ class DevelopmentAccountVerifier:
         payload = self._aws.json_get(["sts", "get-caller-identity"])
         if payload.get("Account") != self._account_id:
             raise DevelopmentEnvironmentError(
-                f"AWS profile {self._profile} targets {payload.get('Account')}, "
-                f"expected {self._account_id}"
+                f"AWS profile {self._profile} targets {payload.get('Account')}, " f"expected {self._account_id}"
             )
         region_result = self._runner.run(
             [
@@ -83,8 +82,7 @@ class DevelopmentAccountVerifier:
         actual_region = region_result.stdout.strip()
         if actual_region != self._region:
             raise DevelopmentEnvironmentError(
-                f"AWS profile {self._profile} region is {actual_region}, "
-                f"expected {self._region}"
+                f"AWS profile {self._profile} region is {actual_region}, " f"expected {self._region}"
             )
         self.service_readiness_validate()
 
@@ -123,22 +121,16 @@ class DevelopmentAccountVerifier:
             "IgnorePublicAcls": True,
             "RestrictPublicBuckets": True,
         }:
-            raise DevelopmentEnvironmentError(
-                "Account-level S3 Block Public Access is not fully enabled"
-            )
+            raise DevelopmentEnvironmentError("Account-level S3 Block Public Access is not fully enabled")
 
     def _data_lake_settings_validate(self) -> None:
         """Require the exact primary-owned Lake Formation account foundation."""
 
-        parameter_by_name_map = self._stack.parameter_by_name_map_get(
-            self._foundation_stack_name
-        )
+        parameter_by_name_map = self._stack.parameter_by_name_map_get(self._foundation_stack_name)
         deployment_principal_arn = parameter_by_name_map.get("DeploymentPrincipalArn")
         primary_platform_role_arn = parameter_by_name_map.get("PrimaryPlatformRoleArn")
         if not deployment_principal_arn:
-            raise DevelopmentEnvironmentError(
-                "Account-foundation deployment principal is unavailable"
-            )
+            raise DevelopmentEnvironmentError("Account-foundation deployment principal is unavailable")
         payload = self._aws.json_get(
             [
                 "lakeformation",
@@ -149,28 +141,18 @@ class DevelopmentAccountVerifier:
         )
         settings = payload.get("DataLakeSettings")
         if not isinstance(settings, Mapping):
-            raise DevelopmentEnvironmentError(
-                "Lake Formation account settings are unavailable"
-            )
+            raise DevelopmentEnvironmentError("Lake Formation account settings are unavailable")
         admin_list = settings.get("DataLakeAdmins")
         if not isinstance(admin_list, list):
-            raise DevelopmentEnvironmentError(
-                "Lake Formation account administrator list is unavailable"
-            )
+            raise DevelopmentEnvironmentError("Lake Formation account administrator list is unavailable")
         actual_admin_arn_set = {
-            item.get("DataLakePrincipalIdentifier")
-            for item in admin_list
-            if isinstance(item, Mapping)
+            item.get("DataLakePrincipalIdentifier") for item in admin_list if isinstance(item, Mapping)
         }
         expected_admin_arn_set = {deployment_principal_arn}
         if primary_platform_role_arn:
             expected_admin_arn_set.add(primary_platform_role_arn)
-        if actual_admin_arn_set != expected_admin_arn_set or len(admin_list) != len(
-            expected_admin_arn_set
-        ):
-            raise DevelopmentEnvironmentError(
-                "Lake Formation account administrators differ from the primary owner"
-            )
+        if actual_admin_arn_set != expected_admin_arn_set or len(admin_list) != len(expected_admin_arn_set):
+            raise DevelopmentEnvironmentError("Lake Formation account administrators differ from the primary owner")
         required_value_by_name_map: dict[str, object] = {
             "AllowExternalDataFiltering": False,
             "CreateDatabaseDefaultPermissions": [],
@@ -197,28 +179,20 @@ class DevelopmentAccountVerifier:
             "ReadOnlyAdmins",
         ):
             if settings.get(optional_empty_name, []) != []:
-                raise DevelopmentEnvironmentError(
-                    f"Lake Formation account setting {optional_empty_name} must be empty"
-                )
+                raise DevelopmentEnvironmentError(f"Lake Formation account setting {optional_empty_name} must be empty")
 
     def _session_manager_preferences_validate(self) -> None:
         """Require encrypted ordinary-shell command/output logging preferences."""
 
-        output_by_name_map = self._stack.output_by_name_map_get(
-            self._foundation_stack_name
-        )
+        output_by_name_map = self._stack.output_by_name_map_get(self._foundation_stack_name)
         expected_log_group_name = output_by_name_map.get("SessionShellLogGroupName")
         expected_key_arn = output_by_name_map.get("SessionShellLogKeyArn")
         if expected_log_group_name != "/session-manager/shell":
-            raise DevelopmentEnvironmentError(
-                "Account-foundation Session Manager log group is unavailable"
-            )
+            raise DevelopmentEnvironmentError("Account-foundation Session Manager log group is unavailable")
         if not isinstance(expected_key_arn, str) or not expected_key_arn.startswith(
             f"arn:aws:kms:{self._region}:{self._account_id}:key/"
         ):
-            raise DevelopmentEnvironmentError(
-                "Account-foundation Session Manager KMS key is unavailable"
-            )
+            raise DevelopmentEnvironmentError("Account-foundation Session Manager KMS key is unavailable")
         log_payload = self._aws.json_get(
             [
                 "logs",
@@ -236,12 +210,8 @@ class DevelopmentAccountVerifier:
             or log_group_list[0].get("kmsKeyId") != expected_key_arn
             or log_group_list[0].get("retentionInDays") != 30
         ):
-            raise DevelopmentEnvironmentError(
-                "Session Manager shell log group differs from account-foundation"
-            )
-        key_payload = self._aws.json_get(
-            ["kms", "describe-key", "--key-id", expected_key_arn]
-        )
+            raise DevelopmentEnvironmentError("Session Manager shell log group differs from account-foundation")
+        key_payload = self._aws.json_get(["kms", "describe-key", "--key-id", expected_key_arn])
         key_metadata = key_payload.get("KeyMetadata")
         if (
             not isinstance(key_metadata, Mapping)
@@ -249,9 +219,7 @@ class DevelopmentAccountVerifier:
             or key_metadata.get("Enabled") is not True
             or key_metadata.get("KeyState") != "Enabled"
         ):
-            raise DevelopmentEnvironmentError(
-                "Session Manager shell log KMS key is not active"
-            )
+            raise DevelopmentEnvironmentError("Session Manager shell log KMS key is not active")
         payload = self._aws.json_get(
             [
                 "ssm",
@@ -263,15 +231,19 @@ class DevelopmentAccountVerifier:
             ]
         )
         document = payload.get("Document")
+        document_version = document.get("DocumentVersion") if isinstance(document, Mapping) else None
         if (
             not isinstance(document, Mapping)
             or document.get("DocumentType") != "Session"
             or document.get("Status") != "Active"
             or document.get("Name") != "SSM-SessionManagerRunShell"
+            or not isinstance(document_version, str)
+            or not document_version.isdecimal()
+            or int(document_version) < 1
+            or document.get("DefaultVersion") != document_version
+            or document.get("LatestVersion") != document_version
         ):
-            raise DevelopmentEnvironmentError(
-                "Session Manager shell preferences document is unavailable"
-            )
+            raise DevelopmentEnvironmentError("Session Manager shell preferences document is unavailable")
         content_payload = self._aws.json_get(
             [
                 "ssm",
@@ -279,20 +251,24 @@ class DevelopmentAccountVerifier:
                 "--name",
                 "SSM-SessionManagerRunShell",
                 "--document-version",
-                "$LATEST",
+                document_version,
                 "--document-format",
                 "JSON",
             ]
         )
+        if (
+            content_payload.get("Name") != "SSM-SessionManagerRunShell"
+            or content_payload.get("DocumentVersion") != document_version
+            or content_payload.get("DocumentType") != "Session"
+            or content_payload.get("DocumentFormat") != "JSON"
+            or content_payload.get("Status") != "Active"
+        ):
+            raise DevelopmentEnvironmentError("Session Manager shell preferences content identity is malformed")
         content_text = content_payload.get("Content")
         try:
-            content = (
-                json.loads(content_text) if isinstance(content_text, str) else None
-            )
+            content = json.loads(content_text) if isinstance(content_text, str) else None
         except json.JSONDecodeError as error:
-            raise DevelopmentEnvironmentError(
-                "Session Manager shell preferences content is malformed"
-            ) from error
+            raise DevelopmentEnvironmentError("Session Manager shell preferences content is malformed") from error
         expected_content = {
             "schemaVersion": "1.0",
             "description": "Development account Session Manager shell preferences.",
@@ -301,7 +277,6 @@ class DevelopmentAccountVerifier:
                 "cloudWatchEncryptionEnabled": True,
                 "cloudWatchLogGroupName": expected_log_group_name,
                 "idleSessionTimeout": "20",
-                "kmsKeyId": expected_key_arn,
                 "maxSessionDuration": "",
                 "runAsDefaultUser": "",
                 "runAsEnabled": False,
@@ -312,6 +287,4 @@ class DevelopmentAccountVerifier:
             },
         }
         if content != expected_content:
-            raise DevelopmentEnvironmentError(
-                "Session Manager shell preferences differ from account-foundation"
-            )
+            raise DevelopmentEnvironmentError("Session Manager shell preferences differ from account-foundation")

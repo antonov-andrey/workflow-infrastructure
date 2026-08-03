@@ -3,22 +3,14 @@
 from __future__ import annotations
 
 import json
-from typing import Protocol, Sequence
-import subprocess
 
+from workflow_infrastructure.development_environment.aws import aws_cli_error_matches
+from workflow_infrastructure.development_environment.cleanup.protocol import (
+    AwsClientProtocol,
+)
 from workflow_infrastructure.development_environment.error import (
     DevelopmentEnvironmentError,
 )
-
-
-class AwsClientProtocol(Protocol):
-    def json_get(self, aws_argument_list: Sequence[str]) -> dict[str, object]:
-        """Run one AWS CLI command and decode its object response."""
-
-    def run(
-        self, aws_argument_list: Sequence[str], *, check: bool = True
-    ) -> subprocess.CompletedProcess[str]:
-        """Run one AWS CLI command."""
 
 
 class VersionedBucketCleaner:
@@ -34,29 +26,33 @@ class VersionedBucketCleaner:
             return
         self._multipart_upload_list_delete(bucket_name)
         self._object_version_list_delete(bucket_name)
-        result = self._aws.run(
-            ["s3api", "delete-bucket", "--bucket", bucket_name], check=False
-        )
-        if result.returncode != 0 and not _is_absent_error(result):
-            raise DevelopmentEnvironmentError(
-                f"Task bucket {bucket_name} could not be deleted"
-            )
+        result = self._aws.run(["s3api", "delete-bucket", "--bucket", bucket_name], check=False)
+        if result.returncode != 0 and not aws_cli_error_matches(
+            result,
+            code_set=frozenset({"NoSuchBucket"}),
+            operation="DeleteBucket",
+        ):
+            raise DevelopmentEnvironmentError(f"Task bucket {bucket_name} could not be deleted")
         if self._exists(bucket_name):
-            raise DevelopmentEnvironmentError(
-                f"Task bucket {bucket_name} still exists after deletion"
-            )
+            raise DevelopmentEnvironmentError(f"Task bucket {bucket_name} still exists after deletion")
+
+    def absence_validate(self, bucket_name: str) -> None:
+        """Require one exact bucket to be absent."""
+
+        if self._exists(bucket_name):
+            raise DevelopmentEnvironmentError(f"Task bucket {bucket_name} absence is not proven")
 
     def _exists(self, bucket_name: str) -> bool:
-        result = self._aws.run(
-            ["s3api", "head-bucket", "--bucket", bucket_name], check=False
-        )
+        result = self._aws.run(["s3api", "head-bucket", "--bucket", bucket_name], check=False)
         if result.returncode == 0:
             return True
-        if _is_absent_error(result):
+        if aws_cli_error_matches(
+            result,
+            code_set=frozenset({"404", "NoSuchBucket"}),
+            operation="HeadBucket",
+        ):
             return False
-        raise DevelopmentEnvironmentError(
-            f"Task bucket {bucket_name} ownership cannot be observed"
-        )
+        raise DevelopmentEnvironmentError(f"Task bucket {bucket_name} ownership cannot be observed")
 
     def _multipart_upload_list_delete(self, bucket_name: str) -> None:
         while True:
@@ -77,9 +73,7 @@ class VersionedBucketCleaner:
                 or not isinstance(item.get("UploadId"), str)
                 for item in upload_list
             ):
-                raise DevelopmentEnvironmentError(
-                    f"Task bucket {bucket_name} multipart inventory is malformed"
-                )
+                raise DevelopmentEnvironmentError(f"Task bucket {bucket_name} multipart inventory is malformed")
             if not upload_list:
                 return
             for item in upload_list:
@@ -117,13 +111,8 @@ class VersionedBucketCleaner:
                     or not isinstance(item.get("VersionId"), str)
                     for item in item_list
                 ):
-                    raise DevelopmentEnvironmentError(
-                        f"Task bucket {bucket_name} version inventory is malformed"
-                    )
-                object_list.extend(
-                    {"Key": item["Key"], "VersionId": item["VersionId"]}
-                    for item in item_list
-                )
+                    raise DevelopmentEnvironmentError(f"Task bucket {bucket_name} version inventory is malformed")
+                object_list.extend({"Key": item["Key"], "VersionId": item["VersionId"]} for item in item_list)
             if not object_list:
                 return
             for offset in range(0, len(object_list), 100):
@@ -144,14 +133,14 @@ class VersionedBucketCleaner:
                     check=False,
                 )
                 if result.returncode != 0:
+                    raise DevelopmentEnvironmentError(f"Task bucket {bucket_name} version batch could not be deleted")
+                try:
+                    response = json.loads(result.stdout or "{}")
+                except json.JSONDecodeError as error:
                     raise DevelopmentEnvironmentError(
-                        f"Task bucket {bucket_name} version batch could not be deleted"
+                        f"Task bucket {bucket_name} deletion response is malformed"
+                    ) from error
+                if not isinstance(response, dict) or response.get("Errors"):
+                    raise DevelopmentEnvironmentError(
+                        f"Task bucket {bucket_name} version batch was only partially deleted"
                     )
-
-
-def _is_absent_error(result: subprocess.CompletedProcess[str]) -> bool:
-    diagnostic = f"{result.stdout}\n{result.stderr}"
-    return any(
-        marker in diagnostic
-        for marker in ("NoSuchBucket", "Not Found", "404", "does not exist")
-    )

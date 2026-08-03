@@ -53,10 +53,10 @@ class HostStatusProtocol(Protocol):
         """Return normalized unavailable host status."""
 
 
-class ProductReleaseProtocol(Protocol):
+class ProductToolProtocol(Protocol):
     """Current Product diagnostic command boundary."""
 
-    def current_product_tool_command_list_get(
+    def command_list_get(
         self,
         command: str,
         *argument_list: str,
@@ -114,7 +114,7 @@ class DevelopmentDiagnostics:
         compute: ComputeProtocol,
         host_status: HostStatusProtocol,
         identity: EnvironmentIdentityProtocol,
-        product_release: ProductReleaseProtocol,
+        product_tool: ProductToolProtocol,
         region: str,
         retained_volume: RetainedVolumeProtocol,
         stack: StackManagerProtocol,
@@ -128,7 +128,7 @@ class DevelopmentDiagnostics:
         self._compute = compute
         self._host_status = host_status
         self._identity = identity
-        self._product_release = product_release
+        self._product_tool = product_tool
         self._region = region
         self._retained_volume = retained_volume
         self._stack = stack
@@ -205,10 +205,6 @@ class DevelopmentDiagnostics:
                 "sudo k3s kubectl get nodes,namespaces -o wide",
                 "sudo k3s kubectl get pods --all-namespaces -o wide",
                 ("sudo k3s kubectl get events --all-namespaces " "--sort-by=.lastTimestamp | tail -200"),
-                (
-                    "sudo "
-                    + shlex.join(self._product_release.current_product_tool_command_list_get("diagnose"))
-                    + " || true"
-                ),
+                ("sudo " + shlex.join(self._product_tool.command_list_get("diagnose")) + " || true"),
             ]
         )

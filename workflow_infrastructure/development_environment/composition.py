@@ -28,6 +28,26 @@ from workflow_infrastructure.development_environment.cleanup_binding import (
 from workflow_infrastructure.development_environment.cleanup import (
     DevelopmentEnvironmentCleanupManager,
 )
+from workflow_infrastructure.development_environment.cleanup.compute import (
+    ComputeCleanup,
+)
+from workflow_infrastructure.development_environment.cleanup.inventory import (
+    CleanupInventoryResolver,
+)
+from workflow_infrastructure.development_environment.cleanup.journal import (
+    CleanupJournalStore,
+)
+from workflow_infrastructure.development_environment.cleanup.kms import KmsCleanup
+from workflow_infrastructure.development_environment.cleanup.retained import (
+    RetainedStorageCleanup,
+)
+from workflow_infrastructure.development_environment.cleanup.s3 import (
+    VersionedBucketCleaner,
+)
+from workflow_infrastructure.development_environment.cleanup.stack import StackCleanup
+from workflow_infrastructure.development_environment.cleanup.verification import (
+    CleanupAbsenceVerifier,
+)
 from workflow_infrastructure.development_environment.command import CommandRunner
 from workflow_infrastructure.development_environment.identity import (
     ACCOUNT_FOUNDATION_STACK_NAME,
@@ -42,6 +62,36 @@ from workflow_infrastructure.development_environment.foundation import (
 )
 from workflow_infrastructure.development_environment.host.artifact.manager import (
     DevelopmentHostArtifactManager,
+)
+from workflow_infrastructure.development_environment.host.artifact.download import (
+    HostArtifactDownloader,
+)
+from workflow_infrastructure.development_environment.host.artifact.git_ref import (
+    GitRefResolver,
+)
+from workflow_infrastructure.development_environment.host.artifact.provider.aws_cli import (
+    AwsCliArtifactProvider,
+)
+from workflow_infrastructure.development_environment.host.artifact.provider.docker import (
+    DockerArtifactProvider,
+)
+from workflow_infrastructure.development_environment.host.artifact.provider.helm import (
+    HelmArtifactProvider,
+)
+from workflow_infrastructure.development_environment.host.artifact.provider.k3s import (
+    K3sArtifactProvider,
+)
+from workflow_infrastructure.development_environment.host.artifact.provider.python import (
+    PythonArtifactProvider,
+)
+from workflow_infrastructure.development_environment.host.artifact.publication import (
+    HostBootstrapObjectPublisher,
+)
+from workflow_infrastructure.development_environment.host.artifact.resolver import (
+    HostArtifactResolver,
+)
+from workflow_infrastructure.development_environment.host.artifact.verification import (
+    HostArtifactVerifier,
 )
 from workflow_infrastructure.development_environment.host.bootstrap.invocation import (
     DevelopmentHostBootstrapInvocation,
@@ -94,6 +144,7 @@ from workflow_infrastructure.development_environment.transport import (
     DevelopmentSsmTransport,
 )
 from workflow_infrastructure.development_environment.product.release import (
+    DevelopmentCurrentProductTool,
     DevelopmentRetainedProductReleaseManager,
     RetainedProductReleaseValidator,
 )
@@ -139,9 +190,7 @@ class DevelopmentEnvironment:
         """
 
         self._clock = clock
-        self._identity = DevelopmentEnvironmentIdentity(
-            environment_name, git_worktree=git_worktree
-        )
+        self._identity = DevelopmentEnvironmentIdentity(environment_name, git_worktree=git_worktree)
         self.cleanup_binding = TaskCleanupBinding(project_root_path=project_root_path)
         self._is_host = project_root_path.is_relative_to(
             self._identity.host_control_release_root_path
@@ -171,14 +220,43 @@ class DevelopmentEnvironment:
             runner=runner,
             stack=self._stack,
         )
-        self.cleanup = DevelopmentEnvironmentCleanupManager(
-            account=self._account,
+        cleanup_inventory_resolver = CleanupInventoryResolver(
             account_id=AWS_ACCOUNT_ID,
-            aws=self._aws,
-            binding=self.cleanup_binding,
             identity=self._identity,
             region=AWS_REGION,
             stack=self._stack,
+        )
+        cleanup_journal = CleanupJournalStore(
+            binding=self.cleanup_binding,
+            inventory_resolver=cleanup_inventory_resolver,
+        )
+        cleanup_stack = StackCleanup(aws=self._aws, stack=self._stack)
+        cleanup_compute = ComputeCleanup(
+            aws=self._aws,
+            stack_cleanup=cleanup_stack,
+        )
+        cleanup_storage = VersionedBucketCleaner(self._aws)
+        cleanup_retained = RetainedStorageCleanup(self._aws)
+        cleanup_kms = KmsCleanup(self._aws)
+        cleanup_verifier = CleanupAbsenceVerifier(
+            aws=self._aws,
+            compute=cleanup_compute,
+            kms=cleanup_kms,
+            retained=cleanup_retained,
+            stack=cleanup_stack,
+            storage=cleanup_storage,
+        )
+        self.cleanup = DevelopmentEnvironmentCleanupManager(
+            account=self._account,
+            compute=cleanup_compute,
+            identity=self._identity,
+            inventory_resolver=cleanup_inventory_resolver,
+            journal=cleanup_journal,
+            kms=cleanup_kms,
+            retained=cleanup_retained,
+            stack=cleanup_stack,
+            storage=cleanup_storage,
+            verifier=cleanup_verifier,
         )
         self.foundation = DevelopmentAccountFoundationManager(
             account=self._account,
@@ -223,6 +301,7 @@ class DevelopmentEnvironment:
             runner=runner,
         )
         product_release_validator = RetainedProductReleaseValidator(self._identity)
+        self.product_release_validator = product_release_validator
         product_release_pointer = RetainedProductReleasePointerStore(
             identity=self._identity,
             validator=product_release_validator,
@@ -232,16 +311,19 @@ class DevelopmentEnvironment:
             pointer=product_release_pointer,
             runner=runner,
         )
+        product_release_host_manifest_validator = RetainedProductHostManifestValidator(
+            lambda: self.host.host_artifact_manifest_get()
+        )
+        self.product_release_host_manifest_validator = product_release_host_manifest_validator
+        self.product_tool = DevelopmentCurrentProductTool(
+            identity=self._identity,
+            python_bytecode_environment_assignment=PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT,
+        )
         self.product_release = DevelopmentRetainedProductReleaseManager(
-            host_manifest_validator=RetainedProductHostManifestValidator(
-                lambda: self.host.host_artifact_manifest_get()
-            ),
+            host_manifest_validator=product_release_host_manifest_validator,
             identity=self._identity,
             is_host_get=lambda: self._is_host,
             pointer=product_release_pointer,
-            python_bytecode_environment_assignment=(
-                PYTHON_BYTECODE_ENVIRONMENT_ASSIGNMENT
-            ),
             recovery=product_release_recovery,
             reset=RetainedProductReleaseReset(
                 identity=self._identity,
@@ -275,22 +357,60 @@ class DevelopmentEnvironment:
             stack=self._stack,
             transport=self._transport,
         )
+        host_artifact_cache_root_path = project_root_path / ".local" / "host-artifact-cache"
+        host_artifact_downloader = HostArtifactDownloader(cache_root_path=host_artifact_cache_root_path)
+        host_artifact_git_ref = GitRefResolver(runner=runner)
+        host_artifact_verifier = HostArtifactVerifier(
+            downloader=host_artifact_downloader,
+            runner=runner,
+        )
+        host_artifact_trust_root_path = project_root_path / "trust"
+        host_artifact_resolver = HostArtifactResolver(
+            aws_cli=AwsCliArtifactProvider(
+                downloader=host_artifact_downloader,
+                git_ref=host_artifact_git_ref,
+                trust_root_path=host_artifact_trust_root_path,
+                verifier=host_artifact_verifier,
+            ),
+            docker=DockerArtifactProvider(
+                downloader=host_artifact_downloader,
+                runner=runner,
+                verifier=host_artifact_verifier,
+            ),
+            helm=HelmArtifactProvider(
+                downloader=host_artifact_downloader,
+                git_ref=host_artifact_git_ref,
+                trust_root_path=host_artifact_trust_root_path,
+                verifier=host_artifact_verifier,
+            ),
+            k3s=K3sArtifactProvider(
+                downloader=host_artifact_downloader,
+                git_ref=host_artifact_git_ref,
+                trust_root_path=host_artifact_trust_root_path,
+                verifier=host_artifact_verifier,
+            ),
+            python=PythonArtifactProvider(
+                downloader=host_artifact_downloader,
+                git_ref=host_artifact_git_ref,
+                verifier=host_artifact_verifier,
+            ),
+        )
         self.host_artifact = DevelopmentHostArtifactManager(
-            aws=self._aws,
-            aws_region=AWS_REGION,
+            bootstrap_object_publisher=HostBootstrapObjectPublisher(
+                aws=self._aws,
+                aws_region=AWS_REGION,
+                cache_root_path=host_artifact_cache_root_path,
+                project_root_path=project_root_path,
+            ),
             identity=self._identity,
             project_root_path=project_root_path,
-            runner=runner,
+            resolver=host_artifact_resolver,
             stack=self._stack,
         )
         self._host_storage_initialization = DevelopmentHostStorageInitialization(
             aws=self._aws,
-            compute_stable_identity_logical_id_set=(
-                COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET
-            ),
-            compute_template_path=(
-                project_root_path / "cloudformation/development-compute.yaml"
-            ),
+            compute_stable_identity_logical_id_set=(COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET),
+            compute_template_path=(project_root_path / "cloudformation/development-compute.yaml"),
             identity=self._identity,
             stack=self._stack,
         )
@@ -308,14 +428,15 @@ class DevelopmentEnvironment:
             clock=clock,
             identity=self._identity,
             is_host=self._is_host,
-            product_release=self.product_release,
+            product_recovery_state=product_release_recovery,
+            product_tool=self.product_tool,
             project_root_path=project_root_path,
             runner=runner,
             stop_lease=self._stop_lease,
         )
         self.product_recovery = DevelopmentProductRecoveryManager(
             identity=self._identity,
-            product_release=self.product_release,
+            product_tool=self.product_tool,
             transport=self._transport,
         )
         self.product_reset = DevelopmentProductResetManager(
@@ -371,9 +492,7 @@ class DevelopmentEnvironment:
             account=self._account,
             clock=clock,
             compute=self.compute,
-            compute_template_path=(
-                project_root_path / "cloudformation/development-compute.yaml"
-            ),
+            compute_template_path=(project_root_path / "cloudformation/development-compute.yaml"),
             identity=self._identity,
             lease_duration=LEASE_DURATION,
             lifecycle=self.lifecycle,
@@ -389,16 +508,10 @@ class DevelopmentEnvironment:
             aws_account_id=AWS_ACCOUNT_ID,
             aws_region=AWS_REGION,
             compute=self.compute,
-            compute_stable_identity_logical_id_set=(
-                COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET
-            ),
-            compute_template_path=(
-                project_root_path / "cloudformation/development-compute.yaml"
-            ),
+            compute_stable_identity_logical_id_set=(COMPUTE_STABLE_IDENTITY_LOGICAL_ID_SET),
+            compute_template_path=(project_root_path / "cloudformation/development-compute.yaml"),
             cost_reviewer=self._cost_reviewer,
-            data_plane_template_path=(
-                project_root_path / "cloudformation/development-data.yaml"
-            ),
+            data_plane_template_path=(project_root_path / "cloudformation/development-data.yaml"),
             foundation=self.foundation,
             host_artifact=self.host_artifact,
             identity=self._identity,
@@ -414,7 +527,7 @@ class DevelopmentEnvironment:
             compute=self.compute,
             host_status=self._host_status,
             identity=self._identity,
-            product_release=self.product_release,
+            product_tool=self.product_tool,
             region=AWS_REGION,
             retained_volume=self._retained_volume,
             stack=self._stack,
@@ -427,9 +540,7 @@ class DevelopmentEnvironment:
         """Create or reconcile the sole account-global development owner."""
 
         if not self._identity.is_primary:
-            raise DevelopmentEnvironmentError(
-                "Account foundation can be applied only by the primary environment"
-            )
+            raise DevelopmentEnvironmentError("Account foundation can be applied only by the primary environment")
         self._account.local_operator_context_validate()
         self._source_publisher.validate_repository(
             self._project_root_path,

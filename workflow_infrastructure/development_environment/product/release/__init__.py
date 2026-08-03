@@ -3,6 +3,9 @@
 from workflow_infrastructure.development_environment.product.release.manager import (
     DevelopmentRetainedProductReleaseManager,
 )
+from workflow_infrastructure.development_environment.product.release.tool import (
+    DevelopmentCurrentProductTool,
+)
 from workflow_infrastructure.development_environment.product.release.recovery_contract import (
     MOVING_SOURCE_SELECTOR,
     PRODUCT_RELEASE_MANIFEST_VERSION,
@@ -14,6 +17,7 @@ from workflow_infrastructure.development_environment.product.release.recovery_co
 
 __all__ = [
     "DevelopmentRetainedProductReleaseManager",
+    "DevelopmentCurrentProductTool",
     "MOVING_SOURCE_SELECTOR",
     "PRODUCT_RELEASE_MANIFEST_VERSION",
     "PRODUCT_SOURCE_REPOSITORY_NAME_LIST",

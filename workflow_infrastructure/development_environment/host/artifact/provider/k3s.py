@@ -19,6 +19,7 @@ from workflow_infrastructure.development_environment.host.artifact.model import 
 )
 from workflow_infrastructure.development_environment.host.artifact.verification import (
     HostArtifactVerifier,
+    checksum_file_sha256_get,
 )
 
 K3S_REPOSITORY_URL = "https://github.com/k3s-io/k3s.git"
@@ -89,14 +90,12 @@ class K3sArtifactProvider:
             resolved_ref=resolved_ref,
             source_commit_sha=commit_sha,
         )
-        expected_binary_sha256 = self._verifier.checksum_file_sha256_get(
+        expected_binary_sha256 = checksum_file_sha256_get(
             artifact_name=binary_name,
             checksum_path=self._downloader.cache_path_get(checksum_artifact.url),
         )
         if expected_binary_sha256 != trusted_sha256_by_name[binary_name]:
-            raise HostArtifactResolutionError(
-                "k3s vendor checksum differs from the repository-owned trust record"
-            )
+            raise HostArtifactResolutionError("k3s vendor checksum differs from the repository-owned trust record")
         if (
             self._verifier.github_release_asset_sha256_get(
                 asset_name=binary_name,
@@ -105,9 +104,7 @@ class K3sArtifactProvider:
             )
             != expected_binary_sha256
         ):
-            raise HostArtifactResolutionError(
-                "k3s vendor checksum and GitHub release digest differ"
-            )
+            raise HostArtifactResolutionError("k3s vendor checksum and GitHub release digest differ")
         binary = self._downloader.identity_resolve(
             expected_sha256=trusted_sha256_by_name[binary_name],
             name="k3s-binary",
@@ -141,14 +138,8 @@ class K3sArtifactProvider:
             trust_bytes = (self._trust_root_path / "k3s-release.json").read_bytes()
             payload = json.loads(trust_bytes)
         except (OSError, json.JSONDecodeError) as error:
-            raise HostArtifactResolutionError(
-                "repository-owned K3s release trust record is unavailable"
-            ) from error
-        artifact_sha256_by_name = (
-            payload.get("artifact_sha256_by_name_map")
-            if isinstance(payload, dict)
-            else None
-        )
+            raise HostArtifactResolutionError("repository-owned K3s release trust record is unavailable") from error
+        artifact_sha256_by_name = payload.get("artifact_sha256_by_name_map") if isinstance(payload, dict) else None
         if (
             not isinstance(payload, dict)
             or set(payload)
@@ -166,12 +157,9 @@ class K3sArtifactProvider:
             or binary_name not in artifact_sha256_by_name
             or checksum_name not in artifact_sha256_by_name
             or any(
-                not isinstance(value, str)
-                or re.fullmatch(r"[0-9a-f]{64}", value) is None
+                not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
                 for value in artifact_sha256_by_name.values()
             )
         ):
-            raise HostArtifactResolutionError(
-                "latest K3s release is not accepted by the repository-owned trust record"
-            )
+            raise HostArtifactResolutionError("latest K3s release is not accepted by the repository-owned trust record")
         return dict(artifact_sha256_by_name), hashlib.sha256(trust_bytes).hexdigest()

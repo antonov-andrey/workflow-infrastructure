@@ -27,6 +27,22 @@ from workflow_infrastructure.development_environment.error import (
     DevelopmentEnvironmentError,
 )
 
+_HOST_INTERNAL_COMMAND_SET = frozenset(
+    {
+        "host-controller",
+        "host-install",
+        "host-prepare",
+        "host-product-recovery-begin",
+        "host-product-recovery-complete",
+        "host-product-recovery-status",
+        "host-product-release-activate",
+        "host-product-release-reset",
+        "host-product-release-restore",
+        "host-shutdown",
+        "host-status",
+    }
+)
+
 
 def _args_parse(argv_list: list[str]) -> argparse.Namespace:
     """Parse development-environment management arguments.
@@ -87,9 +103,7 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
         "--release",
         help="Exact retained Product release used by one host-local operation.",
     )
-    parser.add_argument(
-        "--snapshot-id", help="Exact retained-volume snapshot used by restore."
-    )
+    parser.add_argument("--snapshot-id", help="Exact retained-volume snapshot used by restore.")
     parser.add_argument(
         "--retained-volume-id",
         help="Exact retained EBS volume expected by host-status.",
@@ -99,9 +113,7 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
         default="",
         help="Exact one-deploy workflow-container-contract commit override.",
     )
-    parser.add_argument(
-        "--user-email", help="Preserved ZITADEL user to verify around Product reset."
-    )
+    parser.add_argument("--user-email", help="Preserved ZITADEL user to verify around Product reset.")
     parser.add_argument(
         "--expected-role-key",
         action="append",
@@ -132,31 +144,23 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
     if args.retained_volume_id and args.command != "host-status":
         parser.error("--retained-volume-id is supported only for host-status")
     if args.workflow_container_contract_commit and args.command != "deploy":
-        parser.error(
-            "--workflow-container-contract-commit is supported only for deploy"
-        )
+        parser.error("--workflow-container-contract-commit is supported only for deploy")
     if args.reset_product_state and args.command != "deploy":
         parser.error("--reset-product-state is supported only for deploy")
     if args.command == "deploy" and args.reset_product_state and not args.user_email:
         parser.error("--user-email is required with --reset-product-state")
-    if (args.user_email or args.expected_role_key) and (
-        args.command != "deploy" or not args.reset_product_state
-    ):
-        parser.error(
-            "--user-email and --expected-role-key require deploy --reset-product-state"
-        )
+    if (args.user_email or args.expected_role_key) and (args.command != "deploy" or not args.reset_product_state):
+        parser.error("--user-email and --expected-role-key require deploy --reset-product-state")
     if args.ssh_argument_list and args.command != "ssh":
         parser.error("arguments after the command are supported only for ssh")
     if args.ssh_argument_list[:1] == ["--"]:
         args.ssh_argument_list = args.ssh_argument_list[1:]
     if args.git_worktree and args.environment_name != "primary":
-        parser.error(
-            "--git-worktree derives the environment name and cannot be combined with --environment-name"
-        )
+        parser.error("--git-worktree derives the environment name and cannot be combined with --environment-name")
+    if not args.git_worktree and args.environment_name != "primary" and args.command not in _HOST_INTERNAL_COMMAND_SET:
+        parser.error("task environment operator commands require the exact --git-worktree common prefix")
     if args.git_worktree and args.command == "account-foundation-apply":
-        parser.error(
-            "account-foundation-apply is owned only by the primary environment"
-        )
+        parser.error("account-foundation-apply is owned only by the primary environment")
     if args.command in {"destroy", "destroy-inventory"} and not args.git_worktree:
         parser.error(f"{args.command} is supported only with --git-worktree")
     return args
@@ -187,6 +191,7 @@ def main(argv_list: list[str]) -> int:
             "deploy",
             "destroy",
             "destroy-inventory",
+            "lifecycle-acceptance",
             "replace",
             "restore",
             "start",
@@ -212,9 +217,7 @@ def main(argv_list: list[str]) -> int:
         elif args.command == "diagnose":
             environment.diagnostics.diagnose()
         elif args.command in {"destroy", "destroy-inventory"}:
-            request = CleanupRequest.from_json(
-                sys.stdin.read(), expected_common_prefix=args.git_worktree
-            )
+            request = CleanupRequest.from_json(sys.stdin.read(), expected_common_prefix=args.git_worktree)
             response = (
                 environment.cleanup.destroy(request)
                 if args.command == "destroy"

@@ -25,10 +25,10 @@ class EnvironmentIdentityProtocol(Protocol):
     host_control_entrypoint_path: Path
 
 
-class ProductReleaseProtocol(Protocol):
+class ProductToolProtocol(Protocol):
     """Exact retained Product tool surface."""
 
-    def current_product_tool_command_list_get(
+    def command_list_get(
         self,
         command: str,
         *argument_list: str,
@@ -58,13 +58,13 @@ class DevelopmentProductRecoveryManager:
         self,
         *,
         identity: EnvironmentIdentityProtocol,
-        product_release: ProductReleaseProtocol,
+        product_tool: ProductToolProtocol,
         transport: SsmTransportProtocol,
     ) -> None:
         """Initialize Product recovery from exact host boundaries."""
 
         self._identity = identity
-        self._product_release = product_release
+        self._product_tool = product_tool
         self._transport = transport
 
     def status_get(self) -> str:
@@ -117,18 +117,14 @@ class DevelopmentProductRecoveryManager:
     def apply_run(self) -> None:
         """Reapply exact retained Product release and reinstall its host service."""
 
-        self._transport.ssm_shell_run(
-            ["sudo " + shlex.join(self._product_release.current_product_tool_command_list_get("recover"))]
-        )
-        self._transport.ssm_shell_run(
-            ["sudo " + shlex.join(self._product_release.current_product_tool_command_list_get("host-install"))]
-        )
+        self._transport.ssm_shell_run(["sudo " + shlex.join(self._product_tool.command_list_get("recover"))])
+        self._transport.ssm_shell_run(["sudo " + shlex.join(self._product_tool.command_list_get("host-install"))])
 
     def acceptance_run(self) -> None:
         """Run exact Product recovery acceptance without changing savepoint state."""
 
         self._transport.ssm_shell_run(
-            ["sudo " + shlex.join(self._product_release.current_product_tool_command_list_get("recovery-acceptance"))]
+            ["sudo " + shlex.join(self._product_tool.command_list_get("recovery-acceptance"))]
         )
 
     def _infrastructure_command_run(self, command: str) -> None:

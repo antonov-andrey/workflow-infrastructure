@@ -7,6 +7,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Protocol
 
+from workflow_infrastructure.development_environment.aws import aws_cli_error_matches
 from workflow_infrastructure.development_environment.error import (
     DevelopmentEnvironmentError,
 )
@@ -15,6 +16,24 @@ BOOTSTRAP_COMMAND_TIMEOUT_SECONDS = 3600
 BOOTSTRAP_POLL_INTERVAL_SECONDS = 5
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 _IN_PROGRESS_STATUS_SET = frozenset({"Delayed", "InProgress", "Pending"})
+
+
+def _required_text(value_by_name: Mapping[str, str], name: str) -> str:
+    """Return one required non-empty text value."""
+
+    value = value_by_name.get(name)
+    if not isinstance(value, str) or not value:
+        raise DevelopmentEnvironmentError(f"Required bootstrap value {name} is missing")
+    return value
+
+
+def _required_sha256(value_by_name: Mapping[str, str], name: str) -> str:
+    """Return one required lowercase SHA-256 value."""
+
+    value = _required_text(value_by_name, name)
+    if _SHA256_PATTERN.fullmatch(value) is None:
+        raise DevelopmentEnvironmentError(f"Bootstrap value {name} is not a SHA-256")
+    return value
 
 
 class AwsClientProtocol(Protocol):
@@ -92,24 +111,20 @@ class DevelopmentHostBootstrapInvocation:
         """Validate and run the exact current document on the current instance."""
 
         output_by_name = self._stack.output_by_name_map_get(self._compute_stack_name)
-        parameter_by_name = self._stack.parameter_by_name_map_get(
-            self._compute_stack_name
-        )
+        parameter_by_name = self._stack.parameter_by_name_map_get(self._compute_stack_name)
         document_identity = self._document_identity_validate(
             output_by_name=output_by_name,
             parameter_by_name=parameter_by_name,
         )
         command_id = self._command_start(
             document_identity=document_identity,
-            initialization_allowed=(
-                self._storage_initialization.initialization_allowed_get()
-            ),
+            initialization_allowed=(self._storage_initialization.initialization_allowed_get()),
             output_by_name=output_by_name,
             parameter_by_name=parameter_by_name,
         )
         self._command_success_wait(
             command_id=command_id,
-            instance_id=self._required_text(output_by_name, "InstanceId"),
+            instance_id=_required_text(output_by_name, "InstanceId"),
         )
         self._storage_initialization.complete()
 
@@ -121,14 +136,10 @@ class DevelopmentHostBootstrapInvocation:
     ) -> tuple[str, str, str]:
         """Return exact name, numeric version, and system SHA-256."""
 
-        document_name = self._required_text(output_by_name, "HostBootstrapDocumentName")
-        description = self._aws.json_get(
-            ["ssm", "describe-document", "--name", document_name]
-        ).get("Document")
+        document_name = _required_text(output_by_name, "HostBootstrapDocumentName")
+        description = self._aws.json_get(["ssm", "describe-document", "--name", document_name]).get("Document")
         if not isinstance(description, dict):
-            raise DevelopmentEnvironmentError(
-                "Bootstrap document description is malformed"
-            )
+            raise DevelopmentEnvironmentError("Bootstrap document description is malformed")
         version = description.get("LatestVersion")
         document_hash = description.get("Hash")
         if (
@@ -169,18 +180,14 @@ class DevelopmentHostBootstrapInvocation:
             or document_payload.get("DocumentFormat") != "JSON"
             or document_payload.get("VersionName") not in {None, ""}
         ):
-            raise DevelopmentEnvironmentError(
-                "Bootstrap document version response is malformed"
-            )
+            raise DevelopmentEnvironmentError("Bootstrap document version response is malformed")
         content_text = document_payload.get("Content")
         if not isinstance(content_text, str):
             raise DevelopmentEnvironmentError("Bootstrap document content is not text")
         try:
             content = json.loads(content_text)
         except json.JSONDecodeError as error:
-            raise DevelopmentEnvironmentError(
-                "Bootstrap document content is not JSON"
-            ) from error
+            raise DevelopmentEnvironmentError("Bootstrap document content is not JSON") from error
         self._document_content_validate(content, parameter_by_name=parameter_by_name)
         return document_name, version, document_hash
 
@@ -198,17 +205,11 @@ class DevelopmentHostBootstrapInvocation:
             "parameters",
             "schemaVersion",
         }:
-            raise DevelopmentEnvironmentError(
-                "Bootstrap document content has an unexpected shape"
-            )
+            raise DevelopmentEnvironmentError("Bootstrap document content has an unexpected shape")
         if content.get("schemaVersion") != "2.2":
             raise DevelopmentEnvironmentError("Bootstrap document schema is unexpected")
-        if content.get("description") != (
-            "Install one exact content-addressed development host release."
-        ):
-            raise DevelopmentEnvironmentError(
-                "Bootstrap document description is unexpected"
-            )
+        if content.get("description") != ("Install one exact content-addressed development host release."):
+            raise DevelopmentEnvironmentError("Bootstrap document description is unexpected")
         parameter_map = content.get("parameters")
         if parameter_map != {
             "Architecture": {
@@ -232,24 +233,20 @@ class DevelopmentHostBootstrapInvocation:
                 "allowedPattern": "^(false|true)$",
             },
         }:
-            raise DevelopmentEnvironmentError(
-                "Bootstrap document parameter contract is unexpected"
-            )
+            raise DevelopmentEnvironmentError("Bootstrap document parameter contract is unexpected")
         step_list = content.get("mainSteps")
         if not isinstance(step_list, list) or len(step_list) != 3:
-            raise DevelopmentEnvironmentError(
-                "Bootstrap document step contract is unexpected"
-            )
+            raise DevelopmentEnvironmentError("Bootstrap document step contract is unexpected")
         expected_download_list = (
             (
                 "downloadPythonRuntime",
                 "/var/lib/development-bootstrap/download/python.tar.gz",
-                self._required_text(parameter_by_name, "HostPythonArtifactSourceInfo"),
+                _required_text(parameter_by_name, "HostPythonArtifactSourceInfo"),
             ),
             (
                 "downloadBootstrapBundle",
                 "/var/lib/development-bootstrap/download/bootstrap.tar.gz",
-                self._required_text(parameter_by_name, "HostBootstrapBundleSourceInfo"),
+                _required_text(parameter_by_name, "HostBootstrapBundleSourceInfo"),
             ),
         )
         for step, (name, destination_path, source_info) in zip(
@@ -258,21 +255,15 @@ class DevelopmentHostBootstrapInvocation:
             strict=True,
         ):
             if not isinstance(step, dict) or set(step) != {"action", "inputs", "name"}:
-                raise DevelopmentEnvironmentError(
-                    "Bootstrap download step shape is unexpected"
-                )
+                raise DevelopmentEnvironmentError("Bootstrap download step shape is unexpected")
             if step.get("action") != "aws:downloadContent" or step.get("name") != name:
-                raise DevelopmentEnvironmentError(
-                    "Bootstrap download step identity is unexpected"
-                )
+                raise DevelopmentEnvironmentError("Bootstrap download step identity is unexpected")
             if step.get("inputs") != {
                 "destinationPath": destination_path,
                 "sourceInfo": source_info,
                 "sourceType": "S3",
             }:
-                raise DevelopmentEnvironmentError(
-                    "Bootstrap download source is unexpected"
-                )
+                raise DevelopmentEnvironmentError("Bootstrap download source is unexpected")
         run_step = step_list[2]
         if (
             not isinstance(run_step, dict)
@@ -280,17 +271,13 @@ class DevelopmentHostBootstrapInvocation:
             or run_step.get("action") != "aws:runShellScript"
             or run_step.get("name") != "runVerifiedBootstrap"
         ):
-            raise DevelopmentEnvironmentError(
-                "Bootstrap launcher step identity is unexpected"
-            )
+            raise DevelopmentEnvironmentError("Bootstrap launcher step identity is unexpected")
         inputs = run_step.get("inputs")
         if not isinstance(inputs, dict) or set(inputs) != {
             "runCommand",
             "timeoutSeconds",
         }:
-            raise DevelopmentEnvironmentError(
-                "Bootstrap launcher inputs are unexpected"
-            )
+            raise DevelopmentEnvironmentError("Bootstrap launcher inputs are unexpected")
         command_list = inputs.get("runCommand")
         if (
             inputs.get("timeoutSeconds") != "3600"
@@ -298,27 +285,17 @@ class DevelopmentHostBootstrapInvocation:
             or len(command_list) != 1
             or not isinstance(command_list[0], str)
         ):
-            raise DevelopmentEnvironmentError(
-                "Bootstrap launcher command is unexpected"
-            )
+            raise DevelopmentEnvironmentError("Bootstrap launcher command is unexpected")
         launcher = command_list[0]
         if launcher != self._launcher_get(parameter_by_name):
-            raise DevelopmentEnvironmentError(
-                "Bootstrap launcher differs from the exact current contract"
-            )
+            raise DevelopmentEnvironmentError("Bootstrap launcher differs from the exact current contract")
 
     def _launcher_get(self, parameter_by_name: Mapping[str, str]) -> str:
         """Render the one accepted minimal checksum-verifying launcher."""
 
-        python_sha256 = self._required_sha256(
-            parameter_by_name, "HostPythonArtifactSha256"
-        )
-        bundle_sha256 = self._required_sha256(
-            parameter_by_name, "HostBootstrapBundleSha256"
-        )
-        manifest_sha256 = self._required_sha256(
-            parameter_by_name, "HostBootstrapManifestSha256"
-        )
+        python_sha256 = _required_sha256(parameter_by_name, "HostPythonArtifactSha256")
+        bundle_sha256 = _required_sha256(parameter_by_name, "HostBootstrapBundleSha256")
+        manifest_sha256 = _required_sha256(parameter_by_name, "HostBootstrapManifestSha256")
         return f"""set -eu
 umask 077
 root=/var/lib/development-bootstrap
@@ -366,10 +343,10 @@ exec "$python_root/bin/python3.14" -B "$bundle_root/host_bootstrap.py" \\
         """Start one exact hash-bound invocation."""
 
         document_name, version, document_hash = document_identity
-        instance_id = self._required_text(output_by_name, "InstanceId")
-        architecture = self._required_text(output_by_name, "ComputeArchitecture")
-        retained_volume_id = self._required_text(output_by_name, "RetainedVolumeId")
-        bundle_sha256 = self._required_sha256(
+        instance_id = _required_text(output_by_name, "InstanceId")
+        architecture = _required_text(output_by_name, "ComputeArchitecture")
+        retained_volume_id = _required_text(output_by_name, "RetainedVolumeId")
+        bundle_sha256 = _required_sha256(
             parameter_by_name,
             "HostBootstrapBundleSha256",
         )
@@ -394,13 +371,9 @@ exec "$python_root/bin/python3.14" -B "$bundle_root/host_bootstrap.py" \\
                     {
                         "Architecture": [architecture],
                         "EnvironmentName": [self._identity.environment_name],
-                        "RetainedRootPath": [
-                            str(self._identity.host_retained_root_path)
-                        ],
+                        "RetainedRootPath": [str(self._identity.host_retained_root_path)],
                         "RetainedVolumeId": [retained_volume_id],
-                        "RetainedVolumeInitializationAllowed": [
-                            "true" if initialization_allowed else "false"
-                        ],
+                        "RetainedVolumeInitializationAllowed": ["true" if initialization_allowed else "false"],
                     },
                     separators=(",", ":"),
                     sort_keys=True,
@@ -410,9 +383,7 @@ exec "$python_root/bin/python3.14" -B "$bundle_root/host_bootstrap.py" \\
         command = payload.get("Command")
         command_id = command.get("CommandId") if isinstance(command, dict) else None
         if not isinstance(command_id, str) or not command_id:
-            raise DevelopmentEnvironmentError(
-                "Bootstrap SendCommand response is malformed"
-            )
+            raise DevelopmentEnvironmentError("Bootstrap SendCommand response is malformed")
         return command_id
 
     def _command_success_wait(self, *, command_id: str, instance_id: str) -> None:
@@ -438,60 +409,30 @@ exec "$python_root/bin/python3.14" -B "$bundle_root/host_bootstrap.py" \\
             stdout = getattr(result, "stdout", "")
             stderr = getattr(result, "stderr", "")
             if returncode != 0:
-                error_text = f"{stderr or stdout}"
-                if "InvocationDoesNotExist" in error_text:
+                if aws_cli_error_matches(
+                    result,
+                    code_set=frozenset({"InvocationDoesNotExist"}),
+                    operation="GetCommandInvocation",
+                ):
                     self._clock.sleep(BOOTSTRAP_POLL_INTERVAL_SECONDS)
                     continue
-                raise DevelopmentEnvironmentError(
-                    f"Unable to inspect bootstrap command {command_id}"
-                )
+                raise DevelopmentEnvironmentError(f"Unable to inspect bootstrap command {command_id}")
             try:
                 payload = json.loads(stdout or "{}")
             except json.JSONDecodeError as error:
-                raise DevelopmentEnvironmentError(
-                    "Bootstrap command invocation response is malformed"
-                ) from error
+                raise DevelopmentEnvironmentError("Bootstrap command invocation response is malformed") from error
             if not isinstance(payload, dict):
-                raise DevelopmentEnvironmentError(
-                    "Bootstrap command invocation response is malformed"
-                )
+                raise DevelopmentEnvironmentError("Bootstrap command invocation response is malformed")
             status = payload.get("Status")
             if status in _IN_PROGRESS_STATUS_SET:
                 self._clock.sleep(BOOTSTRAP_POLL_INTERVAL_SECONDS)
                 continue
             if status == "Success":
-                print(
-                    f"OK: exact host bootstrap command {command_id} completed on {instance_id}"
-                )
+                print(f"OK: exact host bootstrap command {command_id} completed on {instance_id}")
                 return
             break
         if status in _IN_PROGRESS_STATUS_SET:
             raise DevelopmentEnvironmentError(
-                f"Bootstrap command {command_id} did not finish within "
-                f"{BOOTSTRAP_COMMAND_TIMEOUT_SECONDS} seconds"
+                f"Bootstrap command {command_id} did not finish within " f"{BOOTSTRAP_COMMAND_TIMEOUT_SECONDS} seconds"
             )
-        raise DevelopmentEnvironmentError(
-            f"Bootstrap command {command_id} failed with status {status}"
-        )
-
-    @staticmethod
-    def _required_text(value_by_name: Mapping[str, str], name: str) -> str:
-        """Return one required non-empty text value."""
-
-        value = value_by_name.get(name)
-        if not isinstance(value, str) or not value:
-            raise DevelopmentEnvironmentError(
-                f"Required bootstrap value {name} is missing"
-            )
-        return value
-
-    @classmethod
-    def _required_sha256(cls, value_by_name: Mapping[str, str], name: str) -> str:
-        """Return one required lowercase SHA-256 value."""
-
-        value = cls._required_text(value_by_name, name)
-        if _SHA256_PATTERN.fullmatch(value) is None:
-            raise DevelopmentEnvironmentError(
-                f"Bootstrap value {name} is not a SHA-256"
-            )
-        return value
+        raise DevelopmentEnvironmentError(f"Bootstrap command {command_id} failed with status {status}")

@@ -7,7 +7,10 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Protocol
 
-from workflow_infrastructure.development_environment.aws import DevelopmentAwsClient
+from workflow_infrastructure.development_environment.aws import (
+    DevelopmentAwsClient,
+    aws_cli_error_matches,
+)
 from workflow_infrastructure.development_environment.error import (
     DevelopmentEnvironmentError,
 )
@@ -76,7 +79,11 @@ class DevelopmentStopLeaseManager:
             ],
             check=False,
         )
-        if result.returncode != 0 and "ResourceNotFoundException" not in result.stderr:
+        if result.returncode != 0 and not aws_cli_error_matches(
+            result,
+            code_set=frozenset({"ResourceNotFoundException"}),
+            operation="DeleteSchedule",
+        ):
             raise DevelopmentEnvironmentError(f"Stop lease deletion failed: {result.stderr.strip()}")
 
     def payload_get(self) -> dict[str, object]:
@@ -96,7 +103,11 @@ class DevelopmentStopLeaseManager:
             check=False,
         )
         if result.returncode != 0:
-            if "ResourceNotFoundException" in result.stderr:
+            if aws_cli_error_matches(
+                result,
+                code_set=frozenset({"ResourceNotFoundException"}),
+                operation="GetSchedule",
+            ):
                 return {"state": "absent"}
             raise DevelopmentEnvironmentError(f"Stop lease lookup failed: {result.stderr.strip()}")
         try:

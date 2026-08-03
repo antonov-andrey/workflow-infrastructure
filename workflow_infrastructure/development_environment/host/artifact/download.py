@@ -19,6 +19,18 @@ MAX_HOST_ARTIFACT_SIZE_BYTES = 1024 * 1024 * 1024
 _URL_PATTERN = re.compile(r"https://[A-Za-z0-9._~:/?#\[\]@!&()*+,;=%-]+")
 
 
+def _file_identity_get(path: Path) -> tuple[str, int]:
+    """Return SHA-256 and byte length without loading a large file."""
+
+    digest = hashlib.sha256()
+    size = 0
+    with path.open("rb") as file:
+        while chunk := file.read(1024 * 1024):
+            digest.update(chunk)
+            size += len(chunk)
+    return digest.hexdigest(), size
+
+
 class HostArtifactDownloader:
     """Own safe artifact download, atomic cache publication, and identity."""
 
@@ -50,21 +62,15 @@ class HostArtifactDownloader:
             or parsed_url.password is not None
             or _URL_PATTERN.fullmatch(url) is None
         ):
-            raise HostArtifactResolutionError(
-                f"artifact {name} does not use one shell-safe absolute HTTPS URL"
-            )
+            raise HostArtifactResolutionError(f"artifact {name} does not use one shell-safe absolute HTTPS URL")
         if expected_sha256 and re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
-            raise HostArtifactResolutionError(
-                f"artifact {name} has an invalid expected SHA-256"
-            )
+            raise HostArtifactResolutionError(f"artifact {name} has an invalid expected SHA-256")
         if (
             re.fullmatch(r"[a-z0-9+_-]+", verification) is None
             or not verification_identity
             or len(verification_identity) > 256
         ):
-            raise HostArtifactResolutionError(
-                f"artifact {name} has an invalid verification identity"
-            )
+            raise HostArtifactResolutionError(f"artifact {name} has an invalid verification identity")
         sha256, size = self.download(
             allow_cache=allow_cache,
             artifact_path=self.cache_path_get(url),
@@ -100,7 +106,7 @@ class HostArtifactDownloader:
         """Publish exact response bytes atomically after bounded validation."""
 
         if allow_cache and artifact_path.is_file():
-            sha256, size = self.file_identity_get(artifact_path)
+            sha256, size = _file_identity_get(artifact_path)
             if not expected_sha256 or sha256 == expected_sha256:
                 return sha256, size
             artifact_path.unlink()
@@ -114,9 +120,7 @@ class HostArtifactDownloader:
                 final_url = urllib.parse.urlparse(response.geturl())
                 if final_url.scheme != "https":
                     raise HostArtifactResolutionError("artifact redirect left HTTPS")
-                declared_size = _declared_size_get(
-                    response.headers.get("Content-Length")
-                )
+                declared_size = _declared_size_get(response.headers.get("Content-Length"))
                 with tempfile.NamedTemporaryFile(
                     dir=self._cache_root_path,
                     prefix=".download-",
@@ -128,46 +132,26 @@ class HostArtifactDownloader:
                     while chunk := response.read(1024 * 1024):
                         size += len(chunk)
                         if size > MAX_HOST_ARTIFACT_SIZE_BYTES:
-                            raise HostArtifactResolutionError(
-                                "artifact response exceeds the download size limit"
-                            )
+                            raise HostArtifactResolutionError("artifact response exceeds the download size limit")
                         temporary_file.write(chunk)
                         digest.update(chunk)
                     temporary_file.flush()
                     os.fsync(temporary_file.fileno())
             if declared_size is not None and size != declared_size:
-                raise HostArtifactResolutionError(
-                    "artifact response differs from its declared Content-Length"
-                )
+                raise HostArtifactResolutionError("artifact response differs from its declared Content-Length")
             sha256 = digest.hexdigest()
             if expected_sha256 and sha256 != expected_sha256:
-                raise HostArtifactResolutionError(
-                    f"artifact checksum mismatch for {url}"
-                )
+                raise HostArtifactResolutionError(f"artifact checksum mismatch for {url}")
             os.chmod(temporary_path, 0o600)
             os.replace(temporary_path, artifact_path)
             _directory_fsync(artifact_path.parent)
             temporary_path = None
             return sha256, size
         except OSError as error:
-            raise HostArtifactResolutionError(
-                f"unable to download artifact {url}: {error}"
-            ) from error
+            raise HostArtifactResolutionError(f"unable to download artifact {url}: {error}") from error
         finally:
             if temporary_path is not None:
                 temporary_path.unlink(missing_ok=True)
-
-    @staticmethod
-    def file_identity_get(path: Path) -> tuple[str, int]:
-        """Return SHA-256 and byte length without loading a large file."""
-
-        digest = hashlib.sha256()
-        size = 0
-        with path.open("rb") as file:
-            while chunk := file.read(1024 * 1024):
-                digest.update(chunk)
-                size += len(chunk)
-        return digest.hexdigest(), size
 
 
 def _declared_size_get(value: str | None) -> int | None:
@@ -176,13 +160,9 @@ def _declared_size_get(value: str | None) -> int | None:
     try:
         size = int(value)
     except ValueError as error:
-        raise HostArtifactResolutionError(
-            "artifact response has an invalid Content-Length"
-        ) from error
+        raise HostArtifactResolutionError("artifact response has an invalid Content-Length") from error
     if size < 0 or size > MAX_HOST_ARTIFACT_SIZE_BYTES:
-        raise HostArtifactResolutionError(
-            "artifact response exceeds the download size limit"
-        )
+        raise HostArtifactResolutionError("artifact response exceeds the download size limit")
     return size
 
 

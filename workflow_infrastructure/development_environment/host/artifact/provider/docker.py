@@ -31,14 +31,51 @@ DOCKER_PACKAGE_NAME_LIST = [
 DOCKER_SIGNING_KEY_URL = f"{DOCKER_APT_ROOT_URL}/gpg"
 
 
+def docker_packages_index_identity_get(*, architecture: str, inrelease_text: str) -> tuple[str, str]:
+    """Return signed Packages path and SHA-256 for one architecture."""
+
+    section_match = re.search(r"(?:^|\n)SHA256:\n(?P<body>(?: [^\n]+\n)+)", inrelease_text)
+    if section_match is None:
+        raise HostArtifactResolutionError("Docker InRelease has no SHA256 section")
+    expected_path_set = {
+        f"{DOCKER_CHANNEL}/binary-{architecture}/Packages.gz",
+        f"{DOCKER_CHANNEL}/binary-{architecture}/Packages",
+    }
+    for line in section_match.group("body").splitlines():
+        part_list = line.split()
+        if len(part_list) == 3:
+            sha256, _, relative_path = part_list
+            if relative_path in expected_path_set and re.fullmatch(r"[0-9a-f]{64}", sha256):
+                return relative_path, sha256
+    raise HostArtifactResolutionError("Docker InRelease does not bind the target Packages index")
+
+
+def debian_package_payload_list_get(packages_text: str) -> list[dict[str, str]]:
+    """Parse Debian control paragraphs without interpreting package scripts."""
+
+    payload_list: list[dict[str, str]] = []
+    for paragraph in re.split(r"\n\s*\n", packages_text):
+        payload: dict[str, str] = {}
+        current_name = ""
+        for line in paragraph.splitlines():
+            if line.startswith((" ", "\t")) and current_name:
+                payload[current_name] += "\n" + line[1:]
+                continue
+            name, separator, value = line.partition(":")
+            if separator:
+                current_name = name
+                payload[name] = value.strip()
+        if payload:
+            payload_list.append(payload)
+    return payload_list
+
+
 class CommandResultProtocol(Protocol):
     returncode: int
 
 
 class CommandRunnerProtocol(Protocol):
-    def run(
-        self, command_list: Sequence[str], *, check: bool = True
-    ) -> CommandResultProtocol:
+    def run(self, command_list: Sequence[str], *, check: bool = True) -> CommandResultProtocol:
         """Run one local command."""
 
 
@@ -88,7 +125,7 @@ class DockerArtifactProvider:
             inrelease_path=inrelease_path,
             signing_key_path=signing_key_path,
         )
-        packages_relative_path, packages_sha256 = self.packages_index_identity_get(
+        packages_relative_path, packages_sha256 = docker_packages_index_identity_get(
             architecture=architecture,
             inrelease_text=inrelease_path.read_text(encoding="utf-8"),
         )
@@ -101,19 +138,13 @@ class DockerArtifactProvider:
             verification="signed-metadata-sha256",
             verification_identity=inrelease.sha256,
         )
-        packages_bytes = self._downloader.cache_path_get(
-            packages_index.url
-        ).read_bytes()
+        packages_bytes = self._downloader.cache_path_get(packages_index.url).read_bytes()
         if packages_relative_path.endswith(".gz"):
             try:
                 packages_bytes = gzip.decompress(packages_bytes)
             except gzip.BadGzipFile as error:
-                raise HostArtifactResolutionError(
-                    "Docker Packages index is not valid gzip"
-                ) from error
-        package_payload_list = self.debian_package_payload_list_get(
-            packages_bytes.decode("utf-8")
-        )
+                raise HostArtifactResolutionError("Docker Packages index is not valid gzip") from error
+        package_payload_list = debian_package_payload_list_get(packages_bytes.decode("utf-8"))
         result = {
             "docker-signing-key": signing_key,
             "docker-inrelease": inrelease,
@@ -136,53 +167,6 @@ class DockerArtifactProvider:
             )
         return result
 
-    @staticmethod
-    def packages_index_identity_get(
-        *, architecture: str, inrelease_text: str
-    ) -> tuple[str, str]:
-        """Return signed Packages path and SHA-256 for one architecture."""
-
-        section_match = re.search(
-            r"(?:^|\n)SHA256:\n(?P<body>(?: [^\n]+\n)+)", inrelease_text
-        )
-        if section_match is None:
-            raise HostArtifactResolutionError("Docker InRelease has no SHA256 section")
-        expected_path_set = {
-            f"{DOCKER_CHANNEL}/binary-{architecture}/Packages.gz",
-            f"{DOCKER_CHANNEL}/binary-{architecture}/Packages",
-        }
-        for line in section_match.group("body").splitlines():
-            part_list = line.split()
-            if len(part_list) == 3:
-                sha256, _, relative_path = part_list
-                if relative_path in expected_path_set and re.fullmatch(
-                    r"[0-9a-f]{64}", sha256
-                ):
-                    return relative_path, sha256
-        raise HostArtifactResolutionError(
-            "Docker InRelease does not bind the target Packages index"
-        )
-
-    @staticmethod
-    def debian_package_payload_list_get(packages_text: str) -> list[dict[str, str]]:
-        """Parse Debian control paragraphs without interpreting package scripts."""
-
-        payload_list: list[dict[str, str]] = []
-        for paragraph in re.split(r"\n\s*\n", packages_text):
-            payload: dict[str, str] = {}
-            current_name = ""
-            for line in paragraph.splitlines():
-                if line.startswith((" ", "\t")) and current_name:
-                    payload[current_name] += "\n" + line[1:]
-                    continue
-                name, separator, value = line.partition(":")
-                if separator:
-                    current_name = name
-                    payload[name] = value.strip()
-            if payload:
-                payload_list.append(payload)
-        return payload_list
-
     def latest_debian_package_get(
         self,
         *,
@@ -202,9 +186,7 @@ class DockerArtifactProvider:
             and payload.get("Version")
         ]
         if not candidate_list:
-            raise HostArtifactResolutionError(
-                f"Docker repository has no package {package_name} for {architecture}"
-            )
+            raise HostArtifactResolutionError(f"Docker repository has no package {package_name} for {architecture}")
         latest = candidate_list[0]
         for candidate in candidate_list[1:]:
             result = self._runner.run(

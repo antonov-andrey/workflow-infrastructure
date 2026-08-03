@@ -51,7 +51,7 @@ class IdentityProtocol(Protocol):
 class RetainedVolumeProtocol(Protocol):
     """Retained-volume identity validator."""
 
-    def volume_id_validate(self, volume_id: str) -> str:
+    def volume_id_validate(self, volume_id: str) -> None:
         """Validate one EBS volume identity."""
 
 
@@ -60,6 +60,72 @@ class TransportProtocol(Protocol):
 
     def ssm_shell_result_get(self, command_list: Sequence[str], *, timeout_seconds: int) -> dict[str, object]:
         """Run one remote command and return its invocation payload."""
+
+
+def _host_status_payload_validate(payload: object) -> dict[str, str]:
+    """Validate and normalize the fixed safe host-status response contract."""
+
+    if not isinstance(payload, dict):
+        raise DevelopmentEnvironmentError("Development host status output is malformed")
+    expected_field_set = {
+        "current_release",
+        "host_controller_service_status",
+        "host_controller_unit_status",
+        "host_status_probe",
+        "k3s_service_status",
+        "kubernetes_node_status",
+        "retained_mount_status",
+        "wcc_activity",
+    }
+    if set(payload) != expected_field_set or any(not isinstance(value, str) for value in payload.values()):
+        raise DevelopmentEnvironmentError("Development host status output is malformed")
+    current_release = payload["current_release"]
+    if current_release not in {"", "invalid"} and (len(current_release) != 20 or not current_release.isdigit()):
+        raise DevelopmentEnvironmentError("Development host current release is malformed")
+    allowed_value_by_field_map = {
+        "host_controller_service_status": {
+            "active",
+            "activating",
+            "deactivating",
+            "failed",
+            "inactive",
+            "maintenance",
+            "reloading",
+            "unknown",
+        },
+        "host_controller_unit_status": {
+            "loaded",
+            "masked",
+            "not-found",
+            "unknown",
+        },
+        "host_status_probe": {"ok"},
+        "k3s_service_status": {
+            "active",
+            "activating",
+            "deactivating",
+            "failed",
+            "inactive",
+            "maintenance",
+            "reloading",
+            "unknown",
+        },
+        "kubernetes_node_status": {
+            "not-ready",
+            "ready",
+            "unavailable",
+        },
+        "retained_mount_status": {
+            "ready",
+            "unmounted",
+            "wrong-device",
+        },
+        "wcc_activity": {"busy", "idle"},
+    }
+    for field, allowed_value_set in allowed_value_by_field_map.items():
+        if payload[field] not in allowed_value_set:
+            raise DevelopmentEnvironmentError(f"Development host status field {field} is malformed")
+    return {field: str(value) for field, value in payload.items()}
 
 
 class DevelopmentHostStatus:
@@ -95,7 +161,7 @@ class DevelopmentHostStatus:
             raise DevelopmentEnvironmentError(
                 "host-status is supported only from an exact source release " "on the development host"
             )
-        payload = self.payload_validate(self._local_payload_get(retained_volume_id=retained_volume_id))
+        payload = _host_status_payload_validate(self._local_payload_get(retained_volume_id=retained_volume_id))
         print(json.dumps(payload, sort_keys=True))
 
     def payload_get(self, *, retained_volume_id: str) -> dict[str, str]:
@@ -135,7 +201,7 @@ class DevelopmentHostStatus:
             payload = json.loads(output_text)
         except json.JSONDecodeError as error:
             raise DevelopmentEnvironmentError("Development host status output is invalid") from error
-        return self.payload_validate(payload)
+        return _host_status_payload_validate(payload)
 
     def _local_payload_get(self, *, retained_volume_id: str) -> dict[str, str]:
         """Collect safe state directly on the development host.
@@ -307,81 +373,7 @@ class DevelopmentHostStatus:
             return "unknown"
         return status
 
-    @staticmethod
-    def payload_validate(payload: object) -> dict[str, str]:
-        """Validate the fixed safe host-status response contract.
-
-        Args:
-            payload: Decoded host-status response.
-
-        Returns:
-            Normalized safe status fields.
-        """
-
-        if not isinstance(payload, dict):
-            raise DevelopmentEnvironmentError("Development host status output is malformed")
-        expected_field_set = {
-            "current_release",
-            "host_controller_service_status",
-            "host_controller_unit_status",
-            "host_status_probe",
-            "k3s_service_status",
-            "kubernetes_node_status",
-            "retained_mount_status",
-            "wcc_activity",
-        }
-        if set(payload) != expected_field_set or any(not isinstance(value, str) for value in payload.values()):
-            raise DevelopmentEnvironmentError("Development host status output is malformed")
-        current_release = payload["current_release"]
-        if current_release not in {"", "invalid"} and (len(current_release) != 20 or not current_release.isdigit()):
-            raise DevelopmentEnvironmentError("Development host current release is malformed")
-        allowed_value_by_field_map = {
-            "host_controller_service_status": {
-                "active",
-                "activating",
-                "deactivating",
-                "failed",
-                "inactive",
-                "maintenance",
-                "reloading",
-                "unknown",
-            },
-            "host_controller_unit_status": {
-                "loaded",
-                "masked",
-                "not-found",
-                "unknown",
-            },
-            "host_status_probe": {"ok"},
-            "k3s_service_status": {
-                "active",
-                "activating",
-                "deactivating",
-                "failed",
-                "inactive",
-                "maintenance",
-                "reloading",
-                "unknown",
-            },
-            "kubernetes_node_status": {
-                "not-ready",
-                "ready",
-                "unavailable",
-            },
-            "retained_mount_status": {
-                "ready",
-                "unmounted",
-                "wrong-device",
-            },
-            "wcc_activity": {"busy", "idle"},
-        }
-        for field, allowed_value_set in allowed_value_by_field_map.items():
-            if payload[field] not in allowed_value_set:
-                raise DevelopmentEnvironmentError(f"Development host status field {field} is malformed")
-        return {field: str(value) for field, value in payload.items()}
-
-    @staticmethod
-    def unavailable_payload_get() -> dict[str, str]:
+    def unavailable_payload_get(self) -> dict[str, str]:
         """Return stable status fields when the remote host cannot be inspected."""
 
         return {

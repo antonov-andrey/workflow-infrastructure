@@ -26,6 +26,42 @@ UV_SELECTOR = "0"
 UV_SIGNER_WORKFLOW = "astral-sh/uv/.github/workflows/release.yml"
 
 
+def python_download_payload_get(*, architecture: str, metadata: object) -> dict[str, object]:
+    """Select the newest stable exact Python 3.14 GNU/Linux build."""
+
+    if not isinstance(metadata, Mapping):
+        raise HostArtifactResolutionError("uv Python metadata root is malformed")
+    candidate_list: list[dict[str, object]] = []
+    for payload in metadata.values():
+        if not isinstance(payload, dict):
+            continue
+        architecture_payload = payload.get("arch")
+        if (
+            payload.get("name") != "cpython"
+            or payload.get("major") != 3
+            or payload.get("minor") != 14
+            or payload.get("prerelease") != ""
+            or payload.get("variant") is not None
+            or payload.get("os") != "linux"
+            or payload.get("libc") != "gnu"
+            or not isinstance(architecture_payload, dict)
+            or architecture_payload.get("family") != architecture
+            or architecture_payload.get("variant") is not None
+            or not isinstance(payload.get("patch"), int)
+            or not isinstance(payload.get("build"), str)
+            or not isinstance(payload.get("url"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", str(payload.get("sha256"))) is None
+        ):
+            continue
+        candidate_list.append(payload)
+    if not candidate_list:
+        raise HostArtifactResolutionError(f"uv release has no stable {PYTHON_SELECTOR} build for {architecture}")
+    return max(
+        candidate_list,
+        key=lambda payload: (int(payload["patch"]), str(payload["build"])),
+    )
+
+
 class PythonArtifactProvider:
     """Own uv release trust and standalone Python metadata selection."""
 
@@ -76,8 +112,7 @@ class PythonArtifactProvider:
             source_commit_sha=commit_sha,
         )
         metadata_url = (
-            "https://raw.githubusercontent.com/astral-sh/uv/"
-            f"{commit_sha}/crates/uv-python/download-metadata.json"
+            "https://raw.githubusercontent.com/astral-sh/uv/" f"{commit_sha}/crates/uv-python/download-metadata.json"
         )
         metadata_artifact = self._downloader.identity_resolve(
             name="uv-python-metadata",
@@ -90,16 +125,10 @@ class PythonArtifactProvider:
             source_commit_sha=commit_sha,
         )
         try:
-            metadata = json.loads(
-                self._downloader.cache_path_get(metadata_url).read_text(
-                    encoding="utf-8"
-                )
-            )
+            metadata = json.loads(self._downloader.cache_path_get(metadata_url).read_text(encoding="utf-8"))
         except json.JSONDecodeError as error:
-            raise HostArtifactResolutionError(
-                "uv Python metadata is invalid JSON"
-            ) from error
-        python_payload = self.download_payload_get(
+            raise HostArtifactResolutionError("uv Python metadata is invalid JSON") from error
+        python_payload = python_download_payload_get(
             architecture=python_architecture,
             metadata=metadata,
         )
@@ -125,44 +154,4 @@ class PythonArtifactProvider:
             metadata_artifact,
             python_artifact,
             str(python_payload["build"]),
-        )
-
-    @staticmethod
-    def download_payload_get(
-        *, architecture: str, metadata: object
-    ) -> dict[str, object]:
-        """Select the newest stable exact Python 3.14 GNU/Linux build."""
-
-        if not isinstance(metadata, Mapping):
-            raise HostArtifactResolutionError("uv Python metadata root is malformed")
-        candidate_list: list[dict[str, object]] = []
-        for payload in metadata.values():
-            if not isinstance(payload, dict):
-                continue
-            architecture_payload = payload.get("arch")
-            if (
-                payload.get("name") != "cpython"
-                or payload.get("major") != 3
-                or payload.get("minor") != 14
-                or payload.get("prerelease") != ""
-                or payload.get("variant") is not None
-                or payload.get("os") != "linux"
-                or payload.get("libc") != "gnu"
-                or not isinstance(architecture_payload, dict)
-                or architecture_payload.get("family") != architecture
-                or architecture_payload.get("variant") is not None
-                or not isinstance(payload.get("patch"), int)
-                or not isinstance(payload.get("build"), str)
-                or not isinstance(payload.get("url"), str)
-                or re.fullmatch(r"[0-9a-f]{64}", str(payload.get("sha256"))) is None
-            ):
-                continue
-            candidate_list.append(payload)
-        if not candidate_list:
-            raise HostArtifactResolutionError(
-                f"uv release has no stable {PYTHON_SELECTOR} build for {architecture}"
-            )
-        return max(
-            candidate_list,
-            key=lambda payload: (int(payload["patch"]), str(payload["build"])),
         )

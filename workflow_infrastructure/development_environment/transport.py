@@ -11,6 +11,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Protocol
 
+from workflow_infrastructure.development_environment.aws import aws_cli_error_matches
 from workflow_infrastructure.development_environment.error import (
     DevelopmentEnvironmentError,
 )
@@ -210,7 +211,11 @@ class DevelopmentSsmTransport:
         )
         if result.returncode != 0:
             error_text = (result.stderr or result.stdout).strip()
-            if "InvocationDoesNotExist" in error_text:
+            if aws_cli_error_matches(
+                result,
+                code_set=frozenset({"InvocationDoesNotExist"}),
+                operation="GetCommandInvocation",
+            ):
                 return None
             raise DevelopmentEnvironmentError(
                 f"Unable to inspect SSM command {command_id}: " f"{error_text or f'exit {result.returncode}'}"

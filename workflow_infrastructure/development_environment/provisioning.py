@@ -201,9 +201,7 @@ class DevelopmentProvisioningManager:
         self._aws_account_id = aws_account_id
         self._aws_region = aws_region
         self._compute = compute
-        self._compute_stable_identity_logical_id_set = frozenset(
-            compute_stable_identity_logical_id_set
-        )
+        self._compute_stable_identity_logical_id_set = frozenset(compute_stable_identity_logical_id_set)
         self._compute_template_path = compute_template_path
         self._cost_reviewer = cost_reviewer
         self._data_plane_template_path = data_plane_template_path
@@ -221,9 +219,7 @@ class DevelopmentProvisioningManager:
 
         self._account.local_operator_context_validate()
         self._foundation.ensure()
-        self._source_publisher.validate_repository(
-            self._project_root_path, "workflow-infrastructure"
-        )
+        self._source_publisher.validate_repository(self._project_root_path, "workflow-infrastructure")
         self._cost_reviewer.record()
         data_stack_exists = bool(
             self._stack.payload_get(
@@ -233,11 +229,9 @@ class DevelopmentProvisioningManager:
         )
         if data_stack_exists:
             self._stack.drift_validate(self._identity.data_plane_stack_name)
-            self._stack_environment_identity_validate(
-                self._stack.parameter_by_name_map_get(
-                    self._identity.data_plane_stack_name
-                ),
-                owner="Data-plane",
+            self._data_stack_contract_validate(
+                self._stack.parameter_by_name_map_get(self._identity.data_plane_stack_name),
+                require_port_reservation=False,
             )
         compute_stack_exists = bool(
             self._stack.payload_get(
@@ -249,22 +243,15 @@ class DevelopmentProvisioningManager:
         failed_bootstrap_replacement_is_pending = False
         if compute_stack_exists:
             self._stack.drift_validate(self._identity.compute_stack_name)
-            current_compute_parameter_by_name_map = (
-                self._stack.parameter_by_name_map_get(self._identity.compute_stack_name)
+            current_compute_parameter_by_name_map = self._stack.parameter_by_name_map_get(
+                self._identity.compute_stack_name
             )
-            self.current_compute_stack_contract_validate(
-                current_compute_parameter_by_name_map
-            )
+            self.current_compute_stack_contract_validate(current_compute_parameter_by_name_map)
             replacement_recovery_is_pending = (
-                current_compute_parameter_by_name_map.get(
-                    "ReplacementGuardScheduleState"
-                )
-                == "ENABLED"
+                current_compute_parameter_by_name_map.get("ReplacementGuardScheduleState") == "ENABLED"
             )
         data_resource_id_by_logical_name_map = (
-            self._stack.resource_id_by_logical_name_map_get(
-                self._identity.data_plane_stack_name
-            )
+            self._stack.resource_id_by_logical_name_map_get(self._identity.data_plane_stack_name)
             if data_stack_exists
             else {}
         )
@@ -276,44 +263,33 @@ class DevelopmentProvisioningManager:
             parameter_by_name_map={
                 "EnvironmentName": self._identity.environment_name,
                 "GitWorktree": self._identity.git_worktree,
+                "LocalHttpPort": str(self._identity.local_http_port),
                 "UiOrigin": f"http://localhost:{self._identity.local_http_port}",
             },
             must_preserve_resource=True,
         )
         self._account.account_foundation_validate()
         if data_resource_id_by_logical_name_map:
-            current_resource_id_by_logical_name_map = (
-                self._stack.resource_id_by_logical_name_map_get(
-                    self._identity.data_plane_stack_name
-                )
+            current_resource_id_by_logical_name_map = self._stack.resource_id_by_logical_name_map_get(
+                self._identity.data_plane_stack_name
             )
             self._stack.existing_resource_identity_validate(
-                current_resource_id_by_logical_name_map=(
-                    current_resource_id_by_logical_name_map
-                ),
-                previous_resource_id_by_logical_name_map=(
-                    data_resource_id_by_logical_name_map
-                ),
+                current_resource_id_by_logical_name_map=(current_resource_id_by_logical_name_map),
+                previous_resource_id_by_logical_name_map=(data_resource_id_by_logical_name_map),
             )
-        platform_role_arn = self._stack.output_by_name_map_get(
-            self._identity.data_plane_stack_name
-        )["PlatformRoleArn"]
-        observability_bucket_name = self._stack.output_by_name_map_get(
-            self._identity.data_plane_stack_name
-        )["ObservabilityBucketName"]
-        host_artifact_parameter_by_name_map = (
-            self._host_artifact.cloudformation_parameter_by_name_map_get(
-                bucket_name=observability_bucket_name,
-                compute_stack_exists=compute_stack_exists,
-            )
+        platform_role_arn = self._stack.output_by_name_map_get(self._identity.data_plane_stack_name)["PlatformRoleArn"]
+        observability_bucket_name = self._stack.output_by_name_map_get(self._identity.data_plane_stack_name)[
+            "ObservabilityBucketName"
+        ]
+        host_artifact_parameter_by_name_map = self._host_artifact.cloudformation_parameter_by_name_map_get(
+            bucket_name=observability_bucket_name,
+            compute_stack_exists=compute_stack_exists,
         )
         if self._identity.is_primary:
             self._foundation.ensure(primary_platform_role_arn=platform_role_arn)
         platform_role_name = platform_role_arn.rsplit("/", maxsplit=1)[-1]
         if not platform_role_name:
-            raise DevelopmentEnvironmentError(
-                "Data-plane platform role output is malformed"
-            )
+            raise DevelopmentEnvironmentError("Data-plane platform role output is malformed")
         compute_parameter_by_name_map: dict[str, str] = {
             "EnvironmentName": self._identity.environment_name,
             "GitWorktree": self._identity.git_worktree,
@@ -321,28 +297,22 @@ class DevelopmentProvisioningManager:
             **host_artifact_parameter_by_name_map,
         }
         if compute_stack_exists:
-            compute_parameter_by_name_map["InstanceLaunchTemplateVersion"] = (
-                self._compute.launch_template_version_get()
-            )
+            compute_parameter_by_name_map["InstanceLaunchTemplateVersion"] = self._compute.launch_template_version_get()
         else:
             compute_parameter_by_name_map["RetainedVolumeFilesystemState"] = "pending"
-            compute_parameter_by_name_map.update(
-                self._replacement.guard_parameter_by_name_map_get()
-            )
+            compute_parameter_by_name_map.update(self._replacement.guard_parameter_by_name_map_get())
         self._stack.apply(
             stack_name=self._identity.compute_stack_name,
             template_path=self._compute_template_path,
             parameter_by_name_map=compute_parameter_by_name_map,
             must_preserve_resource=False,
-            protected_identity_logical_id_set=(
-                self._compute_stable_identity_logical_id_set
-            ),
+            protected_identity_logical_id_set=(self._compute_stable_identity_logical_id_set),
         )
         self._retained_volume.attachment_validate()
         if self._identity.is_primary:
-            retained_volume_id = self._stack.output_by_name_map_get(
-                self._identity.compute_stack_name
-            )["RetainedVolumeId"]
+            retained_volume_id = self._stack.output_by_name_map_get(self._identity.compute_stack_name)[
+                "RetainedVolumeId"
+            ]
             self._foundation.ensure(
                 primary_platform_role_arn=platform_role_arn,
                 primary_retained_volume_arn=(
@@ -352,9 +322,7 @@ class DevelopmentProvisioningManager:
         self._compute.launch_template_version_validate(require_latest=False)
         replacement_recovery_finished = False
         if replacement_recovery_is_pending:
-            failed_bootstrap_replacement_is_pending = (
-                self._compute.failed_bootstrap_replacement_is_proven()
-            )
+            failed_bootstrap_replacement_is_pending = self._compute.failed_bootstrap_replacement_is_proven()
             if not failed_bootstrap_replacement_is_pending:
                 self._replacement.recovery_finish()
                 replacement_recovery_finished = True
@@ -364,12 +332,15 @@ class DevelopmentProvisioningManager:
             )
         elif failed_bootstrap_replacement_is_pending:
             raise DevelopmentEnvironmentError(
-                "Failed bootstrap host has no newer launch-template version "
-                "available for replacement"
+                "Failed bootstrap host has no newer launch-template version " "available for replacement"
             )
         elif not replacement_recovery_finished:
             self._replacement.steady_state_finish()
         self._stack.drift_validate(self._identity.data_plane_stack_name)
+        self._data_stack_contract_validate(
+            self._stack.parameter_by_name_map_get(self._identity.data_plane_stack_name),
+            require_port_reservation=True,
+        )
         self._stack.drift_validate(self._identity.compute_stack_name)
         self._retained_volume.regular_backup_validate()
         print("OK: development data-plane and compute stacks are applied")
@@ -387,8 +358,7 @@ class DevelopmentProvisioningManager:
             or re.fullmatch(r"[0-9a-f]{64}", manifest_sha256) is None
             or not isinstance(encoded_manifest, str)
             or not encoded_manifest
-            or parameter_by_name_map.get("RetainedVolumeFilesystemState")
-            not in {"complete", "pending"}
+            or parameter_by_name_map.get("RetainedVolumeFilesystemState") not in {"complete", "pending"}
         ):
             raise DevelopmentEnvironmentError(
                 "Compute stack does not implement the current host-artifact "
@@ -408,10 +378,28 @@ class DevelopmentProvisioningManager:
         """Reject a short-name collision before changing an existing stack."""
 
         if (
-            parameter_by_name_map.get("EnvironmentName")
-            != self._identity.environment_name
+            parameter_by_name_map.get("EnvironmentName") != self._identity.environment_name
             or parameter_by_name_map.get("GitWorktree") != self._identity.git_worktree
         ):
-            raise DevelopmentEnvironmentError(
-                f"{owner} stack is bound to another full task common prefix"
-            )
+            raise DevelopmentEnvironmentError(f"{owner} stack is bound to another full task common prefix")
+
+    def _data_stack_contract_validate(
+        self,
+        parameter_by_name_map: Mapping[str, str],
+        *,
+        require_port_reservation: bool,
+    ) -> None:
+        """Prove the data stack owns this environment and exact tunnel endpoint."""
+
+        self._stack_environment_identity_validate(
+            parameter_by_name_map,
+            owner="Data-plane",
+        )
+        expected_port = str(self._identity.local_http_port)
+        expected_origin = f"http://localhost:{expected_port}"
+        current_origin = parameter_by_name_map.get("UiOrigin")
+        current_port = parameter_by_name_map.get("LocalHttpPort")
+        if current_origin != expected_origin or (current_port is not None and current_port != expected_port):
+            raise DevelopmentEnvironmentError("Data-plane stack is bound to another local HTTP endpoint")
+        if require_port_reservation and current_port != expected_port:
+            raise DevelopmentEnvironmentError("Data-plane stack does not persist its local HTTP port reservation")

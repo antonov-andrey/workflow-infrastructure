@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
+import re
 import subprocess
 from collections.abc import Sequence
 from typing import Protocol
@@ -10,6 +12,47 @@ from typing import Protocol
 from workflow_infrastructure.development_environment.error import (
     DevelopmentEnvironmentError,
 )
+
+_AWS_CLI_ERROR_PATTERN = re.compile(
+    r"^An error occurred \((?P<code>[A-Za-z0-9][A-Za-z0-9._-]*)\) "
+    r"when calling the (?P<operation>[A-Za-z0-9]+) operation"
+    r"(?: \([^\r\n]*\))?: (?P<message>.+)$"
+)
+
+
+@dataclass(frozen=True)
+class AwsCliError:
+    """One unambiguous structured AWS CLI service error."""
+
+    code: str
+    message: str
+    operation: str
+
+
+def aws_cli_error_get(result: subprocess.CompletedProcess[str]) -> AwsCliError | None:
+    """Decode exactly one standard AWS CLI error line, or fail closed."""
+
+    returncode = getattr(result, "returncode", None)
+    stderr = getattr(result, "stderr", None)
+    if not isinstance(returncode, int) or returncode == 0 or not isinstance(stderr, str):
+        return None
+    diagnostic_line_list = [line.strip() for line in stderr.splitlines() if line.strip()]
+    if len(diagnostic_line_list) != 1:
+        return None
+    match = _AWS_CLI_ERROR_PATTERN.fullmatch(diagnostic_line_list[0])
+    return AwsCliError(**match.groupdict()) if match is not None else None
+
+
+def aws_cli_error_matches(
+    result: subprocess.CompletedProcess[str],
+    *,
+    code_set: frozenset[str],
+    operation: str,
+) -> bool:
+    """Return whether a failed command proves one exact service error identity."""
+
+    error = aws_cli_error_get(result)
+    return error is not None and error.operation == operation and error.code in code_set
 
 
 class CommandRunnerProtocol(Protocol):

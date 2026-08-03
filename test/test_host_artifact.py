@@ -36,18 +36,22 @@ from workflow_infrastructure.development_environment.host.artifact.git_ref impor
 )
 from workflow_infrastructure.development_environment.host.artifact.provider.docker import (
     DockerArtifactProvider,
+    debian_package_payload_list_get,
+    docker_packages_index_identity_get,
 )
 from workflow_infrastructure.development_environment.host.artifact.provider.k3s import (
     K3sArtifactProvider,
 )
 from workflow_infrastructure.development_environment.host.artifact.provider.python import (
     PythonArtifactProvider,
+    python_download_payload_get,
 )
 from workflow_infrastructure.development_environment.host.artifact.publication import (
     HostBootstrapObjectPublisher,
 )
 from workflow_infrastructure.development_environment.host.artifact.verification import (
     HostArtifactVerifier,
+    primary_key_fingerprint_list_get,
 )
 
 
@@ -87,9 +91,7 @@ class RunnerFake:
             right = tuple(int(value) for value in re.findall(r"\d+", command_list[4]))
             returncode = 0 if left > right else 1
             if check and returncode:
-                raise AssertionError(
-                    "test runner received an unexpected checked comparison"
-                )
+                raise AssertionError("test runner received an unexpected checked comparison")
             return subprocess.CompletedProcess(command_list, returncode, "", "")
         raise AssertionError(f"unexpected command: {command_list}")
 
@@ -154,9 +156,7 @@ def _bundle_artifact_get(name: str) -> HostArtifactIdentity:
         name=name,
         selector="stable",
         version="3.14.5" if name == "python" else "1.2.3",
-        url=(
-            "https://example.invalid/" f"{_BUNDLE_FILENAME_BY_ARTIFACT_NAME_MAP[name]}"
-        ),
+        url=("https://example.invalid/" f"{_BUNDLE_FILENAME_BY_ARTIFACT_NAME_MAP[name]}"),
         sha256=hashlib.sha256(payload).hexdigest(),
         size=len(payload),
         verification="test-proof",
@@ -171,9 +171,7 @@ def test_bundle_paths_preserve_real_safe_filenames(tmp_path: Path) -> None:
     cache_root_path = tmp_path / "cache"
     resolution = HostArtifactResolution(
         architecture="arm64",
-        artifact_by_name_map={
-            name: _bundle_artifact_get(name) for name in HOST_ARTIFACT_NAME_SET
-        },
+        artifact_by_name_map={name: _bundle_artifact_get(name) for name in HOST_ARTIFACT_NAME_SET},
         docker_signing_key_fingerprint=DOCKER_SIGNING_KEY_FINGERPRINT,
         python_build="20260718",
     )
@@ -185,9 +183,7 @@ def test_bundle_paths_preserve_real_safe_filenames(tmp_path: Path) -> None:
     )
     for name, artifact in resolution.artifact_by_name_map.items():
         if name != "python":
-            publisher._downloader.cache_path_get(artifact.url).write_bytes(
-                name.encode()
-            )
+            publisher._downloader.cache_path_get(artifact.url).write_bytes(name.encode())
     bundle_path = tmp_path / "bootstrap.tar.gz"
 
     bootstrap_manifest_sha256 = publisher._bundle_write(
@@ -382,9 +378,7 @@ def test_manifest_round_trip_is_canonical_and_tamper_evident() -> None:
 
     resolution = HostArtifactResolution(
         architecture="arm64",
-        artifact_by_name_map={
-            name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET
-        },
+        artifact_by_name_map={name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET},
         docker_signing_key_fingerprint=DOCKER_SIGNING_KEY_FINGERPRINT,
         python_build="20260718",
     )
@@ -438,9 +432,7 @@ def test_manifest_decode_rejects_any_noncurrent_shape() -> None:
 
     resolution = HostArtifactResolution(
         architecture="arm64",
-        artifact_by_name_map={
-            name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET
-        },
+        artifact_by_name_map={name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET},
         docker_signing_key_fingerprint=DOCKER_SIGNING_KEY_FINGERPRINT,
         python_build="20260718",
     )
@@ -485,9 +477,7 @@ def test_manifest_decode_requires_exact_provenance_shape_by_artifact_owner(
 
     resolution = HostArtifactResolution(
         architecture="arm64",
-        artifact_by_name_map={
-            name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET
-        },
+        artifact_by_name_map={name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET},
         docker_signing_key_fingerprint=DOCKER_SIGNING_KEY_FINGERPRINT,
         python_build="20260718",
     )
@@ -553,7 +543,7 @@ def test_python_selector_chooses_latest_stable_patch_for_target_architecture() -
         },
     }
 
-    payload = PythonArtifactProvider.download_payload_get(
+    payload = python_download_payload_get(
         architecture="aarch64",
         metadata=metadata,
     )
@@ -641,14 +631,14 @@ def test_docker_signed_index_selects_exact_latest_packages(
         f" {'a' * 64} 100 stable/binary-arm64/Packages.gz\n"
         f" {'b' * 64} 200 stable/binary-amd64/Packages.gz\n"
     )
-    relative_path, sha256 = provider.packages_index_identity_get(
+    relative_path, sha256 = docker_packages_index_identity_get(
         architecture="arm64",
         inrelease_text=index_text,
     )
     assert relative_path == "stable/binary-arm64/Packages.gz"
     assert sha256 == "a" * 64
 
-    package_payload_list = provider.debian_package_payload_list_get(
+    package_payload_list = debian_package_payload_list_get(
         "\n\n".join(
             [
                 (
@@ -699,10 +689,8 @@ def test_docker_trust_anchor_excludes_additional_primary_keys() -> None:
         ]
     )
 
-    assert HostArtifactVerifier.primary_key_fingerprint_list_get(
-        one_primary_with_subkey
-    ) == [trusted_primary]
-    assert HostArtifactVerifier.primary_key_fingerprint_list_get(two_primary_keys) == [
+    assert primary_key_fingerprint_list_get(one_primary_with_subkey) == [trusted_primary]
+    assert primary_key_fingerprint_list_get(two_primary_keys) == [
         trusted_primary,
         additional_primary,
     ]
@@ -868,9 +856,7 @@ def test_cloudformation_parameters_use_single_canonical_bootstrap_manifest() -> 
 
     resolution = HostArtifactResolution(
         architecture="arm64",
-        artifact_by_name_map={
-            name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET
-        },
+        artifact_by_name_map={name: _artifact_get(name) for name in HOST_ARTIFACT_NAME_SET},
         docker_signing_key_fingerprint=DOCKER_SIGNING_KEY_FINGERPRINT,
         python_build="20260718",
     )

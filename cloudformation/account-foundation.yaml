@@ -227,6 +227,7 @@ Resources:
       DocumentType: Session
       Name: SSM-SessionManagerRunShell
       TargetType: /AWS::EC2::Instance
+      UpdateMethod: NewVersion
       Content:
         schemaVersion: '1.0'
         description: Development account Session Manager shell preferences.
@@ -235,7 +236,6 @@ Resources:
           cloudWatchEncryptionEnabled: true
           cloudWatchLogGroupName: !Ref SessionShellLogGroup
           idleSessionTimeout: '20'
-          kmsKeyId: !GetAtt SessionLogKey.Arn
           maxSessionDuration: ''
           runAsDefaultUser: ''
           runAsEnabled: false
