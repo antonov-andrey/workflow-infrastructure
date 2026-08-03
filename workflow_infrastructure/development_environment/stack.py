@@ -110,6 +110,46 @@ class CommandRunnerProtocol(Protocol):
         """
 
 
+def _can_add_primary_platform_data_lake_admin(
+    *,
+    allowed_primary_platform_data_lake_admin_arn: str | None,
+    aws_account_id: str,
+    existing_parameter_by_name_map: Mapping[str, str],
+    parameter_by_name_map: Mapping[str, str],
+    stack_name: str,
+) -> bool:
+    """Validate and report one exact fresh-primary administrator transition.
+
+    Args:
+        allowed_primary_platform_data_lake_admin_arn: Exact permitted fresh-primary administrator ARN.
+        aws_account_id: Exact AWS account identity.
+        existing_parameter_by_name_map: Existing stack parameters by name.
+        parameter_by_name_map: Requested effective stack parameters by name.
+        stack_name: Stack name.
+
+    Returns:
+        Whether the transition adds the primary platform administrator.
+
+    Raises:
+        DevelopmentEnvironmentError: The explicit transition permission does not match exact fresh-primary state.
+    """
+
+    if allowed_primary_platform_data_lake_admin_arn is None:
+        return False
+    expected_primary_platform_role_arn = f"arn:aws:iam::{aws_account_id}:role/platform-primary"
+    current_primary_platform_role_arn = existing_parameter_by_name_map.get("PrimaryPlatformRoleArn")
+    if (
+        stack_name != "account-foundation"
+        or allowed_primary_platform_data_lake_admin_arn != expected_primary_platform_role_arn
+        or parameter_by_name_map.get("PrimaryPlatformRoleArn") != allowed_primary_platform_data_lake_admin_arn
+        or current_primary_platform_role_arn not in {"", allowed_primary_platform_data_lake_admin_arn}
+    ):
+        raise DevelopmentEnvironmentError(
+            "Primary platform Lake Formation administrator transition is not the exact fresh-primary addition"
+        )
+    return current_primary_platform_role_arn == ""
+
+
 def _is_data_lake_settings_parameter_change_safe(summary: Mapping[str, object]) -> bool:
     """Return whether one change is the documented in-place Parameters update.
 
@@ -136,6 +176,55 @@ def _is_data_lake_settings_parameter_change_safe(summary: Mapping[str, object]) 
                 },
             }
         ]
+    )
+
+
+def _is_data_lake_settings_primary_platform_admin_change_safe(
+    summary: Mapping[str, object],
+    *,
+    can_add_primary_platform_data_lake_admin: bool,
+) -> bool:
+    """Return whether one change is the exact approved primary-admin addition.
+
+    Args:
+        summary: One CloudFormation resource-change summary.
+        can_add_primary_platform_data_lake_admin: Whether the exact parameter transition was proven.
+
+    Returns:
+        Whether the change is the exact approved primary-admin addition.
+    """
+
+    if (
+        not can_add_primary_platform_data_lake_admin
+        or summary.get("action") != "Modify"
+        or summary.get("logical_resource_id") != "DataLakeSettings"
+        or summary.get("replacement") != "Conditional"
+        or summary.get("resource_type") != "AWS::LakeFormation::DataLakeSettings"
+    ):
+        return False
+    detail_list = summary.get("detail_list")
+    if not isinstance(detail_list, list):
+        return False
+    expected_target = {
+        "Attribute": "Properties",
+        "Name": "Admins",
+        "RequiresRecreation": "Conditionally",
+    }
+    expected_detail_list = [
+        {
+            "CausingEntity": "PrimaryPlatformRoleArn",
+            "ChangeSource": "ParameterReference",
+            "Evaluation": "Static",
+            "Target": expected_target,
+        },
+        {
+            "ChangeSource": "DirectModification",
+            "Evaluation": "Dynamic",
+            "Target": expected_target,
+        },
+    ]
+    return sorted(json.dumps(detail, sort_keys=True) for detail in detail_list) == sorted(
+        json.dumps(detail, sort_keys=True) for detail in expected_detail_list
     )
 
 
@@ -221,12 +310,14 @@ def _protected_identity_change_violation_list_get(
 def _stable_data_change_violation_list_get(
     change_summary_list: list[dict[str, object]],
     *,
+    can_add_primary_platform_data_lake_admin: bool = False,
     versioned_document_logical_id_set: Collection[str] = (),
 ) -> list[str]:
     """Return data-plane changes not proven identity-preserving.
 
     Args:
         change_summary_list: Ordered change summary values.
+        can_add_primary_platform_data_lake_admin: Whether the exact parameter transition was proven.
         versioned_document_logical_id_set: Explicitly versioned SSM document logical identities.
 
     Returns:
@@ -263,6 +354,12 @@ def _stable_data_change_violation_list_get(
             conditional_safety_by_logical_id_map[logical_resource_id] = False
             return False
         if _is_data_lake_settings_parameter_change_safe(summary):
+            conditional_safety_by_logical_id_map[logical_resource_id] = True
+            return True
+        if _is_data_lake_settings_primary_platform_admin_change_safe(
+            summary,
+            can_add_primary_platform_data_lake_admin=can_add_primary_platform_data_lake_admin,
+        ):
             conditional_safety_by_logical_id_map[logical_resource_id] = True
             return True
         if _is_versioned_ssm_document_content_change_safe(
@@ -330,6 +427,7 @@ class DevelopmentStackManager:
         self,
         *,
         aws: AwsClientProtocol,
+        aws_account_id: str,
         aws_region: str,
         clock: ClockProtocol,
         identity: EnvironmentIdentityProtocol,
@@ -340,6 +438,7 @@ class DevelopmentStackManager:
 
         Args:
             aws: Aws.
+            aws_account_id: Exact AWS account identity.
             aws_region: Aws region.
             clock: Clock.
             identity: Identity.
@@ -348,6 +447,7 @@ class DevelopmentStackManager:
         """
 
         self._aws = aws
+        self._aws_account_id = aws_account_id
         self._aws_region = aws_region
         self._clock = clock
         self._identity = identity
@@ -361,6 +461,7 @@ class DevelopmentStackManager:
         template_path: Path,
         parameter_by_name_map: dict[str, str],
         must_preserve_resource: bool,
+        allowed_primary_platform_data_lake_admin_arn: str | None = None,
         protected_identity_logical_id_set: Collection[str] = (),
         versioned_document_logical_id_set: Collection[str] = (),
     ) -> None:
@@ -371,6 +472,7 @@ class DevelopmentStackManager:
             template_path: Exact filesystem path for template.
             parameter_by_name_map: Parameter by name mapping.
             must_preserve_resource: Must preserve resource.
+            allowed_primary_platform_data_lake_admin_arn: Exact permitted fresh-primary administrator ARN.
             protected_identity_logical_id_set: Unique protected identity logical identity values.
             versioned_document_logical_id_set: Explicitly versioned SSM document logical identities.
         """
@@ -398,16 +500,24 @@ class DevelopmentStackManager:
         ]
         if self._identity.git_worktree:
             command_list.append(f"Key=git-worktree,Value={self._identity.git_worktree}")
+        existing_parameter_by_name_map: dict[str, str] = {}
         if stack_payload:
-            current_parameter_by_name_map = self.parameter_by_name_map_get(stack_name)
+            existing_parameter_by_name_map = self.parameter_by_name_map_get(stack_name)
             template_parameter_name_set = self._template_parameter_name_set_get(template_argument_list)
-            current_parameter_by_name_map = {
+            merged_parameter_by_name_map = {
                 parameter_name: parameter_value
-                for parameter_name, parameter_value in current_parameter_by_name_map.items()
+                for parameter_name, parameter_value in existing_parameter_by_name_map.items()
                 if parameter_name in template_parameter_name_set
             }
-            current_parameter_by_name_map.update(parameter_by_name_map)
-            parameter_by_name_map = current_parameter_by_name_map
+            merged_parameter_by_name_map.update(parameter_by_name_map)
+            parameter_by_name_map = merged_parameter_by_name_map
+        can_add_primary_platform_data_lake_admin = _can_add_primary_platform_data_lake_admin(
+            allowed_primary_platform_data_lake_admin_arn=allowed_primary_platform_data_lake_admin_arn,
+            aws_account_id=self._aws_account_id,
+            existing_parameter_by_name_map=existing_parameter_by_name_map,
+            parameter_by_name_map=parameter_by_name_map,
+            stack_name=stack_name,
+        )
         if parameter_by_name_map:
             command_list.extend(
                 [
@@ -487,6 +597,7 @@ class DevelopmentStackManager:
         if must_preserve_resource:
             violation_logical_id_list = _stable_data_change_violation_list_get(
                 change_summary_list,
+                can_add_primary_platform_data_lake_admin=can_add_primary_platform_data_lake_admin,
                 versioned_document_logical_id_set=versioned_document_logical_id_set,
             )
             if violation_logical_id_list:

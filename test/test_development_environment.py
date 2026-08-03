@@ -2043,6 +2043,47 @@ def test_task_foundation_validation_requires_the_primary_stack_and_zero_drift(
         environment.foundation.ensure()
 
 
+def test_primary_foundation_binds_the_exact_platform_admin_transition(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The primary owner passes the role ARN as an explicit stack safety permission.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
+
+    environment = _environment_get(tmp_path)
+    platform_role_arn = "arn:aws:iam::463564115167:role/platform-primary"
+    apply_argument_by_name_map: dict[str, object] = {}
+    monkeypatch.setattr(
+        environment._stack,
+        "payload_get",
+        lambda stack_name, *, is_required: {"StackName": stack_name},
+    )
+    monkeypatch.setattr(
+        environment._stack,
+        "parameter_by_name_map_get",
+        lambda stack_name: {
+            "PrimaryPlatformRoleArn": "",
+            "PrimaryRetainedVolumeArn": "",
+        },
+    )
+    monkeypatch.setattr(environment._stack, "template_validate", lambda template_path: None)
+    monkeypatch.setattr(environment._stack, "apply", lambda **kwargs: apply_argument_by_name_map.update(kwargs))
+    monkeypatch.setattr(environment._stack, "drift_validate", lambda stack_name: None)
+    monkeypatch.setattr(environment._account, "account_foundation_validate", lambda: None)
+
+    environment.foundation.ensure(primary_platform_role_arn=platform_role_arn)
+
+    assert apply_argument_by_name_map["allowed_primary_platform_data_lake_admin_arn"] == platform_role_arn
+    assert apply_argument_by_name_map["parameter_by_name_map"] == {
+        "PrimaryPlatformRoleArn": platform_role_arn,
+        "PrimaryRetainedVolumeArn": "",
+    }
+
+
 def test_cli_rejects_task_selector_for_account_foundation_apply() -> None:
     """Prevent a task environment from becoming a competing global owner."""
 
@@ -3403,16 +3444,9 @@ def test_stable_data_change_allows_only_identity_preserving_conditional_dependen
     ]
 
 
-def test_stable_data_change_allows_only_exact_data_lake_settings_parameter_update(
-    tmp_path: Path,
-) -> None:
-    """The documented in-place Parameters update cannot weaken the stable-data guard.
+def test_stable_data_change_allows_only_exact_data_lake_settings_parameter_update() -> None:
+    """The documented in-place Parameters update cannot weaken the stable-data guard."""
 
-    Args:
-        tmp_path: Temporary directory path.
-    """
-
-    environment = _environment_get(tmp_path)
     parameter_detail = {
         "ChangeSource": "DirectModification",
         "Evaluation": "Static",
@@ -3464,6 +3498,130 @@ def test_stable_data_change_allows_only_exact_data_lake_settings_parameter_updat
         },
     ):
         assert development_stack._stable_data_change_violation_list_get([unsafe_change_summary]) == ["DataLakeSettings"]
+
+
+def test_stable_data_change_allows_only_proven_primary_platform_admin_addition() -> None:
+    """Only the exact proven fresh-primary administrator change is identity-preserving."""
+
+    target = {
+        "Attribute": "Properties",
+        "Name": "Admins",
+        "RequiresRecreation": "Conditionally",
+    }
+    parameter_detail = {
+        "CausingEntity": "PrimaryPlatformRoleArn",
+        "ChangeSource": "ParameterReference",
+        "Evaluation": "Static",
+        "Target": target,
+    }
+    direct_detail = {
+        "ChangeSource": "DirectModification",
+        "Evaluation": "Dynamic",
+        "Target": target,
+    }
+    change_summary = {
+        "action": "Modify",
+        "detail_list": [direct_detail, parameter_detail],
+        "logical_resource_id": "DataLakeSettings",
+        "replacement": "Conditional",
+        "resource_type": "AWS::LakeFormation::DataLakeSettings",
+    }
+
+    assert development_stack._stable_data_change_violation_list_get([change_summary]) == ["DataLakeSettings"]
+    assert (
+        development_stack._stable_data_change_violation_list_get(
+            [change_summary],
+            can_add_primary_platform_data_lake_admin=True,
+        )
+        == []
+    )
+
+    for unsafe_change_summary in (
+        {**change_summary, "logical_resource_id": "OtherDataLakeSettings"},
+        {**change_summary, "detail_list": [parameter_detail]},
+        {
+            **change_summary,
+            "detail_list": [
+                direct_detail,
+                {
+                    **parameter_detail,
+                    "CausingEntity": "OtherParameter",
+                },
+            ],
+        },
+        {
+            **change_summary,
+            "detail_list": [
+                direct_detail,
+                parameter_detail,
+                {
+                    **direct_detail,
+                    "Target": {**target, "Name": "Parameters"},
+                },
+            ],
+        },
+    ):
+        assert development_stack._stable_data_change_violation_list_get(
+            [unsafe_change_summary],
+            can_add_primary_platform_data_lake_admin=True,
+        ) == [unsafe_change_summary["logical_resource_id"]]
+
+
+def test_primary_platform_data_lake_admin_transition_requires_exact_fresh_state() -> None:
+    """The administrator-change permission cannot authorize another stack, account, or transition."""
+
+    account_id = "463564115167"
+    platform_role_arn = f"arn:aws:iam::{account_id}:role/platform-primary"
+    target_parameter_by_name_map = {"PrimaryPlatformRoleArn": platform_role_arn}
+
+    assert (
+        development_stack._can_add_primary_platform_data_lake_admin(
+            allowed_primary_platform_data_lake_admin_arn=None,
+            aws_account_id=account_id,
+            existing_parameter_by_name_map={"PrimaryPlatformRoleArn": ""},
+            parameter_by_name_map=target_parameter_by_name_map,
+            stack_name="account-foundation",
+        )
+        is False
+    )
+    assert (
+        development_stack._can_add_primary_platform_data_lake_admin(
+            allowed_primary_platform_data_lake_admin_arn=platform_role_arn,
+            aws_account_id=account_id,
+            existing_parameter_by_name_map={"PrimaryPlatformRoleArn": ""},
+            parameter_by_name_map=target_parameter_by_name_map,
+            stack_name="account-foundation",
+        )
+        is True
+    )
+    assert (
+        development_stack._can_add_primary_platform_data_lake_admin(
+            allowed_primary_platform_data_lake_admin_arn=platform_role_arn,
+            aws_account_id=account_id,
+            existing_parameter_by_name_map={"PrimaryPlatformRoleArn": platform_role_arn},
+            parameter_by_name_map=target_parameter_by_name_map,
+            stack_name="account-foundation",
+        )
+        is False
+    )
+
+    for allowed_arn, existing_arn, target_arn, stack_name in (
+        (f"arn:aws:iam::000000000000:role/platform-primary", "", platform_role_arn, "account-foundation"),
+        (platform_role_arn, "", f"arn:aws:iam::{account_id}:role/platform-other", "account-foundation"),
+        (platform_role_arn, f"arn:aws:iam::{account_id}:role/platform-other", platform_role_arn, "account-foundation"),
+        (platform_role_arn, "", platform_role_arn, "data-primary"),
+    ):
+        with pytest.raises(
+            DevelopmentEnvironmentError,
+            match="not the exact fresh-primary addition",
+        ):
+            development_stack._can_add_primary_platform_data_lake_admin(
+                allowed_primary_platform_data_lake_admin_arn=allowed_arn,
+                aws_account_id=account_id,
+                existing_parameter_by_name_map={"PrimaryPlatformRoleArn": existing_arn},
+                parameter_by_name_map={"PrimaryPlatformRoleArn": target_arn},
+                stack_name=stack_name,
+            )
 
 
 def test_stable_data_change_allows_only_explicit_versioned_ssm_document_content_update() -> None:

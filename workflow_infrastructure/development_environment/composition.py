@@ -206,6 +206,7 @@ class DevelopmentEnvironment:
         )
         self._stack = DevelopmentStackManager(
             aws=self._aws,
+            aws_account_id=AWS_ACCOUNT_ID,
             aws_region=AWS_REGION,
             clock=clock,
             identity=self._identity,
