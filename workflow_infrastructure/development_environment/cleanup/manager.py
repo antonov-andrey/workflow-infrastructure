@@ -140,12 +140,13 @@ class DevelopmentEnvironmentCleanupManager:
             request: Validated operation request.
 
         Returns:
-            Closed cleanup receipt proving task resources absent.
+            Closed cleanup result proving task resources absent.
         """
 
         self._request_validate(request, allow_primary=False)
         journal_path, journal = self._journal.load_or_create(request)
         inventory = CleanupInventory.from_payload(journal["inventory"])
+        self._inventory_identity_validate(inventory)
         while journal["phase"] != "complete":
             self._phase_run(journal["phase"], inventory)
             self._journal.advance(journal_path, journal)
@@ -164,6 +165,7 @@ class DevelopmentEnvironmentCleanupManager:
 
         self._request_validate(request, allow_primary=True)
         inventory = self._inventory_resolver.resolve(request)
+        self._inventory_identity_validate(inventory)
         return {
             **request.payload_get(),
             "environment_name": inventory.environment_name,
@@ -171,10 +173,10 @@ class DevelopmentEnvironmentCleanupManager:
                 [
                     inventory.compute_stack_name,
                     inventory.data_stack_name,
-                    inventory.instance_id,
+                    *inventory.instance_id_list,
                     inventory.kms_alias_name,
-                    inventory.kms_key_arn,
-                    inventory.retained_volume_id,
+                    *inventory.kms_key_arn_list,
+                    *inventory.retained_volume_id_list,
                     *inventory.bucket_name_list,
                 ]
             ),
@@ -217,3 +219,19 @@ class DevelopmentEnvironmentCleanupManager:
         if request.common_prefix != self._identity.git_worktree:
             raise DevelopmentEnvironmentError("Task cleanup request and environment identity differ")
         self._account.local_operator_context_validate()
+
+    def _inventory_identity_validate(self, inventory: CleanupInventory) -> None:
+        """Require a durable inventory to remain inside the selected task scope.
+
+        Args:
+            inventory: Inventory.
+        """
+
+        if (
+            inventory.common_prefix != self._identity.git_worktree
+            or inventory.environment_name != self._identity.environment_name
+            or inventory.compute_stack_name != self._identity.compute_stack_name
+            or inventory.data_stack_name != self._identity.data_plane_stack_name
+            or inventory.kms_alias_name != f"alias/storage-{self._identity.environment_name}"
+        ):
+            raise DevelopmentEnvironmentError("Task cleanup inventory is outside the selected environment scope")

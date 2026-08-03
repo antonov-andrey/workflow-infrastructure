@@ -224,6 +224,7 @@ class DevelopmentEnvironment:
         )
         cleanup_inventory_resolver = CleanupInventoryResolver(
             account_id=AWS_ACCOUNT_ID,
+            aws=self._aws,
             identity=self._identity,
             region=AWS_REGION,
             stack=self._stack,

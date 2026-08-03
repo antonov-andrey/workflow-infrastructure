@@ -21,6 +21,9 @@ from workflow_infrastructure.development_environment.cleanup.compute import (
 from workflow_infrastructure.development_environment.cleanup.journal import (
     CleanupJournalStore,
 )
+from workflow_infrastructure.development_environment.cleanup.inventory import (
+    CleanupInventoryResolver,
+)
 from workflow_infrastructure.development_environment.cleanup.kms import KmsCleanup
 from workflow_infrastructure.development_environment.cleanup.model import (
     CleanupInventory,
@@ -229,7 +232,7 @@ class _ComputeAws:
 
 
 def test_compute_cleanup_accepts_the_ec2_terminated_visibility_tombstone() -> None:
-    """AWS's post-deletion EC2 tombstone does not block synchronized cleanup."""
+    """AWS's post-deletion EC2 tombstone does not block idempotent cleanup."""
 
     cleanup = ComputeCleanup(aws=_ComputeAws(), stack_cleanup=_Unused())
     cleanup.absence_validate(_cleanup_inventory_get())
@@ -368,12 +371,22 @@ def _cleanup_inventory_get() -> CleanupInventory:
         compute_stack_name=_Identity.compute_stack_name,
         data_stack_name=_Identity.data_plane_stack_name,
         environment_name=_Identity.environment_name,
-        instance_id="i-0123456789abcdef0",
+        instance_id_list=("i-0123456789abcdef0",),
         kms_alias_name="alias/storage-w0123456789abcde",
-        kms_key_arn="arn:aws:kms:us-east-1:463564115167:key/test",
+        kms_key_arn_list=("arn:aws:kms:us-east-1:463564115167:key/test",),
         operation_identity=OPERATION_IDENTITY,
-        retained_volume_id="vol-0123456789abcdef0",
+        retained_volume_id_list=("vol-0123456789abcdef0",),
     )
+
+
+def test_cleanup_inventory_rejects_mutation_identities_outside_its_closed_shape() -> None:
+    """A corrupted durable journal cannot broaden the AWS mutation scope."""
+
+    payload = _cleanup_inventory_get().payload_get()
+    payload["instance_id_list"] = ["primary-instance"]
+
+    with pytest.raises(DevelopmentEnvironmentError, match="inventory is malformed"):
+        CleanupInventory.from_payload(payload)
 
 
 def test_kms_cleanup_accepts_physical_absence_after_pending_deletion() -> None:
@@ -432,6 +445,229 @@ class _Identity:
     environment_name = "w0123456789abcde"
     git_worktree = COMMON_PREFIX
     is_primary = False
+
+
+def _task_tag_list_get(*, name: str = "") -> list[dict[str, str]]:
+    """Return exact task ownership tags for one fake AWS resource.
+
+    Args:
+        name: Optional Name tag.
+
+    Returns:
+        Exact task ownership tags.
+    """
+
+    tag_by_name_map = {
+        "EnvironmentClass": "development",
+        "EnvironmentName": _Identity.environment_name,
+        "ManagedBy": "CloudFormation",
+        "git-worktree": COMMON_PREFIX,
+    }
+    if name:
+        tag_by_name_map["Name"] = name
+    return [{"Key": key, "Value": value} for key, value in sorted(tag_by_name_map.items())]
+
+
+class _CleanupInventoryAws:
+    """Expose a configurable partially deleted task environment."""
+
+    def __init__(
+        self,
+        *,
+        alias_key_arn: str = "",
+        instance_id_list: tuple[str, ...] = (),
+        kms_key_arn_list: tuple[str, ...] = (),
+        retained_volume_id_list: tuple[str, ...] = (),
+    ) -> None:
+        """Initialize the fake task resource inventory.
+
+        Args:
+            alias_key_arn: Key targeted by the deterministic alias.
+            instance_id_list: Remaining instance identities.
+            kms_key_arn_list: Remaining tagged KMS identities.
+            retained_volume_id_list: Remaining retained-volume identities.
+        """
+
+        self.alias_key_arn = alias_key_arn
+        self.instance_id_list = instance_id_list
+        self.kms_key_arn_list = kms_key_arn_list
+        self.retained_volume_id_list = retained_volume_id_list
+
+    def json_get(self, argument_list: list[str]) -> dict[str, object]:
+        """Return one configured discovery response.
+
+        Args:
+            argument_list: Exact AWS arguments.
+
+        Returns:
+            Configured discovery response.
+        """
+
+        if argument_list[:2] == ["ec2", "describe-instances"]:
+            return {
+                "Reservations": [
+                    {
+                        "Instances": [
+                            {"InstanceId": instance_id, "Tags": _task_tag_list_get()}
+                            for instance_id in self.instance_id_list
+                        ]
+                    }
+                ]
+            }
+        if argument_list[:2] == ["ec2", "describe-volumes"]:
+            return {
+                "Volumes": [
+                    {
+                        "VolumeId": volume_id,
+                        "Tags": _task_tag_list_get(name=f"retained-{_Identity.environment_name}"),
+                    }
+                    for volume_id in self.retained_volume_id_list
+                ]
+            }
+        if argument_list[:2] == ["resourcegroupstaggingapi", "get-resources"]:
+            return {
+                "ResourceTagMappingList": [
+                    {"ResourceARN": key_arn, "Tags": _task_tag_list_get()} for key_arn in self.kms_key_arn_list
+                ]
+            }
+        if argument_list[:2] == ["kms", "list-resource-tags"] and self.alias_key_arn:
+            return {"Tags": _task_tag_list_get()}
+        raise AssertionError(argument_list)
+
+    def run(self, argument_list: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        """Resolve the optional deterministic KMS alias.
+
+        Args:
+            argument_list: Exact AWS arguments.
+            check: Whether a nonzero command exit raises an error.
+
+        Returns:
+            Configured command result.
+        """
+
+        del check
+        assert argument_list[:2] == ["kms", "describe-key"]
+        if not self.alias_key_arn:
+            return subprocess.CompletedProcess(
+                argument_list,
+                1,
+                "",
+                "An error occurred (NotFoundException) when calling the DescribeKey operation: Key not found",
+            )
+        return subprocess.CompletedProcess(
+            argument_list,
+            0,
+            json.dumps({"KeyMetadata": {"Arn": self.alias_key_arn}}),
+            "",
+        )
+
+
+class _CleanupInventoryStack:
+    """Expose optional exact stack payloads without requiring both stacks."""
+
+    def __init__(self, payload_by_name: dict[str, dict[str, object]] | None = None) -> None:
+        """Initialize stack payloads.
+
+        Args:
+            payload_by_name: Stack payload by exact name.
+        """
+
+        self.payload_by_name = payload_by_name or {}
+
+    def payload_get(self, stack_name: str, *, is_required: bool) -> dict[str, object]:
+        """Return an optional exact stack payload.
+
+        Args:
+            stack_name: Stack name.
+            is_required: Whether the stack is required.
+
+        Returns:
+            Stack payload or an empty mapping.
+        """
+
+        assert not is_required
+        return self.payload_by_name.get(stack_name, {})
+
+
+def _owned_stack_payload_get(output_by_name_map: dict[str, str]) -> dict[str, object]:
+    """Build one exact stack payload with arbitrary available outputs.
+
+    Args:
+        output_by_name_map: Output values by logical name.
+
+    Returns:
+        Exact fake stack payload.
+    """
+
+    return {
+        "Outputs": [{"OutputKey": name, "OutputValue": value} for name, value in sorted(output_by_name_map.items())],
+        "Parameters": [
+            {
+                "ParameterKey": "EnvironmentName",
+                "ParameterValue": _Identity.environment_name,
+            },
+            {"ParameterKey": "GitWorktree", "ParameterValue": COMMON_PREFIX},
+        ],
+        "Tags": _task_tag_list_get(),
+    }
+
+
+def test_cleanup_inventory_accepts_an_already_absent_environment() -> None:
+    """No stack or retained resource is a successful empty cleanup inventory."""
+
+    inventory = CleanupInventoryResolver(
+        account_id="463564115167",
+        aws=_CleanupInventoryAws(),
+        identity=_Identity(),
+        region="us-east-1",
+        stack=_CleanupInventoryStack(),
+    ).resolve(CleanupRequest(common_prefix=COMMON_PREFIX, operation_identity=OPERATION_IDENTITY))
+
+    assert inventory.instance_id_list == ()
+    assert inventory.kms_key_arn_list == ()
+    assert inventory.retained_volume_id_list == ()
+    assert inventory.bucket_name_list == (
+        "463564115167-us-east-1-w0123456789abcde-data",
+        "463564115167-us-east-1-w0123456789abcde-observability",
+        "463564115167-us-east-1-w0123456789abcde-result",
+        "463564115167-us-east-1-w0123456789abcde-secret",
+    )
+
+
+def test_cleanup_inventory_unions_stack_outputs_with_every_tagged_orphan() -> None:
+    """Partial stack deletion cannot hide additional exact task-owned resources."""
+
+    stack_instance_id = "i-0123456789abcdef0"
+    tagged_instance_id = "i-1123456789abcdef0"
+    stack_volume_id = "vol-0123456789abcdef0"
+    tagged_volume_id = "vol-1123456789abcdef0"
+    stack_key_arn = "arn:aws:kms:us-east-1:463564115167:key/stack"
+    tagged_key_arn = "arn:aws:kms:us-east-1:463564115167:key/tagged"
+    inventory = CleanupInventoryResolver(
+        account_id="463564115167",
+        aws=_CleanupInventoryAws(
+            alias_key_arn=stack_key_arn,
+            instance_id_list=(tagged_instance_id,),
+            kms_key_arn_list=(tagged_key_arn,),
+            retained_volume_id_list=(tagged_volume_id,),
+        ),
+        identity=_Identity(),
+        region="us-east-1",
+        stack=_CleanupInventoryStack(
+            {
+                _Identity.compute_stack_name: _owned_stack_payload_get(
+                    {
+                        "InstanceId": stack_instance_id,
+                        "RetainedVolumeId": stack_volume_id,
+                    }
+                ),
+            }
+        ),
+    ).resolve(CleanupRequest(common_prefix=COMMON_PREFIX, operation_identity=OPERATION_IDENTITY))
+
+    assert inventory.instance_id_list == (stack_instance_id, tagged_instance_id)
+    assert inventory.kms_key_arn_list == (stack_key_arn, tagged_key_arn)
+    assert inventory.retained_volume_id_list == (stack_volume_id, tagged_volume_id)
 
 
 class _Unused:
@@ -606,11 +842,11 @@ def test_cleanup_journal_resumes_each_phase_and_binds_operation(
         compute_stack_name=_Identity.compute_stack_name,
         data_stack_name=_Identity.data_plane_stack_name,
         environment_name=_Identity.environment_name,
-        instance_id="i-0123456789abcdef0",
+        instance_id_list=("i-0123456789abcdef0",),
         kms_alias_name="alias/storage-w0123456789abcde",
-        kms_key_arn="arn:aws:kms:us-east-1:463564115167:key/test",
+        kms_key_arn_list=("arn:aws:kms:us-east-1:463564115167:key/test",),
         operation_identity=OPERATION_IDENTITY,
-        retained_volume_id="vol-0123456789abcdef0",
+        retained_volume_id_list=("vol-0123456789abcdef0",),
     )
     operation_list: list[str] = []
     inventory_resolver = _InventoryResolver(inventory)

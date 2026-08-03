@@ -51,26 +51,45 @@ class ComputeCleanup:
             inventory: Inventory.
         """
 
-        self._session_list_terminate(inventory.instance_id)
-        state = self.instance_state_get(inventory.instance_id)
-        if state not in {
-            "absent",
-            "stopped",
-            "stopping",
-            "terminated",
-            "shutting-down",
-        }:
-            self._aws.run(["ec2", "stop-instances", "--instance-ids", inventory.instance_id])
+        for instance_id in inventory.instance_id_list:
+            self._session_list_terminate(instance_id)
+            state = self.instance_state_get(instance_id)
+            if state == "running":
+                self._aws.run(["ec2", "stop-instances", "--instance-ids", instance_id])
+                self._aws.run(
+                    [
+                        "ec2",
+                        "wait",
+                        "instance-stopped",
+                        "--instance-ids",
+                        instance_id,
+                    ]
+                )
+            elif state not in {
+                "absent",
+                "pending",
+                "stopped",
+                "stopping",
+                "terminated",
+                "shutting-down",
+            }:
+                raise DevelopmentEnvironmentError("Task instance has an unsupported lifecycle state")
+        self._stack_cleanup.delete(inventory.compute_stack_name)
+        for instance_id in inventory.instance_id_list:
+            state = self.instance_state_get(instance_id)
+            if state in {"absent", "terminated"}:
+                continue
+            if state != "shutting-down":
+                self._aws.run(["ec2", "terminate-instances", "--instance-ids", instance_id])
             self._aws.run(
                 [
                     "ec2",
                     "wait",
-                    "instance-stopped",
+                    "instance-terminated",
                     "--instance-ids",
-                    inventory.instance_id,
+                    instance_id,
                 ]
             )
-        self._stack_cleanup.delete(inventory.compute_stack_name)
 
     def absence_validate(self, inventory: CleanupInventory) -> None:
         """Require the task instance to be deleted and its sessions to be absent.
@@ -85,13 +104,11 @@ class ComputeCleanup:
             inventory: Inventory.
         """
 
-        if self.instance_state_get(inventory.instance_id) not in {
-            "absent",
-            "terminated",
-        }:
-            raise DevelopmentEnvironmentError("Task instance still exists")
-        if self.active_session_id_list_get(inventory.instance_id):
-            raise DevelopmentEnvironmentError("Task Session Manager sessions remain active")
+        for instance_id in inventory.instance_id_list:
+            if self.instance_state_get(instance_id) not in {"absent", "terminated"}:
+                raise DevelopmentEnvironmentError("Task instance still exists")
+            if self.active_session_id_list_get(instance_id):
+                raise DevelopmentEnvironmentError("Task Session Manager sessions remain active")
 
     def active_session_id_list_get(self, instance_id: str) -> list[str]:
         """Return a complete duplicate-free active Session Manager inventory.

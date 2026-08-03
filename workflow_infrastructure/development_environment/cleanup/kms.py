@@ -39,31 +39,39 @@ class KmsCleanup:
         """
 
         relevant_alias_by_name_map = self._relevant_alias_by_name_map_get(inventory)
-        key_id = _key_id_get(inventory)
-        if relevant_alias_by_name_map not in ({}, {inventory.kms_alias_name: key_id}):
+        if not inventory.kms_key_arn_list:
+            if relevant_alias_by_name_map:
+                raise DevelopmentEnvironmentError("Task KMS alias exists without its owned key inventory")
+            return
+        key_id_set = {_key_id_get(key_arn) for key_arn in inventory.kms_key_arn_list}
+        if relevant_alias_by_name_map and (
+            set(relevant_alias_by_name_map) != {inventory.kms_alias_name}
+            or relevant_alias_by_name_map[inventory.kms_alias_name] not in key_id_set
+        ):
             raise DevelopmentEnvironmentError("Task KMS alias ownership is ambiguous")
         if relevant_alias_by_name_map:
             self._aws.run(["kms", "delete-alias", "--alias-name", inventory.kms_alias_name])
-        key_state = self._key_state_get(inventory)
-        if key_state == "absent":
-            return
-        if key_state == "Enabled":
-            self._aws.run(["kms", "disable-key", "--key-id", inventory.kms_key_arn])
-            key_state = "Disabled"
-        if key_state == "Disabled":
-            self._aws.run(
-                [
-                    "kms",
-                    "schedule-key-deletion",
-                    "--key-id",
-                    inventory.kms_key_arn,
-                    "--pending-window-in-days",
-                    "7",
-                ]
-            )
-            key_state = self._key_state_get(inventory)
-        if key_state != "PendingDeletion":
-            raise DevelopmentEnvironmentError("Task KMS key did not enter PendingDeletion")
+        for key_arn in inventory.kms_key_arn_list:
+            key_state = self._key_state_get(key_arn)
+            if key_state == "absent":
+                continue
+            if key_state == "Enabled":
+                self._aws.run(["kms", "disable-key", "--key-id", key_arn])
+                key_state = "Disabled"
+            if key_state == "Disabled":
+                self._aws.run(
+                    [
+                        "kms",
+                        "schedule-key-deletion",
+                        "--key-id",
+                        key_arn,
+                        "--pending-window-in-days",
+                        "7",
+                    ]
+                )
+                key_state = self._key_state_get(key_arn)
+            if key_state != "PendingDeletion":
+                raise DevelopmentEnvironmentError("Task KMS key did not enter PendingDeletion")
 
     def absence_validate(self, inventory: CleanupInventory) -> None:
         """Require no custom task alias and a key pending service deletion.
@@ -72,8 +80,9 @@ class KmsCleanup:
             inventory: Inventory.
         """
 
-        if self._key_state_get(inventory) not in {"PendingDeletion", "absent"}:
-            raise DevelopmentEnvironmentError("Task KMS key PendingDeletion proof is unavailable")
+        for key_arn in inventory.kms_key_arn_list:
+            if self._key_state_get(key_arn) not in {"PendingDeletion", "absent"}:
+                raise DevelopmentEnvironmentError("Task KMS key PendingDeletion proof is unavailable")
         if self._relevant_alias_by_name_map_get(inventory):
             raise DevelopmentEnvironmentError("Task KMS alias ownership still exists")
 
@@ -91,7 +100,7 @@ class KmsCleanup:
         alias_list = payload.get("Aliases", [])
         if not isinstance(alias_list, list) or any(not isinstance(item, Mapping) for item in alias_list):
             raise DevelopmentEnvironmentError("Task KMS alias inventory is malformed")
-        key_id = _key_id_get(inventory)
+        key_id_set = {_key_id_get(key_arn) for key_arn in inventory.kms_key_arn_list}
         seen_name_set: set[str] = set()
         result: dict[str, str] = {}
         for item in alias_list:
@@ -100,24 +109,24 @@ class KmsCleanup:
             if not isinstance(name, str) or not name or name in seen_name_set:
                 raise DevelopmentEnvironmentError("Task KMS alias inventory is malformed")
             seen_name_set.add(name)
-            if name == inventory.kms_alias_name or target_key_id == key_id:
+            if name == inventory.kms_alias_name or target_key_id in key_id_set:
                 if not isinstance(target_key_id, str) or not target_key_id:
                     raise DevelopmentEnvironmentError("Task KMS alias target is ambiguous")
                 result[name] = target_key_id
         return result
 
-    def _key_state_get(self, inventory: CleanupInventory) -> str:
+    def _key_state_get(self, key_arn: str) -> str:
         """Read the exact lifecycle state of the task-owned KMS key.
 
         Args:
-            inventory: Inventory.
+            key_arn: Exact KMS key ARN.
 
         Returns:
             Current AWS KMS key state.
         """
 
         result = self._aws.run(
-            ["kms", "describe-key", "--key-id", inventory.kms_key_arn],
+            ["kms", "describe-key", "--key-id", key_arn],
             check=False,
         )
         if result.returncode != 0:
@@ -130,7 +139,7 @@ class KmsCleanup:
             raise DevelopmentEnvironmentError("Task KMS key state cannot be observed")
         payload = json_object_get(result.stdout, label="task KMS key")
         metadata = payload.get("KeyMetadata")
-        if not isinstance(metadata, Mapping) or metadata.get("Arn") != inventory.kms_key_arn:
+        if not isinstance(metadata, Mapping) or metadata.get("Arn") != key_arn:
             raise DevelopmentEnvironmentError("Task KMS key identity is malformed")
         state = metadata.get("KeyState")
         if not isinstance(state, str) or not state:
@@ -138,14 +147,14 @@ class KmsCleanup:
         return state
 
 
-def _key_id_get(inventory: CleanupInventory) -> str:
+def _key_id_get(key_arn: str) -> str:
     """Return the exact key identifier embedded in the validated ARN.
 
     Args:
-        inventory: Inventory.
+        key_arn: Exact KMS key ARN.
 
     Returns:
         The exact key identifier embedded in the validated ARN.
     """
 
-    return inventory.kms_key_arn.rsplit("/", maxsplit=1)[-1]
+    return key_arn.rsplit("/", maxsplit=1)[-1]

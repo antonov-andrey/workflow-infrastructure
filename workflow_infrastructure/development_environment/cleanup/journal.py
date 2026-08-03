@@ -85,7 +85,7 @@ class CleanupJournalStore:
             return path, payload
         inventory = self._inventory_resolver.resolve(request)
         payload: dict[str, object] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "phase": "compute",
             "inventory": inventory.payload_get(),
         }
@@ -141,7 +141,7 @@ class CleanupJournalStore:
         if (
             not isinstance(payload, dict)
             or set(payload) != {"inventory", "phase", "schema_version"}
-            or payload.get("schema_version") != 1
+            or payload.get("schema_version") != 2
             or payload.get("phase") not in PHASE_LIST
         ):
             raise DevelopmentEnvironmentError("Task cleanup journal has another shape")

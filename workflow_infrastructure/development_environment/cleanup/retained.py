@@ -44,38 +44,45 @@ class RetainedStorageCleanup:
 
         for snapshot_id in self._owned_snapshot_id_list_get(inventory):
             self._aws.run(["ec2", "delete-snapshot", "--snapshot-id", snapshot_id])
-        result = self._aws.run(
-            ["ec2", "describe-volumes", "--volume-ids", inventory.retained_volume_id],
-            check=False,
-        )
-        if result.returncode == 0:
-            payload = json_object_get(result.stdout, label="retained volume")
-            volume_list = payload.get("Volumes")
-            if (
-                not isinstance(volume_list, list)
-                or len(volume_list) != 1
-                or not isinstance(volume_list[0], Mapping)
-                or volume_list[0].get("VolumeId") != inventory.retained_volume_id
-                or volume_list[0].get("State") != "available"
-                or volume_list[0].get("Attachments", []) != []
-            ):
-                raise DevelopmentEnvironmentError("Task retained volume is not safely deletable")
-            self._aws.run(["ec2", "delete-volume", "--volume-id", inventory.retained_volume_id])
-            self._aws.run(
-                [
-                    "ec2",
-                    "wait",
-                    "volume-deleted",
-                    "--volume-ids",
-                    inventory.retained_volume_id,
-                ]
+        for retained_volume_id in inventory.retained_volume_id_list:
+            result = self._aws.run(
+                ["ec2", "describe-volumes", "--volume-ids", retained_volume_id],
+                check=False,
             )
-        elif not aws_cli_error_matches(
-            result,
-            code_set=frozenset({"InvalidVolume.NotFound"}),
-            operation="DescribeVolumes",
-        ):
-            raise DevelopmentEnvironmentError("Task retained volume absence cannot be proven")
+            if result.returncode == 0:
+                payload = json_object_get(result.stdout, label="retained volume")
+                volume_list = payload.get("Volumes")
+                if (
+                    not isinstance(volume_list, list)
+                    or len(volume_list) != 1
+                    or not isinstance(volume_list[0], Mapping)
+                    or volume_list[0].get("VolumeId") != retained_volume_id
+                ):
+                    raise DevelopmentEnvironmentError("Task retained volume inventory is malformed")
+                if volume_list[0].get("State") != "available" or volume_list[0].get("Attachments", []) != []:
+                    self._aws.run(["ec2", "wait", "volume-available", "--volume-ids", retained_volume_id])
+                    result = self._aws.run(
+                        ["ec2", "describe-volumes", "--volume-ids", retained_volume_id],
+                    )
+                    payload = json_object_get(result.stdout, label="retained volume")
+                    volume_list = payload.get("Volumes")
+                if (
+                    not isinstance(volume_list, list)
+                    or len(volume_list) != 1
+                    or not isinstance(volume_list[0], Mapping)
+                    or volume_list[0].get("VolumeId") != retained_volume_id
+                    or volume_list[0].get("State") != "available"
+                    or volume_list[0].get("Attachments", []) != []
+                ):
+                    raise DevelopmentEnvironmentError("Task retained volume is not safely deletable")
+                self._aws.run(["ec2", "delete-volume", "--volume-id", retained_volume_id])
+                self._aws.run(["ec2", "wait", "volume-deleted", "--volume-ids", retained_volume_id])
+            elif not aws_cli_error_matches(
+                result,
+                code_set=frozenset({"InvalidVolume.NotFound"}),
+                operation="DescribeVolumes",
+            ):
+                raise DevelopmentEnvironmentError("Task retained volume absence cannot be proven")
 
     def absence_validate(self, inventory: CleanupInventory) -> None:
         """Require both the retained volume and every task snapshot to be absent.
@@ -84,16 +91,17 @@ class RetainedStorageCleanup:
             inventory: Inventory.
         """
 
-        result = self._aws.run(
-            ["ec2", "describe-volumes", "--volume-ids", inventory.retained_volume_id],
-            check=False,
-        )
-        if result.returncode == 0 or not aws_cli_error_matches(
-            result,
-            code_set=frozenset({"InvalidVolume.NotFound"}),
-            operation="DescribeVolumes",
-        ):
-            raise DevelopmentEnvironmentError("Task retained volume absence is not proven")
+        for retained_volume_id in inventory.retained_volume_id_list:
+            result = self._aws.run(
+                ["ec2", "describe-volumes", "--volume-ids", retained_volume_id],
+                check=False,
+            )
+            if result.returncode == 0 or not aws_cli_error_matches(
+                result,
+                code_set=frozenset({"InvalidVolume.NotFound"}),
+                operation="DescribeVolumes",
+            ):
+                raise DevelopmentEnvironmentError("Task retained volume absence is not proven")
         if self._owned_snapshot_id_list_get(inventory):
             raise DevelopmentEnvironmentError("Task snapshots still exist")
 

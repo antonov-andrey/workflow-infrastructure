@@ -105,5 +105,6 @@ class CleanupAbsenceVerifier:
         if not isinstance(mapping_list, list) or any(not isinstance(item, Mapping) for item in mapping_list):
             raise DevelopmentEnvironmentError("Task tagged-resource leak inventory is malformed")
         remaining_arn_set = {item.get("ResourceARN") for item in mapping_list}
-        if remaining_arn_set - {inventory.kms_key_arn}:
+        allowed_remaining_arn_set = set(inventory.kms_key_arn_list)
+        if remaining_arn_set - allowed_remaining_arn_set:
             raise DevelopmentEnvironmentError("Unexpected git-worktree tagged resources remain after cleanup")

@@ -189,8 +189,6 @@ def main(argv_list: list[str]) -> int:
         if args.git_worktree and args.command in {
             "apply",
             "deploy",
-            "destroy",
-            "destroy-inventory",
             "lifecycle-acceptance",
             "replace",
             "restore",
