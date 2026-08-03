@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Protocol
 
@@ -34,6 +34,7 @@ class StackManagerProtocol(Protocol):
         template_path: Path,
         parameter_by_name_map: dict[str, str],
         must_preserve_resource: bool,
+        versioned_document_logical_id_set: Collection[str] = (),
     ) -> None:
         """Apply one exact CloudFormation stack transition.
 
@@ -42,6 +43,7 @@ class StackManagerProtocol(Protocol):
             template_path: Exact filesystem path for template.
             parameter_by_name_map: Parameter by name mapping.
             must_preserve_resource: Must preserve resource.
+            versioned_document_logical_id_set: Explicitly versioned SSM document logical identities.
         """
 
     def drift_validate(self, stack_name: str) -> None:
@@ -153,6 +155,7 @@ class DevelopmentAccountFoundationManager:
             template_path=self._template_path,
             parameter_by_name_map=parameter_by_name_map,
             must_preserve_resource=True,
+            versioned_document_logical_id_set={"SessionManagerRunShellPreferences"},
         )
         self._stack.drift_validate(self.STACK_NAME)
         self._account.account_foundation_validate()

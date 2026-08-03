@@ -139,6 +139,62 @@ def _is_data_lake_settings_parameter_change_safe(summary: Mapping[str, object]) 
     )
 
 
+def _is_versioned_ssm_document_content_change_safe(
+    summary: Mapping[str, object],
+    *,
+    versioned_document_logical_id_set: Collection[str],
+) -> bool:
+    """Return whether one explicitly versioned SSM document changes in place.
+
+    CloudFormation reports ``AWS::SSM::Document.Content`` as conditionally
+    replacing even when the template selects ``UpdateMethod: NewVersion``.
+    Callers must explicitly designate the versioned document, and the change
+    set must contain only the exact provider details produced by a content
+    update and the optional first transition to ``NewVersion``.
+
+    Args:
+        summary: One CloudFormation resource-change summary.
+        versioned_document_logical_id_set: Explicitly versioned SSM document logical identities.
+
+    Returns:
+        Whether the change is the narrowly supported versioned-content update.
+    """
+
+    if (
+        summary.get("logical_resource_id") not in versioned_document_logical_id_set
+        or summary.get("action") != "Modify"
+        or summary.get("replacement") != "Conditional"
+        or summary.get("resource_type") != "AWS::SSM::Document"
+    ):
+        return False
+    detail_list = summary.get("detail_list")
+    if not isinstance(detail_list, list) or not detail_list:
+        return False
+    expected_recreation_by_property_map = {
+        "Content": "Conditionally",
+        "UpdateMethod": "Never",
+    }
+    actual_property_name_set: set[str] = set()
+    for detail in detail_list:
+        if not isinstance(detail, dict):
+            return False
+        target = detail.get("Target")
+        if not isinstance(target, dict):
+            return False
+        property_name = target.get("Name")
+        if (
+            detail.get("ChangeSource") != "DirectModification"
+            or detail.get("Evaluation") != "Static"
+            or target.get("Attribute") != "Properties"
+            or not isinstance(property_name, str)
+            or property_name in actual_property_name_set
+            or target.get("RequiresRecreation") != expected_recreation_by_property_map.get(property_name)
+        ):
+            return False
+        actual_property_name_set.add(property_name)
+    return "Content" in actual_property_name_set
+
+
 def _protected_identity_change_violation_list_get(
     *,
     change_summary_list: Sequence[Mapping[str, object]],
@@ -164,11 +220,14 @@ def _protected_identity_change_violation_list_get(
 
 def _stable_data_change_violation_list_get(
     change_summary_list: list[dict[str, object]],
+    *,
+    versioned_document_logical_id_set: Collection[str] = (),
 ) -> list[str]:
     """Return data-plane changes not proven identity-preserving.
 
     Args:
         change_summary_list: Ordered change summary values.
+        versioned_document_logical_id_set: Explicitly versioned SSM document logical identities.
 
     Returns:
         The data-plane changes not proven identity-preserving.
@@ -204,6 +263,12 @@ def _stable_data_change_violation_list_get(
             conditional_safety_by_logical_id_map[logical_resource_id] = False
             return False
         if _is_data_lake_settings_parameter_change_safe(summary):
+            conditional_safety_by_logical_id_map[logical_resource_id] = True
+            return True
+        if _is_versioned_ssm_document_content_change_safe(
+            summary,
+            versioned_document_logical_id_set=versioned_document_logical_id_set,
+        ):
             conditional_safety_by_logical_id_map[logical_resource_id] = True
             return True
         replacement_detail_list = [
@@ -297,6 +362,7 @@ class DevelopmentStackManager:
         parameter_by_name_map: dict[str, str],
         must_preserve_resource: bool,
         protected_identity_logical_id_set: Collection[str] = (),
+        versioned_document_logical_id_set: Collection[str] = (),
     ) -> None:
         """Plan, guard, execute, and verify one CloudFormation change set.
 
@@ -306,6 +372,7 @@ class DevelopmentStackManager:
             parameter_by_name_map: Parameter by name mapping.
             must_preserve_resource: Must preserve resource.
             protected_identity_logical_id_set: Unique protected identity logical identity values.
+            versioned_document_logical_id_set: Explicitly versioned SSM document logical identities.
         """
 
         stack_payload = self.payload_get(stack_name, is_required=False)
@@ -418,7 +485,10 @@ class DevelopmentStackManager:
             )
         )
         if must_preserve_resource:
-            violation_logical_id_list = _stable_data_change_violation_list_get(change_summary_list)
+            violation_logical_id_list = _stable_data_change_violation_list_get(
+                change_summary_list,
+                versioned_document_logical_id_set=versioned_document_logical_id_set,
+            )
             if violation_logical_id_list:
                 self._change_set_delete(stack_name, change_set_name)
                 raise DevelopmentEnvironmentError(

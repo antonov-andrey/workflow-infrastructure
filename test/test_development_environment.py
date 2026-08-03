@@ -3466,6 +3466,87 @@ def test_stable_data_change_allows_only_exact_data_lake_settings_parameter_updat
         assert development_stack._stable_data_change_violation_list_get([unsafe_change_summary]) == ["DataLakeSettings"]
 
 
+def test_stable_data_change_allows_only_explicit_versioned_ssm_document_content_update() -> None:
+    """A designated NewVersion document may update only its exact versioned content."""
+
+    content_detail = {
+        "ChangeSource": "DirectModification",
+        "Evaluation": "Static",
+        "Target": {
+            "Attribute": "Properties",
+            "Name": "Content",
+            "RequiresRecreation": "Conditionally",
+        },
+    }
+    update_method_detail = {
+        "ChangeSource": "DirectModification",
+        "Evaluation": "Static",
+        "Target": {
+            "Attribute": "Properties",
+            "Name": "UpdateMethod",
+            "RequiresRecreation": "Never",
+        },
+    }
+    change_summary = {
+        "action": "Modify",
+        "detail_list": [update_method_detail, content_detail],
+        "logical_resource_id": "SessionManagerRunShellPreferences",
+        "replacement": "Conditional",
+        "resource_type": "AWS::SSM::Document",
+    }
+    explicit_identity_set = {"SessionManagerRunShellPreferences"}
+
+    assert (
+        development_stack._stable_data_change_violation_list_get(
+            [change_summary],
+            versioned_document_logical_id_set=explicit_identity_set,
+        )
+        == []
+    )
+    assert development_stack._stable_data_change_violation_list_get([change_summary]) == [
+        "SessionManagerRunShellPreferences"
+    ]
+    assert development_stack._stable_data_change_violation_list_get(
+        [{**change_summary, "replacement": "True"}],
+        versioned_document_logical_id_set=explicit_identity_set,
+    ) == ["SessionManagerRunShellPreferences"]
+
+    for unsafe_change_summary in (
+        {**change_summary, "logical_resource_id": "OtherDocument"},
+        {**change_summary, "action": "Remove"},
+        {
+            **change_summary,
+            "detail_list": [
+                content_detail,
+                {
+                    **update_method_detail,
+                    "Target": {
+                        **update_method_detail["Target"],
+                        "Name": "Name",
+                    },
+                },
+            ],
+        },
+        {
+            **change_summary,
+            "detail_list": [
+                {
+                    **content_detail,
+                    "Target": {
+                        **content_detail["Target"],
+                        "RequiresRecreation": "Always",
+                    },
+                }
+            ],
+        },
+    ):
+        expected_logical_id = str(unsafe_change_summary["logical_resource_id"])
+        assert development_stack._stable_data_change_violation_list_get(
+            [unsafe_change_summary],
+            versioned_document_logical_id_set=explicit_identity_set,
+        ) == [expected_logical_id]
+
+
 def test_stable_data_change_proves_transitive_conditional_dependency_chain(
     tmp_path: Path,
 ) -> None:
