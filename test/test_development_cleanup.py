@@ -468,6 +468,16 @@ def _task_tag_list_get(*, name: str = "") -> list[dict[str, str]]:
     return [{"Key": key, "Value": value} for key, value in sorted(tag_by_name_map.items())]
 
 
+def _kms_task_tag_list_get() -> list[dict[str, str]]:
+    """Return exact KMS list-resource-tags field names.
+
+    Returns:
+        Exact KMS ownership tags.
+    """
+
+    return [{"TagKey": item["Key"], "TagValue": item["Value"]} for item in _task_tag_list_get()]
+
+
 class _CleanupInventoryAws:
     """Expose a configurable partially deleted task environment."""
 
@@ -531,7 +541,7 @@ class _CleanupInventoryAws:
                 ]
             }
         if argument_list[:2] == ["kms", "list-resource-tags"] and self.alias_key_arn:
-            return {"Tags": _task_tag_list_get()}
+            return {"Tags": _kms_task_tag_list_get()}
         raise AssertionError(argument_list)
 
     def run(self, argument_list: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:

@@ -30,11 +30,18 @@ def json_object_get(text: str, *, label: str) -> dict[str, object]:
     return payload
 
 
-def tag_map_get(payload: object) -> dict[str, str]:
+def tag_map_get(
+    payload: object,
+    *,
+    key_name: str = "Key",
+    value_name: str = "Value",
+) -> dict[str, str]:
     """Decode one duplicate-free AWS tag list.
 
     Args:
         payload: Structured operation payload.
+        key_name: AWS response field containing the tag key.
+        value_name: AWS response field containing the tag value.
 
     Returns:
         Tag values keyed by their unique tag keys.
@@ -46,10 +53,10 @@ def tag_map_get(payload: object) -> dict[str, str]:
     for item in payload:
         if (
             not isinstance(item, Mapping)
-            or not isinstance(item.get("Key"), str)
-            or not isinstance(item.get("Value"), str)
-            or item["Key"] in tag_map
+            or not isinstance(item.get(key_name), str)
+            or not isinstance(item.get(value_name), str)
+            or item[key_name] in tag_map
         ):
             raise DevelopmentEnvironmentError("Task resource tags are malformed")
-        tag_map[item["Key"]] = item["Value"]
+        tag_map[item[key_name]] = item[value_name]
     return tag_map

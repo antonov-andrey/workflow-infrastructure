@@ -138,7 +138,14 @@ class CleanupInventoryResolver:
         key_arn = metadata.get("Arn") if isinstance(metadata, Mapping) else None
         validated_key_arn = self._kms_key_arn_validate(key_arn)
         tag_payload = self._aws.json_get(["kms", "list-resource-tags", "--key-id", validated_key_arn])
-        self._task_tag_validate(tag_map_get(tag_payload.get("Tags")), label="KMS alias target")
+        self._task_tag_validate(
+            tag_map_get(
+                tag_payload.get("Tags"),
+                key_name="TagKey",
+                value_name="TagValue",
+            ),
+            label="KMS alias target",
+        )
         return validated_key_arn
 
     def _kms_key_arn_validate(self, value: object) -> str:
