@@ -2,16 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Mapping, Protocol
+from typing import Protocol
 
 from workflow_infrastructure.development_environment.cleanup.model import (
     CleanupInventory,
-)
-from workflow_infrastructure.development_environment.cleanup.protocol import (
-    AwsClientProtocol,
-)
-from workflow_infrastructure.development_environment.error import (
-    DevelopmentEnvironmentError,
 )
 
 
@@ -49,12 +43,11 @@ class BucketAbsenceProtocol(Protocol):
 
 
 class CleanupAbsenceVerifier:
-    """Combine independent resource-owner proofs and reject tagged leaks."""
+    """Combine service-native absence proofs from each resource owner."""
 
     def __init__(
         self,
         *,
-        aws: AwsClientProtocol,
         compute: InventoryAbsenceProtocol,
         kms: InventoryAbsenceProtocol,
         retained: InventoryAbsenceProtocol,
@@ -64,7 +57,6 @@ class CleanupAbsenceVerifier:
         """Initialize the cleanup absence verifier dependencies.
 
         Args:
-            aws: Aws.
             compute: Compute.
             kms: Kms.
             retained: Retained.
@@ -72,7 +64,6 @@ class CleanupAbsenceVerifier:
             storage: Storage.
         """
 
-        self._aws = aws
         self._compute = compute
         self._kms = kms
         self._retained = retained
@@ -80,7 +71,7 @@ class CleanupAbsenceVerifier:
         self._storage = storage
 
     def validate(self, inventory: CleanupInventory) -> None:
-        """Require all known resources absent and no unexplained tagged resource.
+        """Require every resource owner to prove its known resources absent.
 
         Args:
             inventory: Inventory.
@@ -93,18 +84,3 @@ class CleanupAbsenceVerifier:
             self._storage.absence_validate(bucket_name)
         self._retained.absence_validate(inventory)
         self._kms.absence_validate(inventory)
-        payload = self._aws.json_get(
-            [
-                "resourcegroupstaggingapi",
-                "get-resources",
-                "--tag-filters",
-                f"Key=git-worktree,Values={inventory.common_prefix}",
-            ]
-        )
-        mapping_list = payload.get("ResourceTagMappingList", [])
-        if not isinstance(mapping_list, list) or any(not isinstance(item, Mapping) for item in mapping_list):
-            raise DevelopmentEnvironmentError("Task tagged-resource leak inventory is malformed")
-        remaining_arn_set = {item.get("ResourceARN") for item in mapping_list}
-        allowed_remaining_arn_set = set(inventory.kms_key_arn_list)
-        if remaining_arn_set - allowed_remaining_arn_set:
-            raise DevelopmentEnvironmentError("Unexpected git-worktree tagged resources remain after cleanup")

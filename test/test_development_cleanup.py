@@ -32,6 +32,9 @@ from workflow_infrastructure.development_environment.cleanup.model import (
 from workflow_infrastructure.development_environment.cleanup.s3 import (
     VersionedBucketCleaner,
 )
+from workflow_infrastructure.development_environment.cleanup.verification import (
+    CleanupAbsenceVerifier,
+)
 from workflow_infrastructure.development_environment.error import (
     DevelopmentEnvironmentError,
 )
@@ -746,6 +749,16 @@ class _InventoryCleanup:
         assert inventory.common_prefix == COMMON_PREFIX
         self._operation_list.append(self._label)
 
+    def absence_validate(self, inventory: CleanupInventory) -> None:
+        """Record service-native absence proof for the inventory target.
+
+        Args:
+            inventory: Inventory.
+        """
+
+        assert inventory.common_prefix == COMMON_PREFIX
+        self._operation_list.append(f"verify:{self._label}")
+
 
 class _StorageCleanup:
     """Record each task bucket deleted by the storage phase."""
@@ -768,6 +781,15 @@ class _StorageCleanup:
 
         self._operation_list.append(f"bucket:{bucket_name}")
 
+    def absence_validate(self, bucket_name: str) -> None:
+        """Record service-native absence proof for one bucket.
+
+        Args:
+            bucket_name: Bucket name.
+        """
+
+        self._operation_list.append(f"verify:bucket:{bucket_name}")
+
 
 class _StackCleanup:
     """Record each task stack deleted by a stack phase."""
@@ -789,6 +811,15 @@ class _StackCleanup:
         """
 
         self._operation_list.append(f"stack:{stack_name}")
+
+    def absence_validate(self, stack_name: str) -> None:
+        """Record CloudFormation-native absence proof for one stack.
+
+        Args:
+            stack_name: Stack name.
+        """
+
+        self._operation_list.append(f"verify:stack:{stack_name}")
 
 
 class _KmsCleanup:
@@ -813,6 +844,16 @@ class _KmsCleanup:
         assert inventory.common_prefix == COMMON_PREFIX
         self._operation_list.append("kms")
 
+    def absence_validate(self, inventory: CleanupInventory) -> None:
+        """Record KMS-native accepted-retirement proof.
+
+        Args:
+            inventory: Inventory.
+        """
+
+        assert inventory.common_prefix == COMMON_PREFIX
+        self._operation_list.append("verify:kms")
+
 
 class _Verifier:
     """Record final absence verification after all cleanup phases."""
@@ -835,6 +876,29 @@ class _Verifier:
 
         assert inventory.common_prefix == COMMON_PREFIX
         self._operation_list.append("verify")
+
+
+def test_cleanup_absence_uses_service_native_owners() -> None:
+    """Final proof does not block on the eventually consistent tag index."""
+
+    operation_list: list[str] = []
+    inventory = _cleanup_inventory_get()
+    CleanupAbsenceVerifier(
+        compute=_InventoryCleanup(operation_list, "compute"),
+        kms=_KmsCleanup(operation_list),
+        retained=_InventoryCleanup(operation_list, "retained"),
+        stack=_StackCleanup(operation_list),
+        storage=_StorageCleanup(operation_list),
+    ).validate(inventory)
+
+    assert operation_list == [
+        f"verify:stack:{inventory.compute_stack_name}",
+        f"verify:stack:{inventory.data_stack_name}",
+        "verify:compute",
+        *(f"verify:bucket:{bucket_name}" for bucket_name in inventory.bucket_name_list),
+        "verify:retained",
+        "verify:kms",
+    ]
 
 
 def test_cleanup_journal_resumes_each_phase_and_binds_operation(

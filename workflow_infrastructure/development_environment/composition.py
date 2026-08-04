@@ -242,7 +242,6 @@ class DevelopmentEnvironment:
         cleanup_retained = RetainedStorageCleanup(self._aws)
         cleanup_kms = KmsCleanup(self._aws)
         cleanup_verifier = CleanupAbsenceVerifier(
-            aws=self._aws,
             compute=cleanup_compute,
             kms=cleanup_kms,
             retained=cleanup_retained,
