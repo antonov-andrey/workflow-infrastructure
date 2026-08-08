@@ -26,29 +26,30 @@ class InventoryAbsenceProtocol(Protocol):
 class StackAbsenceProtocol(Protocol):
     """Declare the stack absence interface."""
 
-    def absence_validate(self, stack_name: str) -> None:
+    def absence_validate(self, inventory: CleanupInventory, stack_name: str) -> None:
         """Require one stack to be absent.
 
         Args:
+            inventory: Fresh task identity and account/region fence.
             stack_name: Stack name.
         """
 
-    def absent_get(self, stack_name: str) -> bool:
+    def absent_get(self, inventory: CleanupInventory, stack_name: str) -> bool:
         """Return whether one exact stack is absent."""
 
 
 class BucketAbsenceProtocol(Protocol):
     """Declare the bucket absence interface."""
 
-    def absence_validate(self, bucket_name: str, *, expected_owner: str) -> None:
+    def absence_validate(self, inventory: CleanupInventory, bucket_name: str) -> None:
         """Require one bucket to be absent.
 
         Args:
+            inventory: Fresh task identity and account/region fence.
             bucket_name: Bucket name.
-            expected_owner: Exact AWS account that owns the bucket.
         """
 
-    def absent_get(self, bucket_name: str, *, expected_owner: str) -> bool:
+    def absent_get(self, inventory: CleanupInventory, bucket_name: str) -> bool:
         """Return whether one exact bucket is absent."""
 
 
@@ -87,11 +88,11 @@ class CleanupAbsenceVerifier:
             inventory: Inventory.
         """
 
-        self._stack.absence_validate(inventory.compute_stack_name)
-        self._stack.absence_validate(inventory.data_stack_name)
+        self._stack.absence_validate(inventory, inventory.compute_stack_name)
+        self._stack.absence_validate(inventory, inventory.data_stack_name)
         self._compute.absence_validate(inventory)
         for bucket_name in inventory.bucket_name_list:
-            self._storage.absence_validate(bucket_name, expected_owner=inventory.account_id)
+            self._storage.absence_validate(inventory, bucket_name)
         self._retained.absence_validate(inventory)
         self._kms.absence_validate(inventory)
 
@@ -99,13 +100,10 @@ class CleanupAbsenceVerifier:
         """Return aggregate exact absence after observing every service owner."""
 
         state_list = [
-            self._stack.absent_get(inventory.compute_stack_name),
-            self._stack.absent_get(inventory.data_stack_name),
+            self._stack.absent_get(inventory, inventory.compute_stack_name),
+            self._stack.absent_get(inventory, inventory.data_stack_name),
             self._compute.absent_get(inventory),
-            *[
-                self._storage.absent_get(bucket_name, expected_owner=inventory.account_id)
-                for bucket_name in inventory.bucket_name_list
-            ],
+            *[self._storage.absent_get(inventory, bucket_name) for bucket_name in inventory.bucket_name_list],
             self._retained.absent_get(inventory),
             self._kms.absent_get(inventory),
         ]

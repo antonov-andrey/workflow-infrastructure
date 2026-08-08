@@ -16,6 +16,7 @@ _EC2_INSTANCE_ID_PATTERN = re.compile(r"i-[0-9a-f]{8,17}")
 _EBS_VOLUME_ID_PATTERN = re.compile(r"vol-[0-9a-f]{8,17}")
 _ENVIRONMENT_NAME_PATTERN = re.compile(r"[a-z][a-z0-9]{0,15}")
 _KMS_KEY_ARN_PATTERN = re.compile(r"arn:aws(?:-[a-z]+)?:kms:[a-z0-9-]+:[0-9]{12}:key/[A-Za-z0-9/_-]+")
+_BUCKET_SUFFIX_TUPLE = ("data", "observability", "result", "secret")
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +82,9 @@ class CleanupInventory:
     def __post_init__(self) -> None:
         """Reject any runtime inventory outside the exact cleanup identity."""
 
+        expected_bucket_name_list = tuple(
+            f"{self.account_id}-{self.region}-{self.environment_name}-{suffix}" for suffix in _BUCKET_SUFFIX_TUPLE
+        )
         identity_tuple_list = (
             self.bucket_name_list,
             self.instance_id_list,
@@ -94,6 +98,7 @@ class CleanupInventory:
             or re.fullmatch(r"[a-z]{2}(?:-[a-z0-9]+)+-[0-9]", self.region) is None
             or not isinstance(self.bucket_name_list, tuple)
             or len(self.bucket_name_list) != 4
+            or self.bucket_name_list != expected_bucket_name_list
             or any(
                 not isinstance(identity_tuple, tuple)
                 or any(not isinstance(item, str) or not item for item in identity_tuple)

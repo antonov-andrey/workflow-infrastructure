@@ -68,7 +68,9 @@ class CleanupInventoryResolver:
 
         Stack outputs are useful identities while a stack exists, but deletion
         never depends on retaining either stack. Deterministic names and exact
-        task tags recover retained resources after any partial cleanup.
+        task tags recover retained resources after any partial cleanup. An
+        exact current compute-stack output retains its instance target until
+        the stack is deleted after Session Manager absence has been proven.
 
         Args:
             request: Validated operation request.
@@ -92,11 +94,14 @@ class CleanupInventoryResolver:
             raise DevelopmentEnvironmentError("Task data stack bucket outputs differ from deterministic identities")
 
         instance_id_set = set(self._tagged_instance_id_list_get())
+        stack_instance_id_set: set[str] = set()
         retained_volume_id_set = set(self._tagged_retained_volume_id_list_get())
         kms_key_arn_set = set(self._task_kms_key_arn_list_get())
         if compute_output is not None:
             if "InstanceId" in compute_output:
-                instance_id_set.add(_pattern_value_get(compute_output, "InstanceId", _EC2_INSTANCE_ID_PATTERN))
+                stack_instance_id = _pattern_value_get(compute_output, "InstanceId", _EC2_INSTANCE_ID_PATTERN)
+                stack_instance_id_set.add(stack_instance_id)
+                instance_id_set.add(stack_instance_id)
             if "RetainedVolumeId" in compute_output:
                 retained_volume_id_set.add(
                     _pattern_value_get(compute_output, "RetainedVolumeId", _EBS_VOLUME_ID_PATTERN)
@@ -107,11 +112,13 @@ class CleanupInventoryResolver:
         if alias_key_arn:
             kms_key_arn_set.add(alias_key_arn)
 
-        instance_id_list = [
-            instance_id
-            for candidate in sorted(instance_id_set)
-            if (instance_id := self._owned_instance_id_get(candidate))
-        ]
+        instance_id_list: list[str] = []
+        for candidate in sorted(instance_id_set):
+            instance_id = self._owned_instance_id_get(candidate)
+            if instance_id:
+                instance_id_list.append(instance_id)
+            elif candidate in stack_instance_id_set:
+                instance_id_list.append(candidate)
         kms_key_arn_list = [
             key_arn for candidate in sorted(kms_key_arn_set) if (key_arn := self._owned_kms_key_arn_get(candidate))
         ]
@@ -169,9 +176,7 @@ class CleanupInventoryResolver:
         state_name = state.get("Name") if isinstance(state, Mapping) else None
         if not isinstance(availability_zone, str) or not availability_zone.startswith(self._region):
             raise DevelopmentEnvironmentError("Task instance belongs to another region")
-        if state_name == "terminated":
-            return ""
-        if state_name not in {"pending", "running", "shutting-down", "stopping", "stopped"}:
+        if state_name not in {"pending", "running", "shutting-down", "stopping", "stopped", "terminated"}:
             raise DevelopmentEnvironmentError("Task instance has an unsupported lifecycle state")
         self._task_tag_validate(tag_map_get(instance.get("Tags")), label="EC2 instance")
         return instance_id
@@ -317,7 +322,7 @@ class CleanupInventoryResolver:
         )
 
     def _tagged_instance_id_list_get(self) -> list[str]:
-        """Return every live EC2 instance carrying the exact task identity.
+        """Return every visible EC2 identity carrying the exact task identity.
 
         Returns:
             Sorted task instance identities.
@@ -330,7 +335,7 @@ class CleanupInventoryResolver:
                 "--filters",
                 f"Name=tag:EnvironmentName,Values={self._identity.environment_name}",
                 f"Name=tag:git-worktree,Values={self._identity.git_worktree}",
-                "Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped",
+                "Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped,terminated",
             ]
         )
         reservation_list = payload.get("Reservations", [])

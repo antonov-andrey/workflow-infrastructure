@@ -37,6 +37,7 @@ from workflow_infrastructure.development_environment.cleanup.retained import (
 from workflow_infrastructure.development_environment.cleanup.s3 import (
     VersionedBucketCleaner,
 )
+from workflow_infrastructure.development_environment.cleanup.stack import StackCleanup
 from workflow_infrastructure.development_environment.cleanup.verification import (
     CleanupAbsenceVerifier,
 )
@@ -46,6 +47,9 @@ from workflow_infrastructure.development_environment.error import (
 
 COMMON_PREFIX = "2026-08-01-workflow-platform-hardening"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TASK_BUCKET_NAME_LIST = tuple(
+    f"463564115167-us-east-1-w0123456789abcde-{suffix}" for suffix in ("data", "observability", "result", "secret")
+)
 
 
 def test_cleanup_request_requires_exact_closed_stdin_identity() -> None:
@@ -145,18 +149,32 @@ def test_cleanup_cli_consumes_only_natural_identity_and_returns_exact_inventory(
 class _S3Aws:
     """Stateful AWS boundary for one versioned bucket cleanup."""
 
-    def __init__(self, *, delete_error: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        account_id: str = "463564115167",
+        delete_error: bool = False,
+        region: str = "us-east-1",
+        task_owned: bool = True,
+    ) -> None:
         """Initialize the S3 AWS dependencies.
 
         Args:
+            account_id: Current bucket account identity.
             delete_error: Delete error.
+            region: Current bucket region.
+            task_owned: Whether the bucket carries exact task tags.
         """
 
+        self.account_id = account_id
         self.bucket_exists = True
         self.delete_error = delete_error
+        self.region = region
+        self.task_owned = task_owned
         self.upload_by_id = {"upload-1": "partial/file"}
         self.object_set = {("data/file", "v1"), ("data/file", "delete-marker")}
         self.mutation_argument_list: list[list[str]] = []
+        self.ownership_read_count = 0
 
     @staticmethod
     def _expected_owner_require(argument_list: list[str]) -> None:
@@ -175,6 +193,14 @@ class _S3Aws:
         """
 
         self._expected_owner_require(argument_list)
+        if argument_list[:2] == ["s3api", "get-bucket-location"]:
+            return {"LocationConstraint": None if self.region == "us-east-1" else self.region}
+        if argument_list[:2] == ["s3api", "get-bucket-tagging"]:
+            self.ownership_read_count += 1
+            tag_list = _task_tag_list_get()
+            if not self.task_owned:
+                tag_list = [item for item in tag_list if item["Key"] != "git-worktree"]
+            return {"TagSet": tag_list}
         if argument_list[:2] == ["s3api", "list-multipart-uploads"]:
             return {"Uploads": [{"Key": key, "UploadId": upload_id} for upload_id, key in self.upload_by_id.items()]}
         if argument_list[:2] == ["s3api", "list-object-versions"]:
@@ -203,7 +229,7 @@ class _S3Aws:
         operation = tuple(argument_list[:2])
         expected_owner = argument_list[argument_list.index("--expected-bucket-owner") + 1]
         if operation == ("s3api", "head-bucket"):
-            if expected_owner != "463564115167":
+            if expected_owner != self.account_id:
                 return subprocess.CompletedProcess(
                     argument_list,
                     1,
@@ -253,34 +279,162 @@ def test_versioned_bucket_cleanup_removes_uploads_versions_and_markers() -> None
 
     aws = _S3Aws()
     cleaner = VersionedBucketCleaner(aws)
-    cleaner.delete("task-bucket", expected_owner="463564115167")
-    cleaner.delete("task-bucket", expected_owner="463564115167")
+    inventory = _cleanup_inventory_get()
+    bucket_name = inventory.bucket_name_list[0]
+    cleaner.delete(inventory, bucket_name)
+    cleaner.delete(inventory, bucket_name)
     assert not aws.bucket_exists
-    assert cleaner.absent_get("task-bucket", expected_owner="463564115167")
+    assert cleaner.absent_get(inventory, bucket_name)
+    assert aws.ownership_read_count == len(aws.mutation_argument_list) + 1
 
 
 def test_versioned_bucket_cleanup_rejects_partial_http_200_deletion() -> None:
     """S3 per-object errors remain failures even when the request returned HTTP 200."""
 
     with pytest.raises(DevelopmentEnvironmentError, match="partially deleted"):
-        VersionedBucketCleaner(_S3Aws(delete_error=True)).delete(
-            "task-bucket",
-            expected_owner="463564115167",
-        )
+        inventory = _cleanup_inventory_get()
+        VersionedBucketCleaner(_S3Aws(delete_error=True)).delete(inventory, inventory.bucket_name_list[0])
 
 
 def test_versioned_bucket_cleanup_rejects_foreign_owner_before_any_mutation() -> None:
     """Every S3 lifecycle operation is fenced by the exact expected account."""
 
-    aws = _S3Aws()
+    aws = _S3Aws(account_id="000000000000")
 
     with pytest.raises(DevelopmentEnvironmentError, match="ownership cannot be observed"):
-        VersionedBucketCleaner(aws).delete("task-bucket", expected_owner="000000000000")
+        inventory = _cleanup_inventory_get()
+        VersionedBucketCleaner(aws).delete(inventory, inventory.bucket_name_list[0])
 
     assert aws.mutation_argument_list == []
     assert aws.bucket_exists
     assert aws.upload_by_id == {"upload-1": "partial/file"}
     assert aws.object_set == {("data/file", "v1"), ("data/file", "delete-marker")}
+
+
+@pytest.mark.parametrize(
+    ("aws", "error_pattern"),
+    [
+        (_S3Aws(region="us-west-2"), "another region"),
+        (_S3Aws(task_owned=False), "another ownership identity"),
+    ],
+)
+def test_versioned_bucket_cleanup_rejects_foreign_region_or_tags_before_mutation(
+    aws: _S3Aws,
+    error_pattern: str,
+) -> None:
+    """A deterministic bucket name alone never grants purge authority."""
+
+    with pytest.raises(DevelopmentEnvironmentError, match=error_pattern):
+        inventory = _cleanup_inventory_get()
+        VersionedBucketCleaner(aws).delete(inventory, inventory.bucket_name_list[0])
+
+    assert aws.mutation_argument_list == []
+
+
+def _cleanup_stack_payload_get(stack_id: str, *, task_owned: bool = True) -> dict[str, object]:
+    """Return one exact current compute-stack payload."""
+
+    tag_list = _task_tag_list_get()
+    if not task_owned:
+        tag_list = [item for item in tag_list if item["Key"] != "git-worktree"]
+    return {
+        "StackId": stack_id,
+        "StackName": _Identity.compute_stack_name,
+        "StackStatus": "CREATE_COMPLETE",
+        "Parameters": [
+            {"ParameterKey": "EnvironmentName", "ParameterValue": _Identity.environment_name},
+            {"ParameterKey": "GitWorktree", "ParameterValue": COMMON_PREFIX},
+        ],
+        "Tags": tag_list,
+    }
+
+
+class _CleanupStackManager:
+    """Expose a sequence of same-name CloudFormation stack incarnations."""
+
+    def __init__(self, payload_list: list[dict[str, object]]) -> None:
+        self.payload_list = payload_list
+
+    def payload_get(self, stack_name: str, *, is_required: bool) -> dict[str, object]:
+        del is_required
+        if not self.payload_list:
+            return {}
+        current = self.payload_list[0]
+        if stack_name in {_Identity.compute_stack_name, current["StackId"]}:
+            return current
+        return {}
+
+
+class _CleanupStackAws:
+    """Delete the current stack only when its unique ARN reaches the waiter."""
+
+    def __init__(self, stack: _CleanupStackManager) -> None:
+        self.stack = stack
+        self.argument_list: list[list[str]] = []
+
+    def run(self, argument_list: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        del check
+        self.argument_list.append(argument_list)
+        current_stack_id = self.stack.payload_list[0]["StackId"]
+        assert argument_list[-1] == current_stack_id
+        if argument_list[:3] == ["cloudformation", "wait", "stack-delete-complete"]:
+            self.stack.payload_list.pop(0)
+        else:
+            assert argument_list[:2] == ["cloudformation", "delete-stack"]
+        return subprocess.CompletedProcess(argument_list, 0, "{}", "")
+
+
+def test_stack_cleanup_deletes_and_waits_by_each_attested_unique_stack_id() -> None:
+    """A newly created exact task replacement is separately attested and converged."""
+
+    first_stack_id = (
+        "arn:aws:cloudformation:us-east-1:463564115167:stack/compute-w0123456789abcde/"
+        "11111111-1111-1111-1111-111111111111"
+    )
+    second_stack_id = (
+        "arn:aws:cloudformation:us-east-1:463564115167:stack/compute-w0123456789abcde/"
+        "22222222-2222-2222-2222-222222222222"
+    )
+    stack = _CleanupStackManager(
+        [_cleanup_stack_payload_get(first_stack_id), _cleanup_stack_payload_get(second_stack_id)]
+    )
+    aws = _CleanupStackAws(stack)
+
+    StackCleanup(aws=aws, stack=stack).delete(_cleanup_inventory_get(), _Identity.compute_stack_name)
+
+    assert [argument_list[-1] for argument_list in aws.argument_list] == [
+        first_stack_id,
+        first_stack_id,
+        second_stack_id,
+        second_stack_id,
+    ]
+    assert stack.payload_list == []
+
+
+def test_stack_cleanup_never_deletes_a_foreign_same_name_replacement() -> None:
+    """A same-name replacement must pass fresh task ownership before mutation."""
+
+    first_stack_id = (
+        "arn:aws:cloudformation:us-east-1:463564115167:stack/compute-w0123456789abcde/"
+        "11111111-1111-1111-1111-111111111111"
+    )
+    replacement_stack_id = (
+        "arn:aws:cloudformation:us-east-1:463564115167:stack/compute-w0123456789abcde/"
+        "22222222-2222-2222-2222-222222222222"
+    )
+    stack = _CleanupStackManager(
+        [
+            _cleanup_stack_payload_get(first_stack_id),
+            _cleanup_stack_payload_get(replacement_stack_id, task_owned=False),
+        ]
+    )
+    aws = _CleanupStackAws(stack)
+
+    with pytest.raises(DevelopmentEnvironmentError, match="another ownership identity"):
+        StackCleanup(aws=aws, stack=stack).delete(_cleanup_inventory_get(), _Identity.compute_stack_name)
+
+    assert [argument_list[-1] for argument_list in aws.argument_list] == [first_stack_id, first_stack_id]
+    assert stack.payload_list[0]["StackId"] == replacement_stack_id
 
 
 class _ComputeAws:
@@ -342,6 +496,92 @@ def test_compute_cleanup_accepts_the_ec2_terminated_visibility_tombstone() -> No
     cleanup = ComputeCleanup(aws=_ComputeAws(), stack_cleanup=_Unused())
     cleanup.absence_validate(_cleanup_inventory_get())
     assert cleanup.absent_get(_cleanup_inventory_get())
+
+
+def test_compute_cleanup_stops_then_closes_connected_and_disconnected_sessions_before_stack_delete() -> None:
+    """No compute deletion begins until a fresh exact-target SSM read is empty."""
+
+    instance_id = "i-0123456789abcdef0"
+
+    class _State:
+        instance_state = "running"
+        session_by_id = {
+            "session-connected": "Connected",
+            "session-disconnected": "Disconnected",
+        }
+        event_list: list[str] = []
+
+    state = _State()
+
+    class _Aws:
+        @staticmethod
+        def json_get(argument_list: list[str]) -> dict[str, object]:
+            assert argument_list[4:6] == ["--filters", f"key=Target,value={instance_id}"]
+            state.event_list.append("sessions")
+            return {
+                "Sessions": [
+                    {"SessionId": session_id, "Status": status, "Target": instance_id}
+                    for session_id, status in state.session_by_id.items()
+                ]
+            }
+
+        @staticmethod
+        def run(argument_list: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+            del check
+            if argument_list[:2] == ["ec2", "describe-instances"]:
+                state.event_list.append("describe")
+                return subprocess.CompletedProcess(
+                    argument_list,
+                    0,
+                    json.dumps(
+                        {
+                            "Reservations": [
+                                {
+                                    "OwnerId": "463564115167",
+                                    "Instances": [
+                                        {
+                                            "InstanceId": instance_id,
+                                            "Placement": {"AvailabilityZone": "us-east-1a"},
+                                            "State": {"Name": state.instance_state},
+                                            "Tags": _task_tag_list_get(),
+                                        }
+                                    ],
+                                }
+                            ]
+                        }
+                    ),
+                    "",
+                )
+            if argument_list[:2] == ["ec2", "stop-instances"]:
+                state.event_list.append("stop")
+                state.instance_state = "stopped"
+            elif argument_list[:2] == ["ec2", "wait"]:
+                state.event_list.append("wait")
+            elif argument_list[:2] == ["ssm", "terminate-session"]:
+                session_id = argument_list[-1]
+                state.event_list.append(f"terminate-session:{session_id}")
+                state.session_by_id.pop(session_id)
+            else:
+                raise AssertionError(argument_list)
+            return subprocess.CompletedProcess(argument_list, 0, "{}", "")
+
+    class _Stack:
+        @staticmethod
+        def delete(inventory: CleanupInventory, stack_name: str) -> None:
+            assert inventory.instance_id_list == (instance_id,)
+            assert stack_name == inventory.compute_stack_name
+            assert state.instance_state == "stopped"
+            assert state.session_by_id == {}
+            assert state.event_list[-1] == "sessions"
+            state.event_list.append("stack-delete")
+            state.instance_state = "terminated"
+
+    ComputeCleanup(aws=_Aws(), stack_cleanup=_Stack()).delete(_cleanup_inventory_get())
+
+    stop_index = state.event_list.index("stop")
+    stack_index = state.event_list.index("stack-delete")
+    for session_id in ("session-connected", "session-disconnected"):
+        assert stop_index < state.event_list.index(f"terminate-session:{session_id}") < stack_index
 
 
 @pytest.mark.parametrize(
@@ -569,7 +809,7 @@ def _cleanup_inventory_get() -> CleanupInventory:
 
     return CleanupInventory(
         account_id="463564115167",
-        bucket_name_list=("bucket-a", "bucket-b", "bucket-c", "bucket-d"),
+        bucket_name_list=TASK_BUCKET_NAME_LIST,
         common_prefix=COMMON_PREFIX,
         compute_stack_name=_Identity.compute_stack_name,
         data_stack_name=_Identity.data_plane_stack_name,
@@ -587,6 +827,8 @@ def test_cleanup_inventory_rejects_mutation_identities_outside_its_closed_shape(
 
     with pytest.raises(DevelopmentEnvironmentError, match="inventory is malformed"):
         replace(_cleanup_inventory_get(), instance_id_list=("primary-instance",))
+    with pytest.raises(DevelopmentEnvironmentError, match="inventory is malformed"):
+        replace(_cleanup_inventory_get(), bucket_name_list=("bucket-a", "bucket-b", "bucket-c", "bucket-d"))
 
 
 def test_kms_cleanup_accepts_physical_absence_after_pending_deletion() -> None:
@@ -954,6 +1196,7 @@ class _CleanupInventoryAws:
         alias_key_arn: str = "",
         foreign_kms_key_arn_list: tuple[str, ...] = (),
         instance_id_list: tuple[str, ...] = (),
+        instance_state: str = "running",
         kms_key_arn_list: tuple[str, ...] = (),
         retained_volume_id_list: tuple[str, ...] = (),
     ) -> None:
@@ -963,6 +1206,7 @@ class _CleanupInventoryAws:
             alias_key_arn: Key targeted by the deterministic alias.
             foreign_kms_key_arn_list: Account keys without this task's ownership tags.
             instance_id_list: Remaining instance identities.
+            instance_state: Current state returned for each instance identity.
             kms_key_arn_list: Remaining tagged KMS identities.
             retained_volume_id_list: Remaining retained-volume identities.
         """
@@ -970,6 +1214,7 @@ class _CleanupInventoryAws:
         self.alias_key_arn = alias_key_arn
         self.foreign_kms_key_arn_list = foreign_kms_key_arn_list
         self.instance_id_list = instance_id_list
+        self.instance_state = instance_state
         self.kms_key_arn_list = kms_key_arn_list
         self.retained_volume_id_list = retained_volume_id_list
 
@@ -1033,6 +1278,14 @@ class _CleanupInventoryAws:
         del check
         if argument_list[:2] == ["ec2", "describe-instances"]:
             instance_id = argument_list[-1]
+            if self.instance_state == "absent":
+                return subprocess.CompletedProcess(
+                    argument_list,
+                    255,
+                    "",
+                    "An error occurred (InvalidInstanceID.NotFound) when calling the DescribeInstances "
+                    "operation: The instance does not exist",
+                )
             return subprocess.CompletedProcess(
                 argument_list,
                 0,
@@ -1045,7 +1298,7 @@ class _CleanupInventoryAws:
                                     {
                                         "InstanceId": instance_id,
                                         "Placement": {"AvailabilityZone": "us-east-1a"},
-                                        "State": {"Name": "running"},
+                                        "State": {"Name": self.instance_state},
                                         "Tags": _task_tag_list_get(),
                                     }
                                 ],
@@ -1213,6 +1466,51 @@ def test_cleanup_inventory_unions_stack_outputs_with_every_tagged_orphan() -> No
     assert inventory.retained_volume_id_list == (stack_volume_id, tagged_volume_id)
 
 
+def test_cleanup_inventory_retains_visible_terminated_instance_identity_for_ssm_recovery() -> None:
+    """A restart can still close sessions while EC2 exposes the owned tombstone."""
+
+    instance_id = "i-0123456789abcdef0"
+
+    class _TerminatedInventoryAws(_CleanupInventoryAws):
+        discovery_argument_list: list[str] = []
+
+        def json_get(self, argument_list: list[str]) -> dict[str, object]:
+            if argument_list[:2] == ["ec2", "describe-instances"]:
+                self.discovery_argument_list = argument_list
+            return super().json_get(argument_list)
+
+    aws = _TerminatedInventoryAws(instance_id_list=(instance_id,), instance_state="terminated")
+    inventory = CleanupInventoryResolver(
+        account_id="463564115167",
+        aws=aws,
+        identity=_Identity(),
+        region="us-east-1",
+        stack=_CleanupInventoryStack(),
+    ).resolve(CleanupRequest(common_prefix=COMMON_PREFIX))
+
+    assert inventory.instance_id_list == (instance_id,)
+    assert aws.discovery_argument_list[-1].endswith(",terminated")
+
+
+def test_cleanup_inventory_retains_current_owned_stack_instance_target_after_ec2_absence() -> None:
+    """Recovery cannot lose the SSM target while the exact compute stack still exists."""
+
+    instance_id = "i-0123456789abcdef0"
+    inventory = CleanupInventoryResolver(
+        account_id="463564115167",
+        aws=_CleanupInventoryAws(instance_state="absent"),
+        identity=_Identity(),
+        region="us-east-1",
+        stack=_CleanupInventoryStack(
+            {
+                _Identity.compute_stack_name: _owned_stack_payload_get({"InstanceId": instance_id}),
+            }
+        ),
+    ).resolve(CleanupRequest(common_prefix=COMMON_PREFIX))
+
+    assert inventory.instance_id_list == (instance_id,)
+
+
 def test_cleanup_inventory_fully_enumerates_regional_kms_keys_before_task_filtering() -> None:
     """Final live proof cannot miss an exact-tagged task key on a later KMS page."""
 
@@ -1376,32 +1674,32 @@ class _StorageCleanup:
 
         self._operation_list = operation_list
 
-    def delete(self, bucket_name: str, *, expected_owner: str) -> None:
+    def delete(self, inventory: CleanupInventory, bucket_name: str) -> None:
         """Delete the storage cleanup target.
 
         Args:
+            inventory: Fresh task identity and account/region fence.
             bucket_name: Bucket name.
-            expected_owner: Exact AWS account that owns the bucket.
         """
 
-        assert expected_owner == "463564115167"
+        assert inventory.account_id == "463564115167"
         self._operation_list.append(f"bucket:{bucket_name}")
 
-    def absence_validate(self, bucket_name: str, *, expected_owner: str) -> None:
+    def absence_validate(self, inventory: CleanupInventory, bucket_name: str) -> None:
         """Record service-native absence proof for one bucket.
 
         Args:
+            inventory: Fresh task identity and account/region fence.
             bucket_name: Bucket name.
-            expected_owner: Exact AWS account that owns the bucket.
         """
 
-        assert expected_owner == "463564115167"
+        assert inventory.account_id == "463564115167"
         self._operation_list.append(f"verify:bucket:{bucket_name}")
 
-    def absent_get(self, bucket_name: str, *, expected_owner: str) -> bool:
+    def absent_get(self, inventory: CleanupInventory, bucket_name: str) -> bool:
         """Record exact non-mutating absence readback for one bucket."""
 
-        assert expected_owner == "463564115167"
+        assert inventory.account_id == "463564115167"
         self._operation_list.append(f"read:bucket:{bucket_name}")
         return True
 
@@ -1418,27 +1716,32 @@ class _StackCleanup:
 
         self._operation_list = operation_list
 
-    def delete(self, stack_name: str) -> None:
+    def delete(self, inventory: CleanupInventory, stack_name: str) -> None:
         """Delete the stack cleanup target.
 
         Args:
+            inventory: Fresh task identity and account/region fence.
             stack_name: Stack name.
         """
 
+        assert inventory.common_prefix == COMMON_PREFIX
         self._operation_list.append(f"stack:{stack_name}")
 
-    def absence_validate(self, stack_name: str) -> None:
+    def absence_validate(self, inventory: CleanupInventory, stack_name: str) -> None:
         """Record CloudFormation-native absence proof for one stack.
 
         Args:
+            inventory: Fresh task identity and account/region fence.
             stack_name: Stack name.
         """
 
+        assert inventory.common_prefix == COMMON_PREFIX
         self._operation_list.append(f"verify:stack:{stack_name}")
 
-    def absent_get(self, stack_name: str) -> bool:
+    def absent_get(self, inventory: CleanupInventory, stack_name: str) -> bool:
         """Record exact non-mutating absence readback for one stack."""
 
+        assert inventory.common_prefix == COMMON_PREFIX
         self._operation_list.append(f"read:stack:{stack_name}")
         return True
 
@@ -1565,7 +1868,7 @@ def test_cleanup_restart_ignores_stale_progress_and_replays_live_owners(
 
     inventory = CleanupInventory(
         account_id="463564115167",
-        bucket_name_list=("bucket-a", "bucket-b", "bucket-c", "bucket-d"),
+        bucket_name_list=TASK_BUCKET_NAME_LIST,
         common_prefix=COMMON_PREFIX,
         compute_stack_name=_Identity.compute_stack_name,
         data_stack_name=_Identity.data_plane_stack_name,
@@ -1578,10 +1881,10 @@ def test_cleanup_restart_ignores_stale_progress_and_replays_live_owners(
     )
     stale_progress_path = tmp_path / ".git" / "agent-workflows" / "external-cleanup" / f"{COMMON_PREFIX}.json"
     stale_progress_path.parent.mkdir(parents=True)
-    stale_progress_path.write_text('{"schema_version":2,"phase":"foreign-partial"}\n', encoding="utf-8")
+    stale_progress_path.write_text('{"schema_version":99,"phase":"foreign-partial"}\n', encoding="utf-8")
     operation_list: list[str] = []
     inventory_resolver = _InventoryResolver(inventory)
-    verifier = _Verifier(operation_list, absent=False)
+    verifier = _Verifier(operation_list)
     manager = DevelopmentEnvironmentCleanupManager(
         account=_Account(),
         compute=_InventoryCleanup(operation_list, "compute"),
@@ -1602,35 +1905,28 @@ def test_cleanup_restart_ignores_stale_progress_and_replays_live_owners(
     assert operation_list == [
         "compute",
         f"stack:{_Identity.data_plane_stack_name}",
-        "bucket:bucket-a",
-        "bucket:bucket-b",
-        "bucket:bucket-c",
-        "bucket:bucket-d",
+        *(f"bucket:{bucket_name}" for bucket_name in TASK_BUCKET_NAME_LIST),
         "retained",
         "kms",
-        "session:i-0123456789abcdef0",
+        "readback",
         "verify",
-        "verify:session:i-0123456789abcdef0",
     ]
-    assert inventory_resolver.resolve_count == 7
+    assert inventory_resolver.resolve_count == 6
     operation_list.clear()
     assert manager.destroy(request)["external_resources_absent"] is True
     assert operation_list == [
         "compute",
         f"stack:{_Identity.data_plane_stack_name}",
-        "bucket:bucket-a",
-        "bucket:bucket-b",
-        "bucket:bucket-c",
-        "bucket:bucket-d",
+        *(f"bucket:{bucket_name}" for bucket_name in TASK_BUCKET_NAME_LIST),
         "retained",
         "kms",
-        "session:i-0123456789abcdef0",
+        "readback",
         "verify",
-        "verify:session:i-0123456789abcdef0",
     ]
-    assert inventory_resolver.resolve_count == 14
+    assert inventory_resolver.resolve_count == 12
 
     operation_list.clear()
+    verifier.absent = False
     retained = manager.inventory(request)
     assert retained["external_resources_absent"] is False
     assert retained["common_prefix"] == COMMON_PREFIX
@@ -1648,17 +1944,17 @@ def test_cleanup_restart_ignores_stale_progress_and_replays_live_owners(
     assert operation_list == ["readback"]
     verifier.absent = True
     assert manager.inventory(request)["external_resources_absent"] is True
-    assert stale_progress_path.read_text(encoding="utf-8") == ('{"schema_version":2,"phase":"foreign-partial"}\n')
+    assert stale_progress_path.read_text(encoding="utf-8") == ('{"schema_version":99,"phase":"foreign-partial"}\n')
 
 
-def test_cleanup_terminates_late_disconnected_session_after_instance_leaves_inventory() -> None:
-    """Invocation-owned instance progress closes SSM after EC2 inventory drops the target."""
+def test_cleanup_terminates_late_disconnected_session_while_instance_tombstone_is_discoverable() -> None:
+    """A recoverable EC2 tombstone retains authority for the final SSM proof."""
 
     instance_id = "i-0123456789abcdef0"
     session_id = "andrey-late-disconnected-session"
 
     class _LiveState:
-        instance_visible = True
+        instance_state = "running"
         late_session_visible = False
         session_target_argument_list: list[str] = []
         terminated_session_id_list: list[str] = []
@@ -1688,14 +1984,6 @@ def test_cleanup_terminates_late_disconnected_session_after_instance_leaves_inve
         def run(argument_list: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
             del check
             if argument_list[:2] == ["ec2", "describe-instances"]:
-                if not state.instance_visible:
-                    return subprocess.CompletedProcess(
-                        argument_list,
-                        255,
-                        "",
-                        "An error occurred (InvalidInstanceID.NotFound) when calling the DescribeInstances "
-                        "operation: The instance does not exist",
-                    )
                 return subprocess.CompletedProcess(
                     argument_list,
                     0,
@@ -1707,7 +1995,7 @@ def test_cleanup_terminates_late_disconnected_session_after_instance_leaves_inve
                                         {
                                             "InstanceId": instance_id,
                                             "Placement": {"AvailabilityZone": "us-east-1a"},
-                                            "State": {"Name": "running"},
+                                            "State": {"Name": state.instance_state},
                                             "Tags": _task_tag_list_get(),
                                         }
                                     ],
@@ -1718,7 +2006,10 @@ def test_cleanup_terminates_late_disconnected_session_after_instance_leaves_inve
                     ),
                     "",
                 )
-            if tuple(argument_list[:2]) in {("ec2", "stop-instances"), ("ec2", "wait")}:
+            if argument_list[:2] == ["ec2", "stop-instances"]:
+                state.instance_state = "stopped"
+                return subprocess.CompletedProcess(argument_list, 0, "{}", "")
+            if argument_list[:2] == ["ec2", "wait"]:
                 return subprocess.CompletedProcess(argument_list, 0, "{}", "")
             if argument_list[:2] == ["ssm", "terminate-session"]:
                 assert argument_list == ["ssm", "terminate-session", "--session-id", session_id]
@@ -1729,9 +2020,10 @@ def test_cleanup_terminates_late_disconnected_session_after_instance_leaves_inve
 
     class _ComputeStackCleanup:
         @staticmethod
-        def delete(stack_name: str) -> None:
+        def delete(inventory: CleanupInventory, stack_name: str) -> None:
+            assert inventory.common_prefix == COMMON_PREFIX
             assert stack_name == _Identity.compute_stack_name
-            state.instance_visible = False
+            state.instance_state = "terminated"
             state.late_session_visible = True
 
     base_inventory = replace(_cleanup_inventory_get(), instance_id_list=())
@@ -1740,17 +2032,19 @@ def test_cleanup_terminates_late_disconnected_session_after_instance_leaves_inve
         @staticmethod
         def resolve(request: CleanupRequest) -> CleanupInventory:
             assert request.common_prefix == COMMON_PREFIX
-            return replace(base_inventory, instance_id_list=(instance_id,) if state.instance_visible else ())
+            return replace(base_inventory, instance_id_list=(instance_id,))
 
     class _FinalVerifier:
         @staticmethod
         def validate(inventory: CleanupInventory) -> None:
-            assert inventory.instance_id_list == ()
+            assert inventory.instance_id_list == (instance_id,)
+            assert state.instance_state == "terminated"
             assert not state.late_session_visible
 
         @staticmethod
         def absent_get(inventory: CleanupInventory) -> bool:
-            return not inventory.instance_id_list and not state.late_session_visible
+            assert inventory.instance_id_list == (instance_id,)
+            return state.instance_state == "terminated" and not state.late_session_visible
 
     operation_list: list[str] = []
     manager = DevelopmentEnvironmentCleanupManager(
@@ -1771,11 +2065,13 @@ def test_cleanup_terminates_late_disconnected_session_after_instance_leaves_inve
         f"key=Target,value={instance_id}",
         f"key=Target,value={instance_id}",
         f"key=Target,value={instance_id}",
+        f"key=Target,value={instance_id}",
+        f"key=Target,value={instance_id}",
     ]
 
 
-def test_cleanup_restart_deletes_resource_that_became_visible_after_its_first_owner() -> None:
-    """Final fresh enumeration blocks success and the next restart replays the owner."""
+def test_cleanup_converges_resource_that_became_visible_after_its_first_owner() -> None:
+    """A fresh final inventory replays all owners until a late resource is gone."""
     base_inventory = replace(
         _cleanup_inventory_get(),
         instance_id_list=(),
@@ -1843,14 +2139,9 @@ def test_cleanup_restart_deletes_resource_that_became_visible_after_its_first_ow
     )
     request = CleanupRequest(common_prefix=COMMON_PREFIX)
 
-    with pytest.raises(DevelopmentEnvironmentError, match="Fresh live task resource remains"):
-        manager.destroy(request)
-
-    assert state.deleted_instance_id_list == []
-
     assert manager.destroy(request)["external_resources_absent"] is True
     assert state.deleted_instance_id_list == ["i-0123456789abcdef0"]
-    assert state.resolve_count == 14
+    assert state.resolve_count == 12
 
 
 def test_cleanup_inventory_rejects_primary_environment_before_discovery() -> None:

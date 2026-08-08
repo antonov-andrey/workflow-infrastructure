@@ -25,10 +25,11 @@ from workflow_infrastructure.development_environment.error import (
 class StackCleanupProtocol(Protocol):
     """Declare the stack cleanup interface."""
 
-    def delete(self, stack_name: str) -> None:
+    def delete(self, inventory: CleanupInventory, stack_name: str) -> None:
         """Delete one exact stack.
 
         Args:
+            inventory: Fresh task identity and account/region fence.
             stack_name: Stack name.
         """
 
@@ -54,37 +55,24 @@ class ComputeCleanup:
             inventory: Inventory.
         """
 
-        for instance_id in inventory.instance_id_list:
-            state = self._instance_state_get(inventory, instance_id)
-            if state not in {"absent", "terminated"}:
-                self.session_list_terminate(inventory, [instance_id])
-                state = self._instance_state_get(inventory, instance_id)
-            if state == "running":
-                self._aws.run(["ec2", "stop-instances", "--instance-ids", instance_id])
-                self._aws.run(
-                    [
-                        "ec2",
-                        "wait",
-                        "instance-stopped",
-                        "--instance-ids",
-                        instance_id,
-                    ]
-                )
-            elif state not in {
-                "absent",
-                "pending",
-                "stopped",
-                "stopping",
-                "terminated",
-                "shutting-down",
-            }:
-                raise DevelopmentEnvironmentError("Task instance has an unsupported lifecycle state")
-        self._stack_cleanup.delete(inventory.compute_stack_name)
-        for instance_id in inventory.instance_id_list:
-            state = self._instance_state_get(inventory, instance_id)
+        instance_id_list = list(inventory.instance_id_list)
+        for instance_id in instance_id_list:
+            self._instance_stop_as_necessary(inventory, instance_id)
+            self.session_list_terminate(inventory, [instance_id])
+            self.session_absence_validate(inventory, [instance_id])
+
+        self.session_absence_validate(inventory, instance_id_list)
+        self._stack_cleanup.delete(inventory, inventory.compute_stack_name)
+        for instance_id in instance_id_list:
+            state = self._instance_stop_as_necessary(inventory, instance_id)
+            self.session_list_terminate(inventory, [instance_id])
+            self.session_absence_validate(inventory, [instance_id])
             if state in {"absent", "terminated"}:
                 continue
             if state != "shutting-down":
+                state = self._instance_state_get(inventory, instance_id)
+                if state in {"absent", "terminated"}:
+                    continue
                 self._aws.run(["ec2", "terminate-instances", "--instance-ids", instance_id])
             self._aws.run(
                 [
@@ -95,6 +83,37 @@ class ComputeCleanup:
                     instance_id,
                 ]
             )
+
+    def _instance_stop_as_necessary(self, inventory: CleanupInventory, instance_id: str) -> str:
+        """Stop one running task instance and return a freshly attested safe state."""
+
+        state = self._instance_state_get(inventory, instance_id)
+        if state == "running":
+            self._aws.run(["ec2", "stop-instances", "--instance-ids", instance_id])
+            self._aws.run(
+                [
+                    "ec2",
+                    "wait",
+                    "instance-stopped",
+                    "--instance-ids",
+                    instance_id,
+                ]
+            )
+            state = self._instance_state_get(inventory, instance_id)
+        elif state == "stopping":
+            self._aws.run(
+                [
+                    "ec2",
+                    "wait",
+                    "instance-stopped",
+                    "--instance-ids",
+                    instance_id,
+                ]
+            )
+            state = self._instance_state_get(inventory, instance_id)
+        if state not in {"absent", "pending", "stopped", "terminated", "shutting-down"}:
+            raise DevelopmentEnvironmentError("Task instance did not reach a cleanup-safe lifecycle state")
+        return state
 
     def absence_validate(self, inventory: CleanupInventory) -> None:
         """Require the task instance to be deleted and its sessions to be absent.
@@ -117,7 +136,7 @@ class ComputeCleanup:
 
         Args:
             inventory: Current task identity used to reject a now-foreign instance.
-            instance_id_list: Sorted instance identities attested during this cleanup run.
+            instance_id_list: Sorted identities reconstructed from the fresh task inventory.
         """
 
         self._instance_id_list_validate(instance_id_list)
@@ -131,7 +150,7 @@ class ComputeCleanup:
 
         Args:
             inventory: Current task identity used to reject a now-foreign instance.
-            instance_id_list: Sorted instance identities attested during this cleanup run.
+            instance_id_list: Sorted identities reconstructed from the fresh task inventory.
         """
 
         self._instance_id_list_validate(instance_id_list)
@@ -207,7 +226,7 @@ class ComputeCleanup:
         return session_id_list
 
     def _instance_id_list_validate(self, instance_id_list: list[str]) -> None:
-        """Require one sorted duplicate-free subset of the invocation-owned identities.
+        """Require one sorted duplicate-free subset of current inventory identities.
 
         Args:
             instance_id_list: Instance identities retained by the cleanup workflow.

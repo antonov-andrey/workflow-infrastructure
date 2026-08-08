@@ -41,22 +41,6 @@ class ComputeCleanupProtocol(Protocol):
             inventory: Inventory.
         """
 
-    def session_absence_validate(self, inventory: CleanupInventory, instance_id_list: list[str]) -> None:
-        """Require fresh session absence for every invocation-owned instance.
-
-        Args:
-            inventory: Current task identity.
-            instance_id_list: Exact observed task-owned instance identities.
-        """
-
-    def session_list_terminate(self, inventory: CleanupInventory, instance_id_list: list[str]) -> None:
-        """Terminate sessions for every invocation-owned instance.
-
-        Args:
-            inventory: Current task identity.
-            instance_id_list: Exact observed task-owned instance identities.
-        """
-
 
 class InventoryCleanupProtocol(Protocol):
     """Declare the inventory cleanup interface."""
@@ -83,10 +67,11 @@ class KmsCleanupProtocol(Protocol):
 class StackCleanupProtocol(Protocol):
     """Declare the stack cleanup interface."""
 
-    def delete(self, stack_name: str) -> None:
+    def delete(self, inventory: CleanupInventory, stack_name: str) -> None:
         """Delete one exact stack.
 
         Args:
+            inventory: Fresh task identity and account/region fence.
             stack_name: Stack name.
         """
 
@@ -94,12 +79,12 @@ class StackCleanupProtocol(Protocol):
 class BucketCleanupProtocol(Protocol):
     """Declare the bucket cleanup interface."""
 
-    def delete(self, bucket_name: str, *, expected_owner: str) -> None:
+    def delete(self, inventory: CleanupInventory, bucket_name: str) -> None:
         """Delete one exact bucket.
 
         Args:
+            inventory: Fresh task identity and account/region fence.
             bucket_name: Bucket name.
-            expected_owner: Exact AWS account that owns the bucket.
         """
 
 
@@ -168,25 +153,24 @@ class DevelopmentEnvironmentCleanupManager:
         """
 
         self._request_validate(request)
-        observed_instance_id_set: set[str] = set()
-        self._compute.delete(self._inventory_get(request, observed_instance_id_set=observed_instance_id_set))
+        while True:
+            self._compute.delete(self._inventory_get(request))
 
-        inventory = self._inventory_get(request, observed_instance_id_set=observed_instance_id_set)
-        self._stack.delete(inventory.data_stack_name)
+            inventory = self._inventory_get(request)
+            self._stack.delete(inventory, inventory.data_stack_name)
 
-        inventory = self._inventory_get(request, observed_instance_id_set=observed_instance_id_set)
-        for bucket_name in inventory.bucket_name_list:
-            self._storage.delete(bucket_name, expected_owner=inventory.account_id)
+            inventory = self._inventory_get(request)
+            for bucket_name in inventory.bucket_name_list:
+                self._storage.delete(inventory, bucket_name)
 
-        self._retained.delete(self._inventory_get(request, observed_instance_id_set=observed_instance_id_set))
-        self._kms.retire(self._inventory_get(request, observed_instance_id_set=observed_instance_id_set))
+            self._retained.delete(self._inventory_get(request))
+            self._kms.retire(self._inventory_get(request))
 
-        inventory = self._inventory_get(request, observed_instance_id_set=observed_instance_id_set)
-        self._compute.session_list_terminate(inventory, sorted(observed_instance_id_set))
-        inventory = self._inventory_get(request, observed_instance_id_set=observed_instance_id_set)
-        self._verifier.validate(inventory)
-        self._compute.session_absence_validate(inventory, sorted(observed_instance_id_set))
-        return {**request.payload_get(), "external_resources_absent": True}
+            inventory = self._inventory_get(request)
+            if not self._verifier.absent_get(inventory):
+                continue
+            self._verifier.validate(inventory)
+            return {**request.payload_get(), "external_resources_absent": True}
 
     def inventory(self, request: CleanupRequest) -> dict[str, object]:
         """Return a non-mutating exact inventory for acceptance diagnostics.
@@ -221,14 +205,11 @@ class DevelopmentEnvironmentCleanupManager:
     def _inventory_get(
         self,
         request: CleanupRequest,
-        *,
-        observed_instance_id_set: set[str] | None = None,
     ) -> CleanupInventory:
         """Resolve and attest one fresh live inventory for the next owner.
 
         Args:
             request: Validated operation request.
-            observed_instance_id_set: Invocation-local owned instance progress.
 
         Returns:
             Fresh task-scoped inventory.
@@ -236,8 +217,6 @@ class DevelopmentEnvironmentCleanupManager:
 
         inventory = self._inventory_resolver.resolve(request)
         self._inventory_identity_validate(inventory)
-        if observed_instance_id_set is not None:
-            observed_instance_id_set.update(inventory.instance_id_list)
         return inventory
 
     def _request_validate(self, request: CleanupRequest) -> None:
