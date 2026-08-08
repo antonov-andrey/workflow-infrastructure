@@ -34,6 +34,9 @@ from workflow_infrastructure.development_environment.cleanup.model import (
     CleanupInventory,
     CleanupRequest,
 )
+from workflow_infrastructure.development_environment.cleanup.retained import (
+    RetainedStorageCleanup,
+)
 from workflow_infrastructure.development_environment.cleanup.s3 import (
     VersionedBucketCleaner,
 )
@@ -156,6 +159,13 @@ class _S3Aws:
         self.delete_error = delete_error
         self.upload_by_id = {"upload-1": "partial/file"}
         self.object_set = {("data/file", "v1"), ("data/file", "delete-marker")}
+        self.mutation_argument_list: list[list[str]] = []
+
+    @staticmethod
+    def _expected_owner_require(argument_list: list[str]) -> None:
+        """Require the account fence on every S3 bucket operation."""
+
+        assert argument_list[argument_list.index("--expected-bucket-owner") + 1] == "463564115167"
 
     def json_get(self, argument_list: list[str]) -> dict[str, object]:
         """Return the scripted cleanup-inventory AWS response.
@@ -167,6 +177,7 @@ class _S3Aws:
             Decoded JSON object.
         """
 
+        self._expected_owner_require(argument_list)
         if argument_list[:2] == ["s3api", "list-multipart-uploads"]:
             return {"Uploads": [{"Key": key, "UploadId": upload_id} for upload_id, key in self.upload_by_id.items()]}
         if argument_list[:2] == ["s3api", "list-object-versions"]:
@@ -193,7 +204,15 @@ class _S3Aws:
 
         del check
         operation = tuple(argument_list[:2])
+        expected_owner = argument_list[argument_list.index("--expected-bucket-owner") + 1]
         if operation == ("s3api", "head-bucket"):
+            if expected_owner != "463564115167":
+                return subprocess.CompletedProcess(
+                    argument_list,
+                    1,
+                    "",
+                    "An error occurred (AccessDenied) when calling the HeadBucket operation: Access Denied",
+                )
             return subprocess.CompletedProcess(
                 argument_list,
                 0 if self.bucket_exists else 1,
@@ -205,10 +224,13 @@ class _S3Aws:
                     "HeadBucket operation: The specified bucket does not exist"
                 ),
             )
+        self._expected_owner_require(argument_list)
         if operation == ("s3api", "abort-multipart-upload"):
+            self.mutation_argument_list.append(argument_list)
             upload_id = argument_list[argument_list.index("--upload-id") + 1]
             self.upload_by_id.pop(upload_id)
         elif operation == ("s3api", "delete-objects"):
+            self.mutation_argument_list.append(argument_list)
             if self.delete_error:
                 return subprocess.CompletedProcess(
                     argument_list,
@@ -220,6 +242,7 @@ class _S3Aws:
             for item in payload["Objects"]:
                 self.object_set.remove((item["Key"], item["VersionId"]))
         elif operation == ("s3api", "delete-bucket"):
+            self.mutation_argument_list.append(argument_list)
             assert not self.upload_by_id
             assert not self.object_set
             self.bucket_exists = False
@@ -233,17 +256,34 @@ def test_versioned_bucket_cleanup_removes_uploads_versions_and_markers() -> None
 
     aws = _S3Aws()
     cleaner = VersionedBucketCleaner(aws)
-    cleaner.delete("task-bucket")
-    cleaner.delete("task-bucket")
+    cleaner.delete("task-bucket", expected_owner="463564115167")
+    cleaner.delete("task-bucket", expected_owner="463564115167")
     assert not aws.bucket_exists
-    assert cleaner.absent_get("task-bucket")
+    assert cleaner.absent_get("task-bucket", expected_owner="463564115167")
 
 
 def test_versioned_bucket_cleanup_rejects_partial_http_200_deletion() -> None:
     """S3 per-object errors remain failures even when the request returned HTTP 200."""
 
     with pytest.raises(DevelopmentEnvironmentError, match="partially deleted"):
-        VersionedBucketCleaner(_S3Aws(delete_error=True)).delete("task-bucket")
+        VersionedBucketCleaner(_S3Aws(delete_error=True)).delete(
+            "task-bucket",
+            expected_owner="463564115167",
+        )
+
+
+def test_versioned_bucket_cleanup_rejects_foreign_owner_before_any_mutation() -> None:
+    """Every S3 lifecycle operation is fenced by the exact expected account."""
+
+    aws = _S3Aws()
+
+    with pytest.raises(DevelopmentEnvironmentError, match="ownership cannot be observed"):
+        VersionedBucketCleaner(aws).delete("task-bucket", expected_owner="000000000000")
+
+    assert aws.mutation_argument_list == []
+    assert aws.bucket_exists
+    assert aws.upload_by_id == {"upload-1": "partial/file"}
+    assert aws.object_set == {("data/file", "v1"), ("data/file", "delete-marker")}
 
 
 class _ComputeAws:
@@ -612,6 +652,154 @@ def test_kms_cleanup_rejects_foreign_key_before_any_mutation(
 
     with pytest.raises(DevelopmentEnvironmentError, match=error_pattern):
         KmsCleanup(aws).retire(_cleanup_inventory_get())
+
+    assert aws.mutation_argument_list == []
+
+
+class _RetainedAws:
+    """Expose freshly changeable EBS volume and snapshot ownership."""
+
+    def __init__(
+        self,
+        *,
+        account_id: str = "463564115167",
+        availability_zone: str = "us-east-1a",
+        snapshot_owner_id: str = "463564115167",
+        snapshot_present: bool = False,
+        state: str = "available",
+        task_owned: bool = True,
+        volume_type: str = "gp3",
+    ) -> None:
+        """Initialize one retained-storage service double."""
+
+        self.account_id = account_id
+        self.availability_zone = availability_zone
+        self.snapshot_owner_id = snapshot_owner_id
+        self.snapshot_present = snapshot_present
+        self.state = state
+        self.task_owned = task_owned
+        self.volume_type = volume_type
+        self.mutation_argument_list: list[list[str]] = []
+
+    def json_get(self, argument_list: list[str]) -> dict[str, object]:
+        """Return caller identity or the task snapshot discovery list."""
+
+        if argument_list[:2] == ["sts", "get-caller-identity"]:
+            return {"Account": self.account_id}
+        if argument_list[:2] == ["ec2", "describe-snapshots"]:
+            return {
+                "Snapshots": (
+                    [
+                        {
+                            "SnapshotId": "snap-0123456789abcdef0",
+                            "Tags": _task_tag_list_get(),
+                        }
+                    ]
+                    if self.snapshot_present
+                    else []
+                )
+            }
+        raise AssertionError(argument_list)
+
+    def run(self, argument_list: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+        """Return fresh EBS identity reads and record only destructive calls."""
+
+        del check
+        if argument_list[:2] == ["ec2", "describe-volumes"]:
+            tag_list = _task_tag_list_get(name=f"retained-{_Identity.environment_name}")
+            if not self.task_owned:
+                tag_list = [item for item in tag_list if item["Key"] != "git-worktree"]
+            return subprocess.CompletedProcess(
+                argument_list,
+                0,
+                json.dumps(
+                    {
+                        "Volumes": [
+                            {
+                                "Attachments": [],
+                                "AvailabilityZone": self.availability_zone,
+                                "State": self.state,
+                                "Tags": tag_list,
+                                "VolumeId": "vol-0123456789abcdef0",
+                                "VolumeType": self.volume_type,
+                            }
+                        ]
+                    }
+                ),
+                "",
+            )
+        if argument_list[:2] == ["ec2", "describe-snapshots"]:
+            return subprocess.CompletedProcess(
+                argument_list,
+                0,
+                json.dumps(
+                    {
+                        "Snapshots": [
+                            {
+                                "OwnerId": self.snapshot_owner_id,
+                                "SnapshotId": "snap-0123456789abcdef0",
+                                "State": "completed",
+                                "Tags": _task_tag_list_get(),
+                            }
+                        ]
+                    }
+                ),
+                "",
+            )
+        if tuple(argument_list[:2]) in {
+            ("ec2", "delete-snapshot"),
+            ("ec2", "delete-volume"),
+        }:
+            self.mutation_argument_list.append(argument_list)
+        elif argument_list[:2] != ["ec2", "wait"]:
+            raise AssertionError(argument_list)
+        return subprocess.CompletedProcess(argument_list, 0, "{}", "")
+
+
+def test_retained_storage_deletes_only_freshly_reattested_task_resources() -> None:
+    """Snapshot and volume mutations follow exact current ownership reads."""
+
+    aws = _RetainedAws(snapshot_present=True)
+
+    RetainedStorageCleanup(aws).delete(_cleanup_inventory_get())
+
+    assert [argument_list[:2] for argument_list in aws.mutation_argument_list] == [
+        ["ec2", "delete-snapshot"],
+        ["ec2", "delete-volume"],
+    ]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "error_pattern"),
+    [
+        ({"account_id": "000000000000"}, "another AWS account"),
+        ({"availability_zone": "us-west-2a"}, "ownership is malformed"),
+        ({"volume_type": "io2"}, "ownership is malformed"),
+        ({"task_owned": False}, "another ownership identity"),
+        ({"state": "deleted"}, "ownership is malformed"),
+    ],
+)
+def test_retained_storage_rejects_foreign_or_changed_volume_before_mutation(
+    kwargs: dict[str, object],
+    error_pattern: str,
+) -> None:
+    """A stale retained-volume ID never authorizes deletion after identity drift."""
+
+    aws = _RetainedAws(**kwargs)
+
+    with pytest.raises(DevelopmentEnvironmentError, match=error_pattern):
+        RetainedStorageCleanup(aws).delete(_cleanup_inventory_get())
+
+    assert aws.mutation_argument_list == []
+
+
+def test_retained_storage_rejects_foreign_snapshot_before_mutation() -> None:
+    """Snapshot inventory is re-attested to the exact account at deletion time."""
+
+    aws = _RetainedAws(snapshot_owner_id="000000000000", snapshot_present=True)
+
+    with pytest.raises(DevelopmentEnvironmentError, match="ownership is malformed"):
+        RetainedStorageCleanup(aws).delete(_cleanup_inventory_get())
 
     assert aws.mutation_argument_list == []
 
@@ -1080,27 +1268,32 @@ class _StorageCleanup:
 
         self._operation_list = operation_list
 
-    def delete(self, bucket_name: str) -> None:
+    def delete(self, bucket_name: str, *, expected_owner: str) -> None:
         """Delete the storage cleanup target.
 
         Args:
             bucket_name: Bucket name.
+            expected_owner: Exact AWS account that owns the bucket.
         """
 
+        assert expected_owner == "463564115167"
         self._operation_list.append(f"bucket:{bucket_name}")
 
-    def absence_validate(self, bucket_name: str) -> None:
+    def absence_validate(self, bucket_name: str, *, expected_owner: str) -> None:
         """Record service-native absence proof for one bucket.
 
         Args:
             bucket_name: Bucket name.
+            expected_owner: Exact AWS account that owns the bucket.
         """
 
+        assert expected_owner == "463564115167"
         self._operation_list.append(f"verify:bucket:{bucket_name}")
 
-    def absent_get(self, bucket_name: str) -> bool:
+    def absent_get(self, bucket_name: str, *, expected_owner: str) -> bool:
         """Record exact non-mutating absence readback for one bucket."""
 
+        assert expected_owner == "463564115167"
         self._operation_list.append(f"read:bucket:{bucket_name}")
         return True
 

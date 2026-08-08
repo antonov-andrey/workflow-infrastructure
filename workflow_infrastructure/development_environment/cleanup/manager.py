@@ -72,11 +72,12 @@ class StackCleanupProtocol(Protocol):
 class BucketCleanupProtocol(Protocol):
     """Declare the bucket cleanup interface."""
 
-    def delete(self, bucket_name: str) -> None:
+    def delete(self, bucket_name: str, *, expected_owner: str) -> None:
         """Delete one exact bucket.
 
         Args:
             bucket_name: Bucket name.
+            expected_owner: Exact AWS account that owns the bucket.
         """
 
 
@@ -207,7 +208,7 @@ class DevelopmentEnvironmentCleanupManager:
             self._stack.delete(inventory.data_stack_name)
         elif phase == "storage":
             for bucket_name in inventory.bucket_name_list:
-                self._storage.delete(bucket_name)
+                self._storage.delete(bucket_name, expected_owner=inventory.account_id)
         elif phase == "retained":
             self._retained.delete(inventory)
         elif phase == "kms":

@@ -40,14 +40,15 @@ class StackAbsenceProtocol(Protocol):
 class BucketAbsenceProtocol(Protocol):
     """Declare the bucket absence interface."""
 
-    def absence_validate(self, bucket_name: str) -> None:
+    def absence_validate(self, bucket_name: str, *, expected_owner: str) -> None:
         """Require one bucket to be absent.
 
         Args:
             bucket_name: Bucket name.
+            expected_owner: Exact AWS account that owns the bucket.
         """
 
-    def absent_get(self, bucket_name: str) -> bool:
+    def absent_get(self, bucket_name: str, *, expected_owner: str) -> bool:
         """Return whether one exact bucket is absent."""
 
 
@@ -90,7 +91,7 @@ class CleanupAbsenceVerifier:
         self._stack.absence_validate(inventory.data_stack_name)
         self._compute.absence_validate(inventory)
         for bucket_name in inventory.bucket_name_list:
-            self._storage.absence_validate(bucket_name)
+            self._storage.absence_validate(bucket_name, expected_owner=inventory.account_id)
         self._retained.absence_validate(inventory)
         self._kms.absence_validate(inventory)
 
@@ -101,7 +102,10 @@ class CleanupAbsenceVerifier:
             self._stack.absent_get(inventory.compute_stack_name),
             self._stack.absent_get(inventory.data_stack_name),
             self._compute.absent_get(inventory),
-            *[self._storage.absent_get(bucket_name) for bucket_name in inventory.bucket_name_list],
+            *[
+                self._storage.absent_get(bucket_name, expected_owner=inventory.account_id)
+                for bucket_name in inventory.bucket_name_list
+            ],
             self._retained.absent_get(inventory),
             self._kms.absent_get(inventory),
         ]

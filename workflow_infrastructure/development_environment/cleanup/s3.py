@@ -25,53 +25,76 @@ class VersionedBucketCleaner:
 
         self._aws = aws
 
-    def delete(self, bucket_name: str) -> None:
+    def delete(self, bucket_name: str, *, expected_owner: str) -> None:
         """Idempotently delete every retained object identity and the bucket.
 
         Args:
             bucket_name: Bucket name.
+            expected_owner: Exact AWS account that owns the bucket.
         """
 
-        if not self._exists(bucket_name):
+        if not self._exists(bucket_name, expected_owner=expected_owner):
             return
-        self._multipart_upload_list_delete(bucket_name)
-        self._object_version_list_delete(bucket_name)
-        result = self._aws.run(["s3api", "delete-bucket", "--bucket", bucket_name], check=False)
+        self._multipart_upload_list_delete(bucket_name, expected_owner=expected_owner)
+        self._object_version_list_delete(bucket_name, expected_owner=expected_owner)
+        result = self._aws.run(
+            [
+                "s3api",
+                "delete-bucket",
+                "--bucket",
+                bucket_name,
+                "--expected-bucket-owner",
+                expected_owner,
+            ],
+            check=False,
+        )
         if result.returncode != 0 and not aws_cli_error_matches(
             result,
             code_set=frozenset({"NoSuchBucket"}),
             operation="DeleteBucket",
         ):
             raise DevelopmentEnvironmentError(f"Task bucket {bucket_name} could not be deleted")
-        if self._exists(bucket_name):
+        if self._exists(bucket_name, expected_owner=expected_owner):
             raise DevelopmentEnvironmentError(f"Task bucket {bucket_name} still exists after deletion")
 
-    def absence_validate(self, bucket_name: str) -> None:
+    def absence_validate(self, bucket_name: str, *, expected_owner: str) -> None:
         """Require one exact bucket to be absent.
 
         Args:
             bucket_name: Bucket name.
+            expected_owner: Exact AWS account that owns the bucket.
         """
 
-        if not self.absent_get(bucket_name):
+        if not self.absent_get(bucket_name, expected_owner=expected_owner):
             raise DevelopmentEnvironmentError(f"Task bucket {bucket_name} absence is not proven")
 
-    def absent_get(self, bucket_name: str) -> bool:
+    def absent_get(self, bucket_name: str, *, expected_owner: str) -> bool:
         """Return exact current absence for one versioned bucket."""
 
-        return not self._exists(bucket_name)
+        return not self._exists(bucket_name, expected_owner=expected_owner)
 
-    def _exists(self, bucket_name: str) -> bool:
+    def _exists(self, bucket_name: str, *, expected_owner: str) -> bool:
         """Report whether the exact versioned cleanup bucket still exists.
 
         Args:
             bucket_name: Bucket name.
+            expected_owner: Exact AWS account that owns the bucket.
 
         Returns:
             Whether the exact bucket still exists.
         """
 
-        result = self._aws.run(["s3api", "head-bucket", "--bucket", bucket_name], check=False)
+        result = self._aws.run(
+            [
+                "s3api",
+                "head-bucket",
+                "--bucket",
+                bucket_name,
+                "--expected-bucket-owner",
+                expected_owner,
+            ],
+            check=False,
+        )
         if result.returncode == 0:
             return True
         if aws_cli_error_matches(
@@ -82,11 +105,12 @@ class VersionedBucketCleaner:
             return False
         raise DevelopmentEnvironmentError(f"Task bucket {bucket_name} ownership cannot be observed")
 
-    def _multipart_upload_list_delete(self, bucket_name: str) -> None:
+    def _multipart_upload_list_delete(self, bucket_name: str, *, expected_owner: str) -> None:
         """Abort every incomplete multipart upload in one task bucket.
 
         Args:
             bucket_name: Bucket name.
+            expected_owner: Exact AWS account that owns the bucket.
         """
 
         while True:
@@ -98,6 +122,8 @@ class VersionedBucketCleaner:
                     bucket_name,
                     "--max-uploads",
                     "1000",
+                    "--expected-bucket-owner",
+                    expected_owner,
                 ]
             )
             upload_list = payload.get("Uploads", [])
@@ -121,14 +147,17 @@ class VersionedBucketCleaner:
                         item["Key"],
                         "--upload-id",
                         item["UploadId"],
+                        "--expected-bucket-owner",
+                        expected_owner,
                     ]
                 )
 
-    def _object_version_list_delete(self, bucket_name: str) -> None:
+    def _object_version_list_delete(self, bucket_name: str, *, expected_owner: str) -> None:
         """Remove every object version and delete marker from one task bucket.
 
         Args:
             bucket_name: Bucket name.
+            expected_owner: Exact AWS account that owns the bucket.
         """
 
         while True:
@@ -140,6 +169,8 @@ class VersionedBucketCleaner:
                     bucket_name,
                     "--max-keys",
                     "1000",
+                    "--expected-bucket-owner",
+                    expected_owner,
                 ]
             )
             object_list: list[dict[str, str]] = []
@@ -169,6 +200,8 @@ class VersionedBucketCleaner:
                         bucket_name,
                         "--delete",
                         delete_payload,
+                        "--expected-bucket-owner",
+                        expected_owner,
                     ],
                     check=False,
                 )

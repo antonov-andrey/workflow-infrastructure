@@ -9,6 +9,7 @@ from workflow_infrastructure.development_environment.aws import aws_cli_error_ma
 from workflow_infrastructure.development_environment.cleanup.aws_response import (
     json_object_get,
     tag_map_get,
+    task_ownership_tag_validate,
 )
 from workflow_infrastructure.development_environment.cleanup.model import (
     CleanupInventory,
@@ -43,46 +44,19 @@ class RetainedStorageCleanup:
         """
 
         for snapshot_id in self._owned_snapshot_id_list_get(inventory):
-            self._aws.run(["ec2", "delete-snapshot", "--snapshot-id", snapshot_id])
+            if self._owned_snapshot_exists(inventory, snapshot_id):
+                self._aws.run(["ec2", "delete-snapshot", "--snapshot-id", snapshot_id])
         for retained_volume_id in inventory.retained_volume_id_list:
-            result = self._aws.run(
-                ["ec2", "describe-volumes", "--volume-ids", retained_volume_id],
-                check=False,
-            )
-            if result.returncode == 0:
-                payload = json_object_get(result.stdout, label="retained volume")
-                volume_list = payload.get("Volumes")
-                if (
-                    not isinstance(volume_list, list)
-                    or len(volume_list) != 1
-                    or not isinstance(volume_list[0], Mapping)
-                    or volume_list[0].get("VolumeId") != retained_volume_id
-                ):
-                    raise DevelopmentEnvironmentError("Task retained volume inventory is malformed")
-                if volume_list[0].get("State") != "available" or volume_list[0].get("Attachments", []) != []:
-                    self._aws.run(["ec2", "wait", "volume-available", "--volume-ids", retained_volume_id])
-                    result = self._aws.run(
-                        ["ec2", "describe-volumes", "--volume-ids", retained_volume_id],
-                    )
-                    payload = json_object_get(result.stdout, label="retained volume")
-                    volume_list = payload.get("Volumes")
-                if (
-                    not isinstance(volume_list, list)
-                    or len(volume_list) != 1
-                    or not isinstance(volume_list[0], Mapping)
-                    or volume_list[0].get("VolumeId") != retained_volume_id
-                    or volume_list[0].get("State") != "available"
-                    or volume_list[0].get("Attachments", []) != []
-                ):
-                    raise DevelopmentEnvironmentError("Task retained volume is not safely deletable")
-                self._aws.run(["ec2", "delete-volume", "--volume-id", retained_volume_id])
-                self._aws.run(["ec2", "wait", "volume-deleted", "--volume-ids", retained_volume_id])
-            elif not aws_cli_error_matches(
-                result,
-                code_set=frozenset({"InvalidVolume.NotFound"}),
-                operation="DescribeVolumes",
-            ):
-                raise DevelopmentEnvironmentError("Task retained volume absence cannot be proven")
+            state = self._owned_retained_volume_state_get(inventory, retained_volume_id)
+            if state == "absent":
+                continue
+            if state != "available":
+                self._aws.run(["ec2", "wait", "volume-available", "--volume-ids", retained_volume_id])
+                state = self._owned_retained_volume_state_get(inventory, retained_volume_id)
+            if state != "available":
+                raise DevelopmentEnvironmentError("Task retained volume is not safely deletable")
+            self._aws.run(["ec2", "delete-volume", "--volume-id", retained_volume_id])
+            self._aws.run(["ec2", "wait", "volume-deleted", "--volume-ids", retained_volume_id])
 
     def absence_validate(self, inventory: CleanupInventory) -> None:
         """Require both the retained volume and every task snapshot to be absent.
@@ -130,7 +104,7 @@ class RetainedStorageCleanup:
                 "ec2",
                 "describe-snapshots",
                 "--owner-ids",
-                "self",
+                inventory.account_id,
                 "--filters",
                 f"Name=tag:EnvironmentName,Values={inventory.environment_name}",
                 f"Name=tag:git-worktree,Values={inventory.common_prefix}",
@@ -155,3 +129,93 @@ class RetainedStorageCleanup:
         if len(snapshot_id_list) != len(set(snapshot_id_list)):
             raise DevelopmentEnvironmentError("Task snapshot inventory repeats an identity")
         return sorted(snapshot_id_list)
+
+    def _owned_snapshot_exists(self, inventory: CleanupInventory, snapshot_id: str) -> bool:
+        """Freshly re-attest one exact task snapshot immediately before deletion."""
+
+        result = self._aws.run(
+            [
+                "ec2",
+                "describe-snapshots",
+                "--snapshot-ids",
+                snapshot_id,
+                "--owner-ids",
+                inventory.account_id,
+            ],
+            check=False,
+        )
+        if result.returncode != 0:
+            if aws_cli_error_matches(
+                result,
+                code_set=frozenset({"InvalidSnapshot.NotFound"}),
+                operation="DescribeSnapshots",
+            ):
+                return False
+            raise DevelopmentEnvironmentError("Task snapshot ownership cannot be observed")
+        payload = json_object_get(result.stdout, label="task snapshot ownership")
+        snapshot_list = payload.get("Snapshots")
+        if not isinstance(snapshot_list, list) or len(snapshot_list) != 1 or not isinstance(snapshot_list[0], Mapping):
+            raise DevelopmentEnvironmentError("Task snapshot ownership is malformed")
+        snapshot = snapshot_list[0]
+        task_ownership_tag_validate(
+            tag_map_get(snapshot.get("Tags")),
+            common_prefix=inventory.common_prefix,
+            environment_name=inventory.environment_name,
+            label="snapshot",
+        )
+        if (
+            snapshot.get("SnapshotId") != snapshot_id
+            or snapshot.get("OwnerId") != inventory.account_id
+            or snapshot.get("State") != "completed"
+        ):
+            raise DevelopmentEnvironmentError("Task snapshot ownership is malformed")
+        self._account_validate(inventory)
+        return True
+
+    def _owned_retained_volume_state_get(self, inventory: CleanupInventory, volume_id: str) -> str:
+        """Return one freshly re-attested task volume state immediately before mutation."""
+
+        result = self._aws.run(["ec2", "describe-volumes", "--volume-ids", volume_id], check=False)
+        if result.returncode != 0:
+            if aws_cli_error_matches(
+                result,
+                code_set=frozenset({"InvalidVolume.NotFound"}),
+                operation="DescribeVolumes",
+            ):
+                return "absent"
+            raise DevelopmentEnvironmentError("Task retained volume ownership cannot be observed")
+        payload = json_object_get(result.stdout, label="task retained volume ownership")
+        volume_list = payload.get("Volumes")
+        if not isinstance(volume_list, list) or len(volume_list) != 1 or not isinstance(volume_list[0], Mapping):
+            raise DevelopmentEnvironmentError("Task retained volume ownership is malformed")
+        volume = volume_list[0]
+        availability_zone = volume.get("AvailabilityZone")
+        state = volume.get("State")
+        attachments = volume.get("Attachments")
+        task_ownership_tag_validate(
+            tag_map_get(volume.get("Tags")),
+            common_prefix=inventory.common_prefix,
+            environment_name=inventory.environment_name,
+            label="retained volume",
+        )
+        if (
+            volume.get("VolumeId") != volume_id
+            or volume.get("VolumeType") != "gp3"
+            or not isinstance(availability_zone, str)
+            or re.fullmatch(rf"{re.escape(inventory.region)}[a-z]", availability_zone) is None
+            or not isinstance(state, str)
+            or state not in {"creating", "available", "in-use", "deleting", "error"}
+            or not isinstance(attachments, list)
+            or tag_map_get(volume.get("Tags")).get("Name") != f"retained-{inventory.environment_name}"
+        ):
+            raise DevelopmentEnvironmentError("Task retained volume ownership is malformed")
+        self._account_validate(inventory)
+        if state == "available" and attachments == []:
+            return state
+        return "attached"
+
+    def _account_validate(self, inventory: CleanupInventory) -> None:
+        """Require the current AWS caller to remain the inventory account."""
+
+        if self._aws.json_get(["sts", "get-caller-identity"]).get("Account") != inventory.account_id:
+            raise DevelopmentEnvironmentError("Task retained storage belongs to another AWS account")
