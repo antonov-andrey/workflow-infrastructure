@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from typing import Mapping
 
 from workflow_infrastructure.development_environment.aws import aws_cli_error_matches
@@ -50,13 +51,34 @@ class RetainedStorageCleanup:
             state = self._owned_retained_volume_state_get(inventory, retained_volume_id)
             if state == "absent":
                 continue
-            if state != "available":
-                self._aws.run(["ec2", "wait", "volume-available", "--volume-ids", retained_volume_id])
+            if state == "in-use":
+                wait_result = self._aws.run(
+                    ["ec2", "wait", "volume-available", "--volume-ids", retained_volume_id],
+                    check=False,
+                )
+                if wait_result.returncode != 0:
+                    if self._volume_not_found_get(wait_result, operation="DescribeVolumes"):
+                        self._account_validate(inventory)
+                        continue
+                    raise DevelopmentEnvironmentError("Task retained volume did not become available")
                 state = self._owned_retained_volume_state_get(inventory, retained_volume_id)
+            if state == "absent":
+                continue
+            if state == "deleting":
+                self._volume_deleted_wait(inventory, retained_volume_id)
+                continue
             if state != "available":
                 raise DevelopmentEnvironmentError("Task retained volume is not safely deletable")
-            self._aws.run(["ec2", "delete-volume", "--volume-id", retained_volume_id])
-            self._aws.run(["ec2", "wait", "volume-deleted", "--volume-ids", retained_volume_id])
+            delete_result = self._aws.run(
+                ["ec2", "delete-volume", "--volume-id", retained_volume_id],
+                check=False,
+            )
+            if delete_result.returncode != 0:
+                if self._volume_not_found_get(delete_result, operation="DeleteVolume"):
+                    self._account_validate(inventory)
+                    continue
+                raise DevelopmentEnvironmentError("Task retained volume deletion failed")
+            self._volume_deleted_wait(inventory, retained_volume_id)
 
     def absence_validate(self, inventory: CleanupInventory) -> None:
         """Require both the retained volume and every task snapshot to be absent.
@@ -73,18 +95,8 @@ class RetainedStorageCleanup:
 
         absent = True
         for retained_volume_id in inventory.retained_volume_id_list:
-            result = self._aws.run(
-                ["ec2", "describe-volumes", "--volume-ids", retained_volume_id],
-                check=False,
-            )
-            if result.returncode == 0:
+            if self._owned_retained_volume_state_get(inventory, retained_volume_id) != "absent":
                 absent = False
-            elif not aws_cli_error_matches(
-                result,
-                code_set=frozenset({"InvalidVolume.NotFound"}),
-                operation="DescribeVolumes",
-            ):
-                raise DevelopmentEnvironmentError("Task retained volume absence is not proven")
         if self._owned_snapshot_id_list_get(inventory):
             absent = False
         return absent
@@ -177,11 +189,8 @@ class RetainedStorageCleanup:
 
         result = self._aws.run(["ec2", "describe-volumes", "--volume-ids", volume_id], check=False)
         if result.returncode != 0:
-            if aws_cli_error_matches(
-                result,
-                code_set=frozenset({"InvalidVolume.NotFound"}),
-                operation="DescribeVolumes",
-            ):
+            if self._volume_not_found_get(result, operation="DescribeVolumes"):
+                self._account_validate(inventory)
                 return "absent"
             raise DevelopmentEnvironmentError("Task retained volume ownership cannot be observed")
         payload = json_object_get(result.stdout, label="task retained volume ownership")
@@ -204,15 +213,48 @@ class RetainedStorageCleanup:
             or not isinstance(availability_zone, str)
             or re.fullmatch(rf"{re.escape(inventory.region)}[a-z]", availability_zone) is None
             or not isinstance(state, str)
-            or state not in {"creating", "available", "in-use", "deleting", "error"}
+            or state not in {"creating", "available", "in-use", "deleting", "deleted", "error"}
             or not isinstance(attachments, list)
             or tag_map_get(volume.get("Tags")).get("Name") != f"retained-{inventory.environment_name}"
         ):
             raise DevelopmentEnvironmentError("Task retained volume ownership is malformed")
+        if state == "in-use":
+            if not attachments or any(
+                not isinstance(attachment, Mapping)
+                or attachment.get("VolumeId") != volume_id
+                or attachment.get("State") not in {"attaching", "attached", "busy", "detaching"}
+                for attachment in attachments
+            ):
+                raise DevelopmentEnvironmentError("Task retained volume ownership is malformed")
+        elif attachments:
+            raise DevelopmentEnvironmentError("Task retained volume ownership is malformed")
         self._account_validate(inventory)
-        if state == "available" and attachments == []:
-            return state
-        return "attached"
+        return "absent" if state == "deleted" else state
+
+    def _volume_deleted_wait(self, inventory: CleanupInventory, volume_id: str) -> None:
+        """Wait only for deletion and require fresh physical absence."""
+
+        result = self._aws.run(
+            ["ec2", "wait", "volume-deleted", "--volume-ids", volume_id],
+            check=False,
+        )
+        if result.returncode != 0 and not self._volume_not_found_get(result, operation="DescribeVolumes"):
+            raise DevelopmentEnvironmentError("Task retained volume did not reach deleted state")
+        if result.returncode != 0:
+            self._account_validate(inventory)
+            return
+        if self._owned_retained_volume_state_get(inventory, volume_id) != "absent":
+            raise DevelopmentEnvironmentError("Task retained volume deletion is not proven")
+
+    @staticmethod
+    def _volume_not_found_get(result: subprocess.CompletedProcess[str], *, operation: str) -> bool:
+        """Return whether one AWS result is the exact volume-absence error."""
+
+        return aws_cli_error_matches(
+            result,
+            code_set=frozenset({"InvalidVolume.NotFound"}),
+            operation=operation,
+        )
 
     def _account_validate(self, inventory: CleanupInventory) -> None:
         """Require the current AWS caller to remain the inventory account."""

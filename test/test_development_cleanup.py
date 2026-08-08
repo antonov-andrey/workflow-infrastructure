@@ -1,4 +1,4 @@
-"""Verify exact, resumable task development-environment cleanup."""
+"""Verify exact, live-state task development-environment cleanup."""
 
 from __future__ import annotations
 
@@ -22,9 +22,6 @@ from workflow_infrastructure.development_environment.cleanup.manager import (
 )
 from workflow_infrastructure.development_environment.cleanup.compute import (
     ComputeCleanup,
-)
-from workflow_infrastructure.development_environment.cleanup.journal import (
-    CleanupJournalStore,
 )
 from workflow_infrastructure.development_environment.cleanup.inventory import (
     CleanupInventoryResolver,
@@ -669,6 +666,7 @@ class _RetainedAws:
         state: str = "available",
         task_owned: bool = True,
         volume_type: str = "gp3",
+        wait_deleted_returns_not_found: bool = False,
     ) -> None:
         """Initialize one retained-storage service double."""
 
@@ -679,7 +677,9 @@ class _RetainedAws:
         self.state = state
         self.task_owned = task_owned
         self.volume_type = volume_type
+        self.wait_deleted_returns_not_found = wait_deleted_returns_not_found
         self.mutation_argument_list: list[list[str]] = []
+        self.wait_argument_list: list[list[str]] = []
 
     def json_get(self, argument_list: list[str]) -> dict[str, object]:
         """Return caller identity or the task snapshot discovery list."""
@@ -704,11 +704,21 @@ class _RetainedAws:
     def run(self, argument_list: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
         """Return fresh EBS identity reads and record only destructive calls."""
 
-        del check
+        assert isinstance(check, bool)
         if argument_list[:2] == ["ec2", "describe-volumes"]:
+            if self.state == "not-found":
+                return _volume_not_found_result(argument_list, operation="DescribeVolumes")
             tag_list = _task_tag_list_get(name=f"retained-{_Identity.environment_name}")
             if not self.task_owned:
                 tag_list = [item for item in tag_list if item["Key"] != "git-worktree"]
+            attachments = []
+            if self.state == "in-use":
+                attachments = [
+                    {
+                        "State": "attached",
+                        "VolumeId": "vol-0123456789abcdef0",
+                    }
+                ]
             return subprocess.CompletedProcess(
                 argument_list,
                 0,
@@ -716,7 +726,7 @@ class _RetainedAws:
                     {
                         "Volumes": [
                             {
-                                "Attachments": [],
+                                "Attachments": attachments,
                                 "AvailabilityZone": self.availability_zone,
                                 "State": self.state,
                                 "Tags": tag_list,
@@ -751,9 +761,43 @@ class _RetainedAws:
             ("ec2", "delete-volume"),
         }:
             self.mutation_argument_list.append(argument_list)
-        elif argument_list[:2] != ["ec2", "wait"]:
+            if argument_list[:2] == ["ec2", "delete-volume"]:
+                if self.state == "not-found":
+                    return _volume_not_found_result(argument_list, operation="DeleteVolume")
+                self.state = "deleting"
+        elif argument_list[:2] == ["ec2", "wait"]:
+            self.wait_argument_list.append(argument_list)
+            waiter_name = argument_list[2]
+            if waiter_name == "volume-available":
+                if self.state == "not-found":
+                    return _volume_not_found_result(argument_list, operation="DescribeVolumes")
+                if self.state == "in-use":
+                    self.state = "available"
+            elif waiter_name == "volume-deleted":
+                if self.state == "deleting":
+                    self.state = "not-found"
+                if self.wait_deleted_returns_not_found:
+                    return _volume_not_found_result(argument_list, operation="DescribeVolumes")
+            else:
+                raise AssertionError(argument_list)
+        else:
             raise AssertionError(argument_list)
         return subprocess.CompletedProcess(argument_list, 0, "{}", "")
+
+
+def _volume_not_found_result(
+    argument_list: list[str],
+    *,
+    operation: str,
+) -> subprocess.CompletedProcess[str]:
+    """Return one exact AWS CLI EBS absence diagnostic."""
+
+    return subprocess.CompletedProcess(
+        argument_list,
+        255,
+        "",
+        f"An error occurred (InvalidVolume.NotFound) when calling the {operation} operation: Volume absent",
+    )
 
 
 def test_retained_storage_deletes_only_freshly_reattested_task_resources() -> None:
@@ -767,6 +811,46 @@ def test_retained_storage_deletes_only_freshly_reattested_task_resources() -> No
         ["ec2", "delete-snapshot"],
         ["ec2", "delete-volume"],
     ]
+    assert [argument_list[2] for argument_list in aws.wait_argument_list] == ["volume-deleted"]
+
+
+@pytest.mark.parametrize(
+    ("state", "expected_delete_count", "expected_waiter_name_list"),
+    [
+        ("available", 1, ["volume-deleted"]),
+        ("in-use", 1, ["volume-available", "volume-deleted"]),
+        ("deleting", 0, ["volume-deleted"]),
+        ("deleted", 0, []),
+        ("not-found", 0, []),
+    ],
+)
+def test_retained_storage_converges_from_each_live_volume_state(
+    state: str,
+    expected_delete_count: int,
+    expected_waiter_name_list: list[str],
+) -> None:
+    """Available, attached, deleting, deleted, and absent volumes use distinct transitions."""
+
+    aws = _RetainedAws(state=state)
+
+    cleanup = RetainedStorageCleanup(aws)
+    cleanup.delete(_cleanup_inventory_get())
+
+    assert sum(item[:2] == ["ec2", "delete-volume"] for item in aws.mutation_argument_list) == expected_delete_count
+    assert [item[2] for item in aws.wait_argument_list] == expected_waiter_name_list
+    assert "volume-available" not in expected_waiter_name_list or state == "in-use"
+    assert cleanup.absent_get(_cleanup_inventory_get())
+
+
+def test_retained_storage_accepts_not_found_while_waiting_for_deletion() -> None:
+    """A deletion waiter NotFound is exact convergence rather than an availability retry."""
+
+    aws = _RetainedAws(state="deleting", wait_deleted_returns_not_found=True)
+
+    RetainedStorageCleanup(aws).delete(_cleanup_inventory_get())
+
+    assert [item[2] for item in aws.wait_argument_list] == ["volume-deleted"]
+    assert aws.mutation_argument_list == []
 
 
 @pytest.mark.parametrize(
@@ -776,7 +860,7 @@ def test_retained_storage_deletes_only_freshly_reattested_task_resources() -> No
         ({"availability_zone": "us-west-2a"}, "ownership is malformed"),
         ({"volume_type": "io2"}, "ownership is malformed"),
         ({"task_owned": False}, "another ownership identity"),
-        ({"state": "deleted"}, "ownership is malformed"),
+        ({"state": "error"}, "not safely deletable"),
     ],
 )
 def test_retained_storage_rejects_foreign_or_changed_volume_before_mutation(
@@ -1446,10 +1530,10 @@ def test_cleanup_absence_uses_every_service_native_owner() -> None:
     ]
 
 
-def test_cleanup_journal_records_progress_only_and_every_resume_replays_live_owners(
+def test_cleanup_restart_ignores_stale_progress_and_replays_live_owners(
     tmp_path: Path,
 ) -> None:
-    """A repeated hook re-resolves and safely replays every idempotent cleanup owner.
+    """A restart ignores old progress bytes and replays every owner from live state.
 
     Args:
         tmp_path: Temporary directory path.
@@ -1468,7 +1552,9 @@ def test_cleanup_journal_records_progress_only_and_every_resume_replays_live_own
         region="us-east-1",
         retained_volume_id_list=("vol-0123456789abcdef0",),
     )
-    subprocess.run(["git", "init", "--initial-branch=main", str(tmp_path)], check=True, capture_output=True)
+    stale_progress_path = tmp_path / ".git" / "agent-workflows" / "external-cleanup" / f"{COMMON_PREFIX}.json"
+    stale_progress_path.parent.mkdir(parents=True)
+    stale_progress_path.write_text('{"schema_version":2,"phase":"foreign-partial"}\n', encoding="utf-8")
     operation_list: list[str] = []
     inventory_resolver = _InventoryResolver(inventory)
     verifier = _Verifier(operation_list, absent=False)
@@ -1477,9 +1563,6 @@ def test_cleanup_journal_records_progress_only_and_every_resume_replays_live_own
         compute=_InventoryCleanup(operation_list, "compute"),
         identity=_Identity(),
         inventory_resolver=inventory_resolver,
-        journal=CleanupJournalStore(
-            project_root_path=tmp_path,
-        ),
         kms=_KmsCleanup(operation_list),
         retained=_InventoryCleanup(operation_list, "retained"),
         stack=_StackCleanup(operation_list),
@@ -1537,20 +1620,11 @@ def test_cleanup_journal_records_progress_only_and_every_resume_replays_live_own
     assert operation_list == ["readback"]
     verifier.absent = True
     assert manager.inventory(request)["external_resources_absent"] is True
-
-    journal_path = tmp_path / ".git" / "agent-workflows" / "external-cleanup" / f"{COMMON_PREFIX}.json"
-    journal = json.loads(journal_path.read_text(encoding="utf-8"))
-    assert journal == {"phase": "complete"}
-    journal["phase"] = "foreign-phase"
-    journal_path.write_text(json.dumps(journal), encoding="utf-8")
-    with pytest.raises(DevelopmentEnvironmentError, match="another shape"):
-        manager.destroy(request)
+    assert stale_progress_path.read_text(encoding="utf-8") == ('{"schema_version":2,"phase":"foreign-partial"}\n')
 
 
-def test_cleanup_resume_deletes_resource_that_became_visible_after_its_first_phase(tmp_path: Path) -> None:
-    """Final fresh enumeration blocks success and the next resume replays the owning phase."""
-
-    subprocess.run(["git", "init", "--initial-branch=main", str(tmp_path)], check=True, capture_output=True)
+def test_cleanup_restart_deletes_resource_that_became_visible_after_its_first_owner() -> None:
+    """Final fresh enumeration blocks success and the next restart replays the owner."""
     base_inventory = replace(
         _cleanup_inventory_get(),
         instance_id_list=(),
@@ -1600,7 +1674,6 @@ def test_cleanup_resume_deletes_resource_that_became_visible_after_its_first_pha
         compute=_LateCompute(),
         identity=_Identity(),
         inventory_resolver=_LateInventoryResolver(),
-        journal=CleanupJournalStore(project_root_path=tmp_path),
         kms=_KmsCleanup(operation_list),
         retained=_InventoryCleanup(operation_list, "retained"),
         stack=_StackCleanup(operation_list),
@@ -1612,14 +1685,11 @@ def test_cleanup_resume_deletes_resource_that_became_visible_after_its_first_pha
     with pytest.raises(DevelopmentEnvironmentError, match="Fresh live task resource remains"):
         manager.destroy(request)
 
-    journal_path = tmp_path / ".git" / "agent-workflows" / "external-cleanup" / f"{COMMON_PREFIX}.json"
-    assert json.loads(journal_path.read_text(encoding="utf-8")) == {"phase": "verify"}
     assert state.deleted_instance_id_list == []
 
     assert manager.destroy(request)["external_resources_absent"] is True
     assert state.deleted_instance_id_list == ["i-0123456789abcdef0"]
     assert state.resolve_count == 12
-    assert json.loads(journal_path.read_text(encoding="utf-8")) == {"phase": "complete"}
 
 
 def test_cleanup_inventory_rejects_primary_environment_before_discovery() -> None:
@@ -1630,7 +1700,6 @@ def test_cleanup_inventory_rejects_primary_environment_before_discovery() -> Non
         compute=_Unused(),
         identity=_PrimaryIdentity(),
         inventory_resolver=_Unused(),
-        journal=_Unused(),
         kms=_Unused(),
         retained=_Unused(),
         stack=_Unused(),

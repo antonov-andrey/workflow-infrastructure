@@ -31,9 +31,6 @@ from workflow_infrastructure.development_environment.cleanup.compute import (
 from workflow_infrastructure.development_environment.cleanup.inventory import (
     CleanupInventoryResolver,
 )
-from workflow_infrastructure.development_environment.cleanup.journal import (
-    CleanupJournalStore,
-)
 from workflow_infrastructure.development_environment.cleanup.kms import KmsCleanup
 from workflow_infrastructure.development_environment.cleanup.retained import (
     RetainedStorageCleanup,
@@ -225,9 +222,6 @@ class DevelopmentEnvironment:
             region=AWS_REGION,
             stack=self._stack,
         )
-        cleanup_journal = CleanupJournalStore(
-            project_root_path=project_root_path,
-        )
         cleanup_stack = StackCleanup(aws=self._aws, stack=self._stack)
         cleanup_compute = ComputeCleanup(
             aws=self._aws,
@@ -248,7 +242,6 @@ class DevelopmentEnvironment:
             compute=cleanup_compute,
             identity=self._identity,
             inventory_resolver=cleanup_inventory_resolver,
-            journal=cleanup_journal,
             kms=cleanup_kms,
             retained=cleanup_retained,
             stack=cleanup_stack,

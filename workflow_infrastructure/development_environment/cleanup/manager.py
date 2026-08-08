@@ -1,14 +1,9 @@
-"""Resumable orchestration of exact task-environment cleanup owners."""
+"""Live-state orchestration of exact task-environment cleanup owners."""
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Protocol
 
-from workflow_infrastructure.development_environment.cleanup.journal import (
-    CleanupJournalStore,
-    PHASE_LIST,
-)
 from workflow_infrastructure.development_environment.cleanup.model import (
     CleanupInventory,
     CleanupRequest,
@@ -105,7 +100,6 @@ class DevelopmentEnvironmentCleanupManager:
         compute: InventoryCleanupProtocol,
         identity: EnvironmentIdentityProtocol,
         inventory_resolver: InventoryResolverProtocol,
-        journal: CleanupJournalStore,
         kms: KmsCleanupProtocol,
         retained: InventoryCleanupProtocol,
         stack: StackCleanupProtocol,
@@ -119,7 +113,6 @@ class DevelopmentEnvironmentCleanupManager:
             compute: Compute.
             identity: Identity.
             inventory_resolver: Inventory resolver.
-            journal: Journal.
             kms: Kms.
             retained: Retained.
             stack: Stack.
@@ -131,7 +124,6 @@ class DevelopmentEnvironmentCleanupManager:
         self._compute = compute
         self._identity = identity
         self._inventory_resolver = inventory_resolver
-        self._journal = journal
         self._kms = kms
         self._retained = retained
         self._stack = stack
@@ -139,7 +131,7 @@ class DevelopmentEnvironmentCleanupManager:
         self._verifier = verifier
 
     def destroy(self, request: CleanupRequest) -> dict[str, object]:
-        """Resume deletion and return the registered provider absence proof.
+        """Converge current live resources and return the provider absence proof.
 
         Args:
             request: Validated operation request.
@@ -149,18 +141,20 @@ class DevelopmentEnvironmentCleanupManager:
         """
 
         self._request_validate(request)
-        journal_path, journal = self._journal.load_or_create(request)
-        for phase in PHASE_LIST[:-2]:
-            inventory = self._inventory_resolver.resolve(request)
-            self._inventory_identity_validate(inventory)
-            self._phase_run(phase, inventory)
-            if journal["phase"] == phase:
-                self._journal.advance(journal_path, journal)
-        inventory = self._inventory_resolver.resolve(request)
-        self._inventory_identity_validate(inventory)
+        self._compute.delete(self._inventory_get(request))
+
+        inventory = self._inventory_get(request)
+        self._stack.delete(inventory.data_stack_name)
+
+        inventory = self._inventory_get(request)
+        for bucket_name in inventory.bucket_name_list:
+            self._storage.delete(bucket_name, expected_owner=inventory.account_id)
+
+        self._retained.delete(self._inventory_get(request))
+        self._kms.retire(self._inventory_get(request))
+
+        inventory = self._inventory_get(request)
         self._verifier.validate(inventory)
-        if journal["phase"] == "verify":
-            self._journal.advance(journal_path, journal)
         return {**request.payload_get(), "external_resources_absent": True}
 
     def inventory(self, request: CleanupRequest) -> dict[str, object]:
@@ -174,8 +168,7 @@ class DevelopmentEnvironmentCleanupManager:
         """
 
         self._request_validate(request)
-        inventory = self._inventory_resolver.resolve(request)
-        self._inventory_identity_validate(inventory)
+        inventory = self._inventory_get(request)
         external_resources_absent = self._verifier.absent_get(inventory)
         return {
             **request.payload_get(),
@@ -194,27 +187,19 @@ class DevelopmentEnvironmentCleanupManager:
             ),
         }
 
-    def _phase_run(self, phase: str, inventory: CleanupInventory) -> None:
-        """Dispatch one journaled cleanup phase to its sole resource owner.
+    def _inventory_get(self, request: CleanupRequest) -> CleanupInventory:
+        """Resolve and attest one fresh live inventory for the next owner.
 
         Args:
-            phase: Phase.
-            inventory: Inventory.
+            request: Validated operation request.
+
+        Returns:
+            Fresh task-scoped inventory.
         """
 
-        if phase == "compute":
-            self._compute.delete(inventory)
-        elif phase == "data-stack":
-            self._stack.delete(inventory.data_stack_name)
-        elif phase == "storage":
-            for bucket_name in inventory.bucket_name_list:
-                self._storage.delete(bucket_name, expected_owner=inventory.account_id)
-        elif phase == "retained":
-            self._retained.delete(inventory)
-        elif phase == "kms":
-            self._kms.retire(inventory)
-        else:
-            raise DevelopmentEnvironmentError("Task cleanup journal has an unsupported phase")
+        inventory = self._inventory_resolver.resolve(request)
+        self._inventory_identity_validate(inventory)
+        return inventory
 
     def _request_validate(self, request: CleanupRequest) -> None:
         """Require the cleanup request to match the natural environment identity.
