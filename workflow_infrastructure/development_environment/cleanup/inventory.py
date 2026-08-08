@@ -9,6 +9,8 @@ from workflow_infrastructure.development_environment.aws import aws_cli_error_ma
 from workflow_infrastructure.development_environment.cleanup.aws_response import (
     json_object_get,
     tag_map_get,
+    task_ownership_tag_matches,
+    task_ownership_tag_validate,
 )
 from workflow_infrastructure.development_environment.cleanup.model import (
     CleanupInventory,
@@ -66,7 +68,9 @@ class CleanupInventoryResolver:
 
         Stack outputs are useful identities while a stack exists, but deletion
         never depends on retaining either stack. Deterministic names and exact
-        task tags recover retained resources after any partial cleanup.
+        task tags recover retained resources after any partial cleanup. An
+        exact current compute-stack output retains its instance target until
+        the stack is deleted after Session Manager absence has been proven.
 
         Args:
             request: Validated operation request.
@@ -75,6 +79,8 @@ class CleanupInventoryResolver:
             Every remaining task-owned cleanup resource identity.
         """
 
+        if request.common_prefix != self._identity.git_worktree:
+            raise DevelopmentEnvironmentError("Task cleanup request and inventory identity differ")
         data_output = self._owned_stack_output_get(self._identity.data_plane_stack_name)
         compute_output = self._owned_stack_output_get(self._identity.compute_stack_name)
         bucket_name_by_suffix = {
@@ -88,11 +94,14 @@ class CleanupInventoryResolver:
             raise DevelopmentEnvironmentError("Task data stack bucket outputs differ from deterministic identities")
 
         instance_id_set = set(self._tagged_instance_id_list_get())
+        stack_instance_id_set: set[str] = set()
         retained_volume_id_set = set(self._tagged_retained_volume_id_list_get())
-        kms_key_arn_set = set(self._tagged_kms_key_arn_list_get())
+        kms_key_arn_set = set(self._task_kms_key_arn_list_get())
         if compute_output is not None:
             if "InstanceId" in compute_output:
-                instance_id_set.add(_pattern_value_get(compute_output, "InstanceId", _EC2_INSTANCE_ID_PATTERN))
+                stack_instance_id = _pattern_value_get(compute_output, "InstanceId", _EC2_INSTANCE_ID_PATTERN)
+                stack_instance_id_set.add(stack_instance_id)
+                instance_id_set.add(stack_instance_id)
             if "RetainedVolumeId" in compute_output:
                 retained_volume_id_set.add(
                     _pattern_value_get(compute_output, "RetainedVolumeId", _EBS_VOLUME_ID_PATTERN)
@@ -103,18 +112,144 @@ class CleanupInventoryResolver:
         if alias_key_arn:
             kms_key_arn_set.add(alias_key_arn)
 
+        instance_id_list: list[str] = []
+        for candidate in sorted(instance_id_set):
+            instance_id = self._owned_instance_id_get(candidate)
+            if instance_id:
+                instance_id_list.append(instance_id)
+            elif candidate in stack_instance_id_set:
+                instance_id_list.append(candidate)
+        kms_key_arn_list = [
+            key_arn for candidate in sorted(kms_key_arn_set) if (key_arn := self._owned_kms_key_arn_get(candidate))
+        ]
+        retained_volume_id_list = [
+            volume_id
+            for candidate in sorted(retained_volume_id_set)
+            if (volume_id := self._owned_retained_volume_id_get(candidate))
+        ]
+
         return CleanupInventory(
+            account_id=self._account_id,
             bucket_name_list=tuple(sorted(bucket_name_by_suffix.values())),
             common_prefix=request.common_prefix,
             compute_stack_name=self._identity.compute_stack_name,
             data_stack_name=self._identity.data_plane_stack_name,
             environment_name=self._identity.environment_name,
-            instance_id_list=tuple(sorted(instance_id_set)),
+            instance_id_list=tuple(instance_id_list),
             kms_alias_name=f"alias/storage-{self._identity.environment_name}",
-            kms_key_arn_list=tuple(sorted(kms_key_arn_set)),
-            operation_identity=request.operation_identity,
-            retained_volume_id_list=tuple(sorted(retained_volume_id_set)),
+            kms_key_arn_list=tuple(kms_key_arn_list),
+            region=self._region,
+            retained_volume_id_list=tuple(retained_volume_id_list),
         )
+
+    def _owned_instance_id_get(self, instance_id: str) -> str:
+        """Re-attest one live instance's type, task owner, account and region."""
+
+        result = self._aws.run(["ec2", "describe-instances", "--instance-ids", instance_id], check=False)
+        if result.returncode != 0:
+            if aws_cli_error_matches(
+                result,
+                code_set=frozenset({"InvalidInstanceID.NotFound"}),
+                operation="DescribeInstances",
+            ):
+                return ""
+            raise DevelopmentEnvironmentError("Task instance ownership cannot be observed")
+        payload = json_object_get(result.stdout, label="task instance ownership")
+        reservation_list = payload.get("Reservations")
+        if not isinstance(reservation_list, list) or len(reservation_list) != 1:
+            raise DevelopmentEnvironmentError("Task instance ownership is malformed")
+        reservation = reservation_list[0]
+        instance_list = reservation.get("Instances") if isinstance(reservation, Mapping) else None
+        if (
+            not isinstance(reservation, Mapping)
+            or reservation.get("OwnerId") != self._account_id
+            or not isinstance(instance_list, list)
+            or len(instance_list) != 1
+            or not isinstance(instance_list[0], Mapping)
+            or instance_list[0].get("InstanceId") != instance_id
+        ):
+            raise DevelopmentEnvironmentError("Task instance ownership is malformed")
+        instance = instance_list[0]
+        placement = instance.get("Placement")
+        availability_zone = placement.get("AvailabilityZone") if isinstance(placement, Mapping) else None
+        state = instance.get("State")
+        state_name = state.get("Name") if isinstance(state, Mapping) else None
+        if not isinstance(availability_zone, str) or not availability_zone.startswith(self._region):
+            raise DevelopmentEnvironmentError("Task instance belongs to another region")
+        if state_name not in {"pending", "running", "shutting-down", "stopping", "stopped", "terminated"}:
+            raise DevelopmentEnvironmentError("Task instance has an unsupported lifecycle state")
+        self._task_tag_validate(tag_map_get(instance.get("Tags")), label="EC2 instance")
+        return instance_id
+
+    def _owned_retained_volume_id_get(self, volume_id: str) -> str:
+        """Re-attest one retained EBS volume before exposing deletion authority."""
+
+        result = self._aws.run(["ec2", "describe-volumes", "--volume-ids", volume_id], check=False)
+        if result.returncode != 0:
+            if aws_cli_error_matches(
+                result,
+                code_set=frozenset({"InvalidVolume.NotFound"}),
+                operation="DescribeVolumes",
+            ):
+                return ""
+            raise DevelopmentEnvironmentError("Task retained-volume ownership cannot be observed")
+        payload = json_object_get(result.stdout, label="task retained-volume ownership")
+        volume_list = payload.get("Volumes")
+        if (
+            not isinstance(volume_list, list)
+            or len(volume_list) != 1
+            or not isinstance(volume_list[0], Mapping)
+            or volume_list[0].get("VolumeId") != volume_id
+        ):
+            raise DevelopmentEnvironmentError("Task retained-volume ownership is malformed")
+        volume = volume_list[0]
+        availability_zone = volume.get("AvailabilityZone")
+        if not isinstance(availability_zone, str) or not availability_zone.startswith(self._region):
+            raise DevelopmentEnvironmentError("Task retained volume belongs to another region")
+        tag_map = tag_map_get(volume.get("Tags"))
+        self._task_tag_validate(tag_map, label="retained volume")
+        if tag_map.get("Name") != f"retained-{self._identity.environment_name}":
+            raise DevelopmentEnvironmentError("Task retained-volume name is ambiguous")
+        return volume_id
+
+    def _owned_kms_key_arn_get(self, key_arn: str, *, ownership_required: bool = True) -> str:
+        """Re-attest one live KMS key's type, task owner, account and region."""
+
+        key_arn = self._kms_key_arn_validate(key_arn)
+        result = self._aws.run(["kms", "describe-key", "--key-id", key_arn], check=False)
+        if result.returncode != 0:
+            if aws_cli_error_matches(
+                result,
+                code_set=frozenset({"NotFoundException"}),
+                operation="DescribeKey",
+            ):
+                return ""
+            raise DevelopmentEnvironmentError("Task KMS key ownership cannot be observed")
+        payload = json_object_get(result.stdout, label="task KMS key ownership")
+        metadata = payload.get("KeyMetadata")
+        if (
+            not isinstance(metadata, Mapping)
+            or metadata.get("Arn") != key_arn
+            or metadata.get("AWSAccountId") != self._account_id
+            or not isinstance(metadata.get("KeyState"), str)
+            or metadata.get("KeyManager") not in {"AWS", "CUSTOMER"}
+        ):
+            raise DevelopmentEnvironmentError("Task KMS key ownership is malformed")
+        if metadata["KeyManager"] != "CUSTOMER":
+            if ownership_required:
+                raise DevelopmentEnvironmentError("Task KMS key has another ownership identity")
+            return ""
+        tag_payload = self._aws.json_get(["kms", "list-resource-tags", "--key-id", key_arn])
+        tag_map = tag_map_get(tag_payload.get("Tags"), key_name="TagKey", value_name="TagValue")
+        if not task_ownership_tag_matches(
+            tag_map,
+            common_prefix=self._identity.git_worktree,
+            environment_name=self._identity.environment_name,
+        ):
+            if ownership_required:
+                raise DevelopmentEnvironmentError("Task KMS key has another ownership identity")
+            return ""
+        return key_arn
 
     def _alias_key_arn_get(self) -> str:
         """Return the exact task-tagged key targeted by the deterministic alias.
@@ -137,15 +272,6 @@ class CleanupInventoryResolver:
         metadata = payload.get("KeyMetadata")
         key_arn = metadata.get("Arn") if isinstance(metadata, Mapping) else None
         validated_key_arn = self._kms_key_arn_validate(key_arn)
-        tag_payload = self._aws.json_get(["kms", "list-resource-tags", "--key-id", validated_key_arn])
-        self._task_tag_validate(
-            tag_map_get(
-                tag_payload.get("Tags"),
-                key_name="TagKey",
-                value_name="TagValue",
-            ),
-            label="KMS alias target",
-        )
         return validated_key_arn
 
     def _kms_key_arn_validate(self, value: object) -> str:
@@ -196,7 +322,7 @@ class CleanupInventoryResolver:
         )
 
     def _tagged_instance_id_list_get(self) -> list[str]:
-        """Return every live EC2 instance carrying the exact task identity.
+        """Return every visible EC2 identity carrying the exact task identity.
 
         Returns:
             Sorted task instance identities.
@@ -209,7 +335,7 @@ class CleanupInventoryResolver:
                 "--filters",
                 f"Name=tag:EnvironmentName,Values={self._identity.environment_name}",
                 f"Name=tag:git-worktree,Values={self._identity.git_worktree}",
-                "Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped",
+                "Name=instance-state-name,Values=pending,running,shutting-down,stopping,stopped,terminated",
             ]
         )
         reservation_list = payload.get("Reservations", [])
@@ -227,33 +353,49 @@ class CleanupInventoryResolver:
                 instance_id_list.append(_pattern_value_get(instance, "InstanceId", _EC2_INSTANCE_ID_PATTERN))
         return _unique_sorted_get(instance_id_list, label="Task instance discovery")
 
-    def _tagged_kms_key_arn_list_get(self) -> list[str]:
-        """Return every KMS key carrying the exact task identity.
+    def _task_kms_key_arn_list_get(self) -> list[str]:
+        """Enumerate every regional KMS key and retain only exact task owners.
 
         Returns:
             Sorted task KMS key ARNs.
         """
 
-        payload = self._aws.json_get(
-            [
-                "resourcegroupstaggingapi",
-                "get-resources",
-                "--resource-type-filters",
-                "kms:key",
-                "--tag-filters",
-                f"Key=EnvironmentName,Values={self._identity.environment_name}",
-                f"Key=git-worktree,Values={self._identity.git_worktree}",
-            ]
-        )
-        mapping_list = payload.get("ResourceTagMappingList", [])
-        if not isinstance(mapping_list, list):
-            raise DevelopmentEnvironmentError("Task KMS key discovery is malformed")
+        marker = ""
         key_arn_list: list[str] = []
-        for item in mapping_list:
-            if not isinstance(item, Mapping):
+        seen_key_id_set: set[str] = set()
+        while True:
+            argument_list = ["kms", "list-keys", "--no-paginate"]
+            if marker:
+                argument_list.extend(["--marker", marker])
+            payload = self._aws.json_get(argument_list)
+            key_list = payload.get("Keys")
+            truncated = payload.get("Truncated")
+            next_marker = payload.get("NextMarker", "")
+            if (
+                not isinstance(key_list, list)
+                or not isinstance(truncated, bool)
+                or not isinstance(next_marker, str)
+                or (truncated and not next_marker)
+                or (not truncated and next_marker)
+            ):
                 raise DevelopmentEnvironmentError("Task KMS key discovery is malformed")
-            self._task_tag_validate(tag_map_get(item.get("Tags")), label="KMS key")
-            key_arn_list.append(self._kms_key_arn_validate(item.get("ResourceARN")))
+            for item in key_list:
+                key_id = item.get("KeyId") if isinstance(item, Mapping) else None
+                key_arn = self._kms_key_arn_validate(item.get("KeyArn") if isinstance(item, Mapping) else None)
+                if (
+                    not isinstance(key_id, str)
+                    or not key_id
+                    or key_id in seen_key_id_set
+                    or key_arn.rsplit("/", maxsplit=1)[-1] != key_id
+                ):
+                    raise DevelopmentEnvironmentError("Task KMS key discovery is malformed")
+                seen_key_id_set.add(key_id)
+                owned_key_arn = self._owned_kms_key_arn_get(key_arn, ownership_required=False)
+                if owned_key_arn:
+                    key_arn_list.append(owned_key_arn)
+            if not truncated:
+                break
+            marker = next_marker
         return _unique_sorted_get(key_arn_list, label="Task KMS key discovery")
 
     def _tagged_retained_volume_id_list_get(self) -> list[str]:
@@ -295,16 +437,12 @@ class CleanupInventoryResolver:
             label: Diagnostic owner label.
         """
 
-        if any(
-            tag_map.get(name) != value
-            for name, value in {
-                "EnvironmentClass": "development",
-                "EnvironmentName": self._identity.environment_name,
-                "ManagedBy": "CloudFormation",
-                "git-worktree": self._identity.git_worktree,
-            }.items()
-        ):
-            raise DevelopmentEnvironmentError(f"Task {label} has another ownership identity")
+        task_ownership_tag_validate(
+            tag_map,
+            common_prefix=self._identity.git_worktree,
+            environment_name=self._identity.environment_name,
+            label=label,
+        )
 
 
 def _name_value_map_get(

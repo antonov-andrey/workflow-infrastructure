@@ -22,9 +22,6 @@ from workflow_infrastructure.development_environment.error import (
     DevelopmentEnvironmentError,
 )
 from workflow_infrastructure.development_environment.clock import Clock
-from workflow_infrastructure.development_environment.cleanup_binding import (
-    TaskCleanupBinding,
-)
 from workflow_infrastructure.development_environment.cleanup import (
     DevelopmentEnvironmentCleanupManager,
 )
@@ -33,9 +30,6 @@ from workflow_infrastructure.development_environment.cleanup.compute import (
 )
 from workflow_infrastructure.development_environment.cleanup.inventory import (
     CleanupInventoryResolver,
-)
-from workflow_infrastructure.development_environment.cleanup.journal import (
-    CleanupJournalStore,
 )
 from workflow_infrastructure.development_environment.cleanup.kms import KmsCleanup
 from workflow_infrastructure.development_environment.cleanup.retained import (
@@ -192,7 +186,6 @@ class DevelopmentEnvironment:
 
         self._clock = clock
         self._identity = DevelopmentEnvironmentIdentity(environment_name, git_worktree=git_worktree)
-        self.cleanup_binding = TaskCleanupBinding(project_root_path=project_root_path)
         self._is_host = project_root_path.is_relative_to(
             self._identity.host_control_release_root_path
         ) or project_root_path.is_relative_to(self._identity.host_release_root_path)
@@ -229,10 +222,6 @@ class DevelopmentEnvironment:
             region=AWS_REGION,
             stack=self._stack,
         )
-        cleanup_journal = CleanupJournalStore(
-            binding=self.cleanup_binding,
-            inventory_resolver=cleanup_inventory_resolver,
-        )
         cleanup_stack = StackCleanup(aws=self._aws, stack=self._stack)
         cleanup_compute = ComputeCleanup(
             aws=self._aws,
@@ -253,7 +242,6 @@ class DevelopmentEnvironment:
             compute=cleanup_compute,
             identity=self._identity,
             inventory_resolver=cleanup_inventory_resolver,
-            journal=cleanup_journal,
             kms=cleanup_kms,
             retained=cleanup_retained,
             stack=cleanup_stack,

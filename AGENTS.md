@@ -34,6 +34,8 @@
 - `project-standards:submodule-developer`
 - `project-standards:typescript-developer`
 - `project-standards:zitadel-developer`
+- `linear-agent-tools:task-cleanup`
+- `linear-agent-tools:task-implement`
 - `workflow-container-agent-tools:workflow-container-developer` applies to workflow-container platform integration, runtime image platform selection, and deployment boundaries.
 
 ## Project Contract
@@ -104,8 +106,8 @@ project/
 - `workflow_infrastructure/development_environment/host/artifact/provider/`: provider-specific artifact resolution implementations; each provider owns one external artifact contract and depends on shared download, cache, verification, and Git-ref primitives without cross-provider orchestration.
 - `workflow_infrastructure/development_environment/host/bootstrap/`: idempotent Python host-bootstrap subsystem; artifacts, storage, network, k3s, services, and sequence manager are separate modules. CloudFormation UserData MUST only ensure the AMI-supported SSM agent. Exact artifact download and the minimal verified launcher belong to one versioned SSM Command document; neither boundary may duplicate bootstrap implementation in embedded shell.
 - `workflow_infrastructure/development_environment/product/`: infrastructure adapter for invoking WCC-owned Product release and lifecycle capabilities; it MUST NOT copy Product release, image, retention, or Kubernetes implementation.
-- `.worktree/`: task-worktree container whose reusable semantics are owned by `agent-workflows:goal-brainstorm`.
-- `worktree-bootstrap.yaml`: repository bootstrap-resource and external-cleanup-hook binding prepared by `agent-workflows:goal-brainstorm` and consumed for deletion by `agent-workflows:goal-delete`; task artifacts themselves live only in `project-goals`, and the hook delegates exact task-environment deletion to `development_environment_manage.py` without shell evaluation.
+- `.worktree/`: Linear task-worktree container whose reusable semantics are owned by `linear-agent-tools:task-implement` and `linear-agent-tools:task-cleanup`.
+- `worktree-bootstrap.yaml`: repository bootstrap-resource and typed cleanup-handler declaration consumed by `linear-agent-tools:task-implement` and `linear-agent-tools:task-cleanup`; the registered handler delegates exact task-environment inventory and deletion to `development_environment_manage.py` without shell evaluation or caller-supplied argv.
 
 ## AWS Execution Boundary
 

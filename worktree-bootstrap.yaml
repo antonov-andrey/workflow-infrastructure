@@ -1,13 +1,9 @@
-schema_version: 2
+schema_version: 3
 resource:
   copy_optional_path_list: []
   copy_required_path_list: []
   link_optional_path_list: []
   link_required_path_list: []
 cleanup:
-  command_argument_list:
-    - python
-    - development_environment_manage.py
-    - destroy
-    - --git-worktree
-    - "{common_prefix}"
+  handler_key_list:
+    - workflow-infrastructure-development-environment

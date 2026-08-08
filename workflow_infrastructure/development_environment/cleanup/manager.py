@@ -1,13 +1,9 @@
-"""Resumable orchestration of exact task-environment cleanup owners."""
+"""Live-state orchestration of exact task-environment cleanup owners."""
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Protocol
 
-from workflow_infrastructure.development_environment.cleanup.journal import (
-    CleanupJournalStore,
-)
 from workflow_infrastructure.development_environment.cleanup.model import (
     CleanupInventory,
     CleanupRequest,
@@ -25,13 +21,24 @@ class InventoryResolverProtocol(Protocol):
     """Declare the inventory resolver interface."""
 
     def resolve(self, request: CleanupRequest) -> CleanupInventory:
-        """Resolve one exact immutable inventory.
+        """Resolve one exact fresh live inventory.
 
         Args:
             request: Validated operation request.
 
         Returns:
-            One exact immutable inventory.
+            One exact fresh live inventory.
+        """
+
+
+class ComputeCleanupProtocol(Protocol):
+    """Declare the compute and Session Manager cleanup interface."""
+
+    def delete(self, inventory: CleanupInventory) -> None:
+        """Delete the compute resources.
+
+        Args:
+            inventory: Inventory.
         """
 
 
@@ -60,10 +67,11 @@ class KmsCleanupProtocol(Protocol):
 class StackCleanupProtocol(Protocol):
     """Declare the stack cleanup interface."""
 
-    def delete(self, stack_name: str) -> None:
+    def delete(self, inventory: CleanupInventory, stack_name: str) -> None:
         """Delete one exact stack.
 
         Args:
+            inventory: Fresh task identity and account/region fence.
             stack_name: Stack name.
         """
 
@@ -71,10 +79,11 @@ class StackCleanupProtocol(Protocol):
 class BucketCleanupProtocol(Protocol):
     """Declare the bucket cleanup interface."""
 
-    def delete(self, bucket_name: str) -> None:
+    def delete(self, inventory: CleanupInventory, bucket_name: str) -> None:
         """Delete one exact bucket.
 
         Args:
+            inventory: Fresh task identity and account/region fence.
             bucket_name: Bucket name.
         """
 
@@ -89,6 +98,9 @@ class AbsenceVerifierProtocol(Protocol):
             inventory: Inventory.
         """
 
+    def absent_get(self, inventory: CleanupInventory) -> bool:
+        """Return exact current aggregate absence without mutating resources."""
+
 
 class DevelopmentEnvironmentCleanupManager:
     """Sequence independently owned cleanup phases for one task environment."""
@@ -97,10 +109,9 @@ class DevelopmentEnvironmentCleanupManager:
         self,
         *,
         account: AccountVerifierProtocol,
-        compute: InventoryCleanupProtocol,
+        compute: ComputeCleanupProtocol,
         identity: EnvironmentIdentityProtocol,
         inventory_resolver: InventoryResolverProtocol,
-        journal: CleanupJournalStore,
         kms: KmsCleanupProtocol,
         retained: InventoryCleanupProtocol,
         stack: StackCleanupProtocol,
@@ -114,7 +125,6 @@ class DevelopmentEnvironmentCleanupManager:
             compute: Compute.
             identity: Identity.
             inventory_resolver: Inventory resolver.
-            journal: Journal.
             kms: Kms.
             retained: Retained.
             stack: Stack.
@@ -126,7 +136,6 @@ class DevelopmentEnvironmentCleanupManager:
         self._compute = compute
         self._identity = identity
         self._inventory_resolver = inventory_resolver
-        self._journal = journal
         self._kms = kms
         self._retained = retained
         self._stack = stack
@@ -134,7 +143,7 @@ class DevelopmentEnvironmentCleanupManager:
         self._verifier = verifier
 
     def destroy(self, request: CleanupRequest) -> dict[str, object]:
-        """Resume deletion and return the closed goal-delete absence proof.
+        """Converge current live resources and return the provider absence proof.
 
         Args:
             request: Validated operation request.
@@ -143,15 +152,25 @@ class DevelopmentEnvironmentCleanupManager:
             Closed cleanup result proving task resources absent.
         """
 
-        self._request_validate(request, allow_primary=False)
-        journal_path, journal = self._journal.load_or_create(request)
-        inventory = CleanupInventory.from_payload(journal["inventory"])
-        self._inventory_identity_validate(inventory)
-        while journal["phase"] != "complete":
-            self._phase_run(journal["phase"], inventory)
-            self._journal.advance(journal_path, journal)
-        self._verifier.validate(inventory)
-        return {**request.payload_get(), "external_resources_absent": True}
+        self._request_validate(request)
+        while True:
+            self._compute.delete(self._inventory_get(request))
+
+            inventory = self._inventory_get(request)
+            self._stack.delete(inventory, inventory.data_stack_name)
+
+            inventory = self._inventory_get(request)
+            for bucket_name in inventory.bucket_name_list:
+                self._storage.delete(inventory, bucket_name)
+
+            self._retained.delete(self._inventory_get(request))
+            self._kms.retire(self._inventory_get(request))
+
+            inventory = self._inventory_get(request)
+            if not self._verifier.absent_get(inventory):
+                continue
+            self._verifier.validate(inventory)
+            return {**request.payload_get(), "external_resources_absent": True}
 
     def inventory(self, request: CleanupRequest) -> dict[str, object]:
         """Return a non-mutating exact inventory for acceptance diagnostics.
@@ -163,12 +182,13 @@ class DevelopmentEnvironmentCleanupManager:
             A non-mutating exact inventory for acceptance diagnostics.
         """
 
-        self._request_validate(request, allow_primary=True)
-        inventory = self._inventory_resolver.resolve(request)
-        self._inventory_identity_validate(inventory)
+        self._request_validate(request)
+        inventory = self._inventory_get(request)
+        external_resources_absent = self._verifier.absent_get(inventory)
         return {
             **request.payload_get(),
             "environment_name": inventory.environment_name,
+            "external_resources_absent": external_resources_absent,
             "resource_identity_list": sorted(
                 [
                     inventory.compute_stack_name,
@@ -182,46 +202,38 @@ class DevelopmentEnvironmentCleanupManager:
             ),
         }
 
-    def _phase_run(self, phase: str, inventory: CleanupInventory) -> None:
-        """Dispatch one journaled cleanup phase to its sole resource owner.
-
-        Args:
-            phase: Phase.
-            inventory: Inventory.
-        """
-
-        if phase == "compute":
-            self._compute.delete(inventory)
-        elif phase == "data-stack":
-            self._stack.delete(inventory.data_stack_name)
-        elif phase == "storage":
-            for bucket_name in inventory.bucket_name_list:
-                self._storage.delete(bucket_name)
-        elif phase == "retained":
-            self._retained.delete(inventory)
-        elif phase == "kms":
-            self._kms.retire(inventory)
-        elif phase == "verify":
-            self._verifier.validate(inventory)
-        else:
-            raise DevelopmentEnvironmentError("Task cleanup journal has an unsupported phase")
-
-    def _request_validate(self, request: CleanupRequest, *, allow_primary: bool) -> None:
-        """Require the cleanup request to match the sealed environment and operation identity.
+    def _inventory_get(
+        self,
+        request: CleanupRequest,
+    ) -> CleanupInventory:
+        """Resolve and attest one fresh live inventory for the next owner.
 
         Args:
             request: Validated operation request.
-            allow_primary: Allow primary.
+
+        Returns:
+            Fresh task-scoped inventory.
         """
 
-        if not allow_primary and (self._identity.is_primary or not self._identity.git_worktree):
+        inventory = self._inventory_resolver.resolve(request)
+        self._inventory_identity_validate(inventory)
+        return inventory
+
+    def _request_validate(self, request: CleanupRequest) -> None:
+        """Require the cleanup request to match the natural environment identity.
+
+        Args:
+            request: Validated operation request.
+        """
+
+        if self._identity.is_primary or not self._identity.git_worktree:
             raise DevelopmentEnvironmentError("Task cleanup cannot target the primary development environment")
         if request.common_prefix != self._identity.git_worktree:
             raise DevelopmentEnvironmentError("Task cleanup request and environment identity differ")
         self._account.local_operator_context_validate()
 
     def _inventory_identity_validate(self, inventory: CleanupInventory) -> None:
-        """Require a durable inventory to remain inside the selected task scope.
+        """Require a fresh inventory to remain inside the selected task scope.
 
         Args:
             inventory: Inventory.

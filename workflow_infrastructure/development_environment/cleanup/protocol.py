@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import subprocess
 from typing import Protocol, Sequence
 
@@ -36,17 +35,6 @@ class AwsClientProtocol(Protocol):
 
         Returns:
             Completed text-mode subprocess result.
-        """
-
-
-class CleanupBindingProtocol(Protocol):
-    """Declare the cleanup binding interface."""
-
-    def common_directory_get(self) -> Path:
-        """Return the owning repository Git common directory.
-
-        Returns:
-            The owning repository Git common directory.
         """
 
 
