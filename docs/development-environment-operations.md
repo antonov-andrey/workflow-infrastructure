@@ -22,7 +22,7 @@ Host controller вызывает тот же utility с `--runtime-only` и ра
 python development_environment_manage.py <command>
 ```
 
-Каждая environment operation получает ровно один exact selector: `--environment-name primary` для основной среды либо `--git-worktree <task-common-prefix>` для task environment. Task selector сам выводит machine name `w<15-sha256-hex>`, проверяет full-prefix collision и никогда не fallback-ится на primary. До каждой task AWS mutation, включая lifecycle acceptance, он дополнительно требует sealed private-state binding exact schema-v2 cleanup declaration; отсутствие binding закрывает операцию. Команды не принимают или не печатают static credentials. До AWS mutation entrypoint проверяет identity, region, account-foundation, stack state и renewable stop lease.
+Каждая environment operation получает ровно один exact selector: `--environment-name primary` для основной среды либо `--git-worktree <task-common-prefix>` для task environment. Task selector сам выводит machine name `w<15-sha256-hex>`, проверяет full-prefix collision и никогда не fallback-ится на primary. Natural task identity и live AWS ownership являются единственной Product authority; cleanup receipt, manifest fingerprint и approval fingerprint отсутствуют. Команды не принимают или не печатают static credentials. До AWS mutation entrypoint проверяет identity, region, account-foundation, stack state и renewable stop lease.
 
 ## Создание И Обновление Инфраструктуры
 
@@ -138,13 +138,13 @@ AWS, infrastructure, cluster и Product findings показываются раз
 
 ## Удаление Task Environment
 
-Завершение goal не удаляет environment. Когда пользователь явно просит удалить exact task common prefix, `agent-workflows:goal-delete` вызывает recorded current project hook:
+Завершение issue или Project не удаляет environment. При authorized typed resource reconciliation `linear-agent-tools:task-cleanup` разрешает handler `workflow-infrastructure-development-environment` из closed provider registry и вызывает fixed Product boundary:
 
 ```bash
 python development_environment_manage.py destroy --git-worktree <common-prefix>
 ```
 
-Не запускайте эту команду вместо `goal-delete` вручную: она отвергает invocation без exact closed JSON stdin request, а external resources, worktrees, refs, private state и permanent registry-state transition принадлежат одной resumable transaction. Hook не требует сохранности обоих stacks или binding receipt для explicit cleanup. Уже отсутствующий target является success; resolver объединяет доступные stack outputs с deterministic bucket names и всеми exact-tagged instances, retained volumes и KMS keys. Hook закрывает sessions/leases, удаляет все task instances и compute stack, затем data stack, чтобы отозвать её IAM writers до очистки exact versioned buckets и multipart uploads. После этого он удаляет все retained task volumes и one-time snapshots, затем KMS alias, disables все task keys и принимает `PendingDeletion` с minimum AWS waiting period. Он возвращает exact machine-readable absence result, связанный с request operation identity; `git-worktree` tag inventory является final leak check, а не blanket deletion selector. Account-foundation, primary и другие task environments сохраняются. Папка goal в `project-goals` также сохраняется и получает deleted resource state.
+Не запускайте эту команду вручную: она отвергает invocation без exact closed JSON stdin `{schema_version, common_prefix}`, а registered handler владеет natural Project/issue/repository identity, lifetime, fixed invocation и readback. `destroy-inventory` использует тот же request для non-mutating exact `retained|absent` provider readback. Уже отсутствующий target является success; resolver объединяет доступные stack outputs с deterministic bucket names и всеми exact-tagged instances, retained volumes и KMS keys. `destroy` закрывает sessions/leases, удаляет все task instances и compute stack, затем data stack, чтобы отозвать её IAM writers до очистки exact versioned buckets и multipart uploads. После этого он удаляет все retained task volumes и one-time snapshots, затем KMS alias, disables все task keys и принимает `PendingDeletion` с minimum AWS waiting period. Exact machine-readable result содержит common prefix и `external_resources_absent`; `git-worktree` tag inventory является discovery source, а не blanket deletion selector. Account-foundation, primary и другие task environments сохраняются.
 
 ## Восстановление
 

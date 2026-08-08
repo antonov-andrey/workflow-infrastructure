@@ -22,9 +22,6 @@ from workflow_infrastructure.development_environment.error import (
     DevelopmentEnvironmentError,
 )
 from workflow_infrastructure.development_environment.clock import Clock
-from workflow_infrastructure.development_environment.cleanup_binding import (
-    TaskCleanupBinding,
-)
 from workflow_infrastructure.development_environment.cleanup import (
     DevelopmentEnvironmentCleanupManager,
 )
@@ -192,7 +189,6 @@ class DevelopmentEnvironment:
 
         self._clock = clock
         self._identity = DevelopmentEnvironmentIdentity(environment_name, git_worktree=git_worktree)
-        self.cleanup_binding = TaskCleanupBinding(project_root_path=project_root_path)
         self._is_host = project_root_path.is_relative_to(
             self._identity.host_control_release_root_path
         ) or project_root_path.is_relative_to(self._identity.host_release_root_path)
@@ -230,8 +226,8 @@ class DevelopmentEnvironment:
             stack=self._stack,
         )
         cleanup_journal = CleanupJournalStore(
-            binding=self.cleanup_binding,
             inventory_resolver=cleanup_inventory_resolver,
+            project_root_path=project_root_path,
         )
         cleanup_stack = StackCleanup(aws=self._aws, stack=self._stack)
         cleanup_compute = ComputeCleanup(

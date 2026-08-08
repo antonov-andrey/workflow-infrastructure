@@ -91,19 +91,29 @@ class RetainedStorageCleanup:
             inventory: Inventory.
         """
 
+        if not self.absent_get(inventory):
+            raise DevelopmentEnvironmentError("Task retained volume or snapshot absence is not proven")
+
+    def absent_get(self, inventory: CleanupInventory) -> bool:
+        """Return exact current retained-volume and snapshot absence."""
+
+        absent = True
         for retained_volume_id in inventory.retained_volume_id_list:
             result = self._aws.run(
                 ["ec2", "describe-volumes", "--volume-ids", retained_volume_id],
                 check=False,
             )
-            if result.returncode == 0 or not aws_cli_error_matches(
+            if result.returncode == 0:
+                absent = False
+            elif not aws_cli_error_matches(
                 result,
                 code_set=frozenset({"InvalidVolume.NotFound"}),
                 operation="DescribeVolumes",
             ):
                 raise DevelopmentEnvironmentError("Task retained volume absence is not proven")
         if self._owned_snapshot_id_list_get(inventory):
-            raise DevelopmentEnvironmentError("Task snapshots still exist")
+            absent = False
+        return absent
 
     def _owned_snapshot_id_list_get(self, inventory: CleanupInventory) -> list[str]:
         """Return owned snapshot identity list.

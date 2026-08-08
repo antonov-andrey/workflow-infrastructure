@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
+
+import development_environment_manage
 
 from workflow_infrastructure.development_environment.aws import (
     aws_cli_error_get,
@@ -40,7 +44,7 @@ from workflow_infrastructure.development_environment.error import (
 )
 
 COMMON_PREFIX = "2026-08-01-workflow-platform-hardening"
-OPERATION_IDENTITY = "1" * 32
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_cleanup_request_requires_exact_closed_stdin_identity() -> None:
@@ -51,7 +55,6 @@ def test_cleanup_request_requires_exact_closed_stdin_identity() -> None:
             {
                 "schema_version": 1,
                 "common_prefix": COMMON_PREFIX,
-                "operation_identity": OPERATION_IDENTITY,
             }
         ),
         expected_common_prefix=COMMON_PREFIX,
@@ -59,7 +62,6 @@ def test_cleanup_request_requires_exact_closed_stdin_identity() -> None:
     assert request.payload_get() == {
         "schema_version": 1,
         "common_prefix": COMMON_PREFIX,
-        "operation_identity": OPERATION_IDENTITY,
     }
     for payload in (
         "",
@@ -76,9 +78,67 @@ def test_cleanup_request_requires_exact_closed_stdin_identity() -> None:
                 "common_prefix": "2026-08-01-another-task",
             }
         ),
+        json.dumps(
+            {
+                **request.payload_get(),
+                "operation_identity": "1" * 32,
+            }
+        ),
     ):
         with pytest.raises(DevelopmentEnvironmentError):
             CleanupRequest.from_json(payload, expected_common_prefix=COMMON_PREFIX)
+
+
+def test_bootstrap_manifest_declares_only_the_registered_typed_cleanup_handler() -> None:
+    """The repository manifest contains no executable cleanup command or fingerprint."""
+
+    assert (PROJECT_ROOT / "worktree-bootstrap.yaml").read_text(encoding="utf-8") == """schema_version: 3
+resource:
+  copy_optional_path_list: []
+  copy_required_path_list: []
+  link_optional_path_list: []
+  link_required_path_list: []
+cleanup:
+  handler_key_list:
+    - workflow-infrastructure-development-environment
+"""
+
+
+def test_cleanup_cli_consumes_only_natural_identity_and_returns_exact_inventory(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fixed Product boundary needs no receipt, fingerprint, or operation identity."""
+
+    expected_response = {
+        "schema_version": 1,
+        "common_prefix": COMMON_PREFIX,
+        "environment_name": "w0123456789abcde",
+        "external_resources_absent": False,
+        "resource_identity_list": ["compute-w0123456789abcde"],
+    }
+
+    class _Cleanup:
+        @staticmethod
+        def inventory(request: CleanupRequest) -> dict[str, object]:
+            assert request == CleanupRequest(common_prefix=COMMON_PREFIX)
+            return expected_response
+
+    class _Environment:
+        cleanup = _Cleanup()
+
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+    monkeypatch.setattr(development_environment_manage, "DevelopmentEnvironment", _Environment)
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO(json.dumps({"schema_version": 1, "common_prefix": COMMON_PREFIX})),
+    )
+
+    assert development_environment_manage.main(["destroy-inventory", "--git-worktree", COMMON_PREFIX]) == 0
+    assert json.loads(capsys.readouterr().out) == expected_response
 
 
 class _S3Aws:
@@ -175,6 +235,7 @@ def test_versioned_bucket_cleanup_removes_uploads_versions_and_markers() -> None
     cleaner.delete("task-bucket")
     cleaner.delete("task-bucket")
     assert not aws.bucket_exists
+    assert cleaner.absent_get("task-bucket")
 
 
 def test_versioned_bucket_cleanup_rejects_partial_http_200_deletion() -> None:
@@ -239,6 +300,7 @@ def test_compute_cleanup_accepts_the_ec2_terminated_visibility_tombstone() -> No
 
     cleanup = ComputeCleanup(aws=_ComputeAws(), stack_cleanup=_Unused())
     cleanup.absence_validate(_cleanup_inventory_get())
+    assert cleanup.absent_get(_cleanup_inventory_get())
 
 
 def test_aws_absence_errors_require_exact_code_and_operation() -> None:
@@ -377,7 +439,6 @@ def _cleanup_inventory_get() -> CleanupInventory:
         instance_id_list=("i-0123456789abcdef0",),
         kms_alias_name="alias/storage-w0123456789abcde",
         kms_key_arn_list=("arn:aws:kms:us-east-1:463564115167:key/test",),
-        operation_identity=OPERATION_IDENTITY,
         retained_volume_id_list=("vol-0123456789abcdef0",),
     )
 
@@ -399,6 +460,7 @@ def test_kms_cleanup_accepts_physical_absence_after_pending_deletion() -> None:
     inventory = _cleanup_inventory_get()
     cleanup.retire(inventory)
     cleanup.absence_validate(inventory)
+    assert cleanup.absent_get(inventory)
 
 
 def test_kms_cleanup_rejects_expected_alias_retargeting() -> None:
@@ -418,28 +480,6 @@ class _Account:
         return None
 
 
-class _Binding:
-    """Expose the prepared Git common directory for cleanup state."""
-
-    def __init__(self, common_directory: Path) -> None:
-        """Initialize the binding dependencies.
-
-        Args:
-            common_directory: Common directory.
-        """
-
-        self.common_directory = common_directory
-
-    def common_directory_get(self) -> Path:
-        """Expose the prepared shared Git directory for cleanup binding storage.
-
-        Returns:
-            Prepared shared Git directory.
-        """
-
-        return self.common_directory
-
-
 class _Identity:
     """Declare every exact identity expected in the cleanup inventory."""
 
@@ -448,6 +488,13 @@ class _Identity:
     environment_name = "w0123456789abcde"
     git_worktree = COMMON_PREFIX
     is_primary = False
+
+
+class _PrimaryIdentity(_Identity):
+    """Expose an invalid primary identity at the typed cleanup boundary."""
+
+    git_worktree = ""
+    is_primary = True
 
 
 def _task_tag_list_get(*, name: str = "") -> list[dict[str, str]]:
@@ -634,7 +681,7 @@ def test_cleanup_inventory_accepts_an_already_absent_environment() -> None:
         identity=_Identity(),
         region="us-east-1",
         stack=_CleanupInventoryStack(),
-    ).resolve(CleanupRequest(common_prefix=COMMON_PREFIX, operation_identity=OPERATION_IDENTITY))
+    ).resolve(CleanupRequest(common_prefix=COMMON_PREFIX))
 
     assert inventory.instance_id_list == ()
     assert inventory.kms_key_arn_list == ()
@@ -676,7 +723,7 @@ def test_cleanup_inventory_unions_stack_outputs_with_every_tagged_orphan() -> No
                 ),
             }
         ),
-    ).resolve(CleanupRequest(common_prefix=COMMON_PREFIX, operation_identity=OPERATION_IDENTITY))
+    ).resolve(CleanupRequest(common_prefix=COMMON_PREFIX))
 
     assert inventory.instance_id_list == (stack_instance_id, tagged_instance_id)
     assert inventory.kms_key_arn_list == (stack_key_arn, tagged_key_arn)
@@ -759,6 +806,13 @@ class _InventoryCleanup:
         assert inventory.common_prefix == COMMON_PREFIX
         self._operation_list.append(f"verify:{self._label}")
 
+    def absent_get(self, inventory: CleanupInventory) -> bool:
+        """Record exact non-mutating absence readback for the inventory target."""
+
+        assert inventory.common_prefix == COMMON_PREFIX
+        self._operation_list.append(f"read:{self._label}")
+        return True
+
 
 class _StorageCleanup:
     """Record each task bucket deleted by the storage phase."""
@@ -790,6 +844,12 @@ class _StorageCleanup:
 
         self._operation_list.append(f"verify:bucket:{bucket_name}")
 
+    def absent_get(self, bucket_name: str) -> bool:
+        """Record exact non-mutating absence readback for one bucket."""
+
+        self._operation_list.append(f"read:bucket:{bucket_name}")
+        return True
+
 
 class _StackCleanup:
     """Record each task stack deleted by a stack phase."""
@@ -820,6 +880,12 @@ class _StackCleanup:
         """
 
         self._operation_list.append(f"verify:stack:{stack_name}")
+
+    def absent_get(self, stack_name: str) -> bool:
+        """Record exact non-mutating absence readback for one stack."""
+
+        self._operation_list.append(f"read:stack:{stack_name}")
+        return True
 
 
 class _KmsCleanup:
@@ -854,11 +920,18 @@ class _KmsCleanup:
         assert inventory.common_prefix == COMMON_PREFIX
         self._operation_list.append("verify:kms")
 
+    def absent_get(self, inventory: CleanupInventory) -> bool:
+        """Record exact non-mutating accepted-retirement readback."""
+
+        assert inventory.common_prefix == COMMON_PREFIX
+        self._operation_list.append("read:kms")
+        return True
+
 
 class _Verifier:
     """Record final absence verification after all cleanup phases."""
 
-    def __init__(self, operation_list: list[str]) -> None:
+    def __init__(self, operation_list: list[str], *, absent: bool = True) -> None:
         """Initialize the verifier dependencies.
 
         Args:
@@ -866,6 +939,7 @@ class _Verifier:
         """
 
         self._operation_list = operation_list
+        self.absent = absent
 
     def validate(self, inventory: CleanupInventory) -> None:
         """Validate the verifier contract.
@@ -876,6 +950,13 @@ class _Verifier:
 
         assert inventory.common_prefix == COMMON_PREFIX
         self._operation_list.append("verify")
+
+    def absent_get(self, inventory: CleanupInventory) -> bool:
+        """Return the configured exact aggregate absence readback."""
+
+        assert inventory.common_prefix == COMMON_PREFIX
+        self._operation_list.append("readback")
+        return self.absent
 
 
 def test_cleanup_absence_uses_service_native_owners() -> None:
@@ -900,8 +981,25 @@ def test_cleanup_absence_uses_service_native_owners() -> None:
         "verify:kms",
     ]
 
+    operation_list.clear()
+    assert CleanupAbsenceVerifier(
+        compute=_InventoryCleanup(operation_list, "compute"),
+        kms=_KmsCleanup(operation_list),
+        retained=_InventoryCleanup(operation_list, "retained"),
+        stack=_StackCleanup(operation_list),
+        storage=_StorageCleanup(operation_list),
+    ).absent_get(inventory)
+    assert operation_list == [
+        f"read:stack:{inventory.compute_stack_name}",
+        f"read:stack:{inventory.data_stack_name}",
+        "read:compute",
+        *(f"read:bucket:{bucket_name}" for bucket_name in inventory.bucket_name_list),
+        "read:retained",
+        "read:kms",
+    ]
 
-def test_cleanup_journal_resumes_each_phase_and_binds_operation(
+
+def test_cleanup_journal_resumes_each_phase_and_binds_natural_task_identity(
     tmp_path: Path,
 ) -> None:
     """A repeated hook resumes the same journal and never repeats completed phases.
@@ -919,30 +1017,28 @@ def test_cleanup_journal_resumes_each_phase_and_binds_operation(
         instance_id_list=("i-0123456789abcdef0",),
         kms_alias_name="alias/storage-w0123456789abcde",
         kms_key_arn_list=("arn:aws:kms:us-east-1:463564115167:key/test",),
-        operation_identity=OPERATION_IDENTITY,
         retained_volume_id_list=("vol-0123456789abcdef0",),
     )
+    subprocess.run(["git", "init", "--initial-branch=main", str(tmp_path)], check=True, capture_output=True)
     operation_list: list[str] = []
     inventory_resolver = _InventoryResolver(inventory)
+    verifier = _Verifier(operation_list, absent=False)
     manager = DevelopmentEnvironmentCleanupManager(
         account=_Account(),
         compute=_InventoryCleanup(operation_list, "compute"),
         identity=_Identity(),
         inventory_resolver=inventory_resolver,
         journal=CleanupJournalStore(
-            binding=_Binding(tmp_path),
             inventory_resolver=inventory_resolver,
+            project_root_path=tmp_path,
         ),
         kms=_KmsCleanup(operation_list),
         retained=_InventoryCleanup(operation_list, "retained"),
         stack=_StackCleanup(operation_list),
         storage=_StorageCleanup(operation_list),
-        verifier=_Verifier(operation_list),
+        verifier=verifier,
     )
-    request = CleanupRequest(
-        common_prefix=COMMON_PREFIX,
-        operation_identity=OPERATION_IDENTITY,
-    )
+    request = CleanupRequest(common_prefix=COMMON_PREFIX)
 
     assert manager.destroy(request) == {
         **request.payload_get(),
@@ -964,13 +1060,48 @@ def test_cleanup_journal_resumes_each_phase_and_binds_operation(
     assert manager.destroy(request)["external_resources_absent"] is True
     assert operation_list == ["verify"]
 
-    with pytest.raises(
-        DevelopmentEnvironmentError,
-        match="another operation",
-    ):
-        manager.destroy(
-            CleanupRequest(
-                common_prefix=COMMON_PREFIX,
-                operation_identity="2" * 32,
-            )
-        )
+    operation_list.clear()
+    retained = manager.inventory(request)
+    assert retained["external_resources_absent"] is False
+    assert retained["common_prefix"] == COMMON_PREFIX
+    assert retained["resource_identity_list"] == sorted(
+        [
+            inventory.compute_stack_name,
+            inventory.data_stack_name,
+            *inventory.instance_id_list,
+            inventory.kms_alias_name,
+            *inventory.kms_key_arn_list,
+            *inventory.retained_volume_id_list,
+            *inventory.bucket_name_list,
+        ]
+    )
+    assert operation_list == ["readback"]
+    verifier.absent = True
+    assert manager.inventory(request)["external_resources_absent"] is True
+
+    journal_path = tmp_path / ".git" / "agent-workflows" / "external-cleanup" / f"{COMMON_PREFIX}.json"
+    journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    journal["inventory"]["common_prefix"] = "2026-08-01-another-task"
+    journal_path.write_text(json.dumps(journal), encoding="utf-8")
+    with pytest.raises(DevelopmentEnvironmentError, match="another task"):
+        manager.destroy(request)
+
+
+def test_cleanup_inventory_rejects_primary_environment_before_discovery() -> None:
+    """Typed cleanup inventory is available only for one isolated task identity."""
+
+    manager = DevelopmentEnvironmentCleanupManager(
+        account=_Account(),
+        compute=_Unused(),
+        identity=_PrimaryIdentity(),
+        inventory_resolver=_Unused(),
+        journal=_Unused(),
+        kms=_Unused(),
+        retained=_Unused(),
+        stack=_Unused(),
+        storage=_Unused(),
+        verifier=_Unused(),
+    )
+
+    with pytest.raises(DevelopmentEnvironmentError, match="cannot target the primary"):
+        manager.inventory(CleanupRequest(common_prefix=COMMON_PREFIX))

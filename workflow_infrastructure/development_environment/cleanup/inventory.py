@@ -112,7 +112,6 @@ class CleanupInventoryResolver:
             instance_id_list=tuple(sorted(instance_id_set)),
             kms_alias_name=f"alias/storage-{self._identity.environment_name}",
             kms_key_arn_list=tuple(sorted(kms_key_arn_set)),
-            operation_identity=request.operation_identity,
             retained_volume_id_list=tuple(sorted(retained_volume_id_set)),
         )
 

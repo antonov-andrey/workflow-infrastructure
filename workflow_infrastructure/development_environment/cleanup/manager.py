@@ -89,6 +89,9 @@ class AbsenceVerifierProtocol(Protocol):
             inventory: Inventory.
         """
 
+    def absent_get(self, inventory: CleanupInventory) -> bool:
+        """Return exact current aggregate absence without mutating resources."""
+
 
 class DevelopmentEnvironmentCleanupManager:
     """Sequence independently owned cleanup phases for one task environment."""
@@ -134,7 +137,7 @@ class DevelopmentEnvironmentCleanupManager:
         self._verifier = verifier
 
     def destroy(self, request: CleanupRequest) -> dict[str, object]:
-        """Resume deletion and return the closed goal-delete absence proof.
+        """Resume deletion and return the registered provider absence proof.
 
         Args:
             request: Validated operation request.
@@ -143,7 +146,7 @@ class DevelopmentEnvironmentCleanupManager:
             Closed cleanup result proving task resources absent.
         """
 
-        self._request_validate(request, allow_primary=False)
+        self._request_validate(request)
         journal_path, journal = self._journal.load_or_create(request)
         inventory = CleanupInventory.from_payload(journal["inventory"])
         self._inventory_identity_validate(inventory)
@@ -163,12 +166,14 @@ class DevelopmentEnvironmentCleanupManager:
             A non-mutating exact inventory for acceptance diagnostics.
         """
 
-        self._request_validate(request, allow_primary=True)
+        self._request_validate(request)
         inventory = self._inventory_resolver.resolve(request)
         self._inventory_identity_validate(inventory)
+        external_resources_absent = self._verifier.absent_get(inventory)
         return {
             **request.payload_get(),
             "environment_name": inventory.environment_name,
+            "external_resources_absent": external_resources_absent,
             "resource_identity_list": sorted(
                 [
                     inventory.compute_stack_name,
@@ -206,15 +211,14 @@ class DevelopmentEnvironmentCleanupManager:
         else:
             raise DevelopmentEnvironmentError("Task cleanup journal has an unsupported phase")
 
-    def _request_validate(self, request: CleanupRequest, *, allow_primary: bool) -> None:
-        """Require the cleanup request to match the sealed environment and operation identity.
+    def _request_validate(self, request: CleanupRequest) -> None:
+        """Require the cleanup request to match the natural environment identity.
 
         Args:
             request: Validated operation request.
-            allow_primary: Allow primary.
         """
 
-        if not allow_primary and (self._identity.is_primary or not self._identity.git_worktree):
+        if self._identity.is_primary or not self._identity.git_worktree:
             raise DevelopmentEnvironmentError("Task cleanup cannot target the primary development environment")
         if request.common_prefix != self._identity.git_worktree:
             raise DevelopmentEnvironmentError("Task cleanup request and environment identity differ")

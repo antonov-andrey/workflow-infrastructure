@@ -16,15 +16,13 @@ _EC2_INSTANCE_ID_PATTERN = re.compile(r"i-[0-9a-f]{8,17}")
 _EBS_VOLUME_ID_PATTERN = re.compile(r"vol-[0-9a-f]{8,17}")
 _ENVIRONMENT_NAME_PATTERN = re.compile(r"[a-z][a-z0-9]{0,15}")
 _KMS_KEY_ARN_PATTERN = re.compile(r"arn:aws(?:-[a-z]+)?:kms:[a-z0-9-]+:[0-9]{12}:key/[A-Za-z0-9/_-]+")
-_OPERATION_IDENTITY_PATTERN = re.compile(r"[0-9a-f]{32}")
 
 
 @dataclass(frozen=True, slots=True)
 class CleanupRequest:
-    """One exact request issued by the goal-delete transaction."""
+    """One exact request issued by the registered cleanup provider."""
 
     common_prefix: str
-    operation_identity: str
     schema_version: int = 1
 
     @classmethod
@@ -45,19 +43,14 @@ class CleanupRequest:
             raise DevelopmentEnvironmentError("Task cleanup requires one exact JSON request on stdin") from error
         if (
             not isinstance(payload, dict)
-            or set(payload) != {"schema_version", "common_prefix", "operation_identity"}
+            or set(payload) != {"schema_version", "common_prefix"}
             or payload.get("schema_version") != 1
             or isinstance(payload.get("schema_version"), bool)
             or payload.get("common_prefix") != expected_common_prefix
             or _COMMON_PREFIX_PATTERN.fullmatch(expected_common_prefix) is None
-            or not isinstance(payload.get("operation_identity"), str)
-            or _OPERATION_IDENTITY_PATTERN.fullmatch(payload["operation_identity"]) is None
         ):
             raise DevelopmentEnvironmentError("Task cleanup request is malformed or has another task identity")
-        return cls(
-            common_prefix=expected_common_prefix,
-            operation_identity=payload["operation_identity"],
-        )
+        return cls(common_prefix=expected_common_prefix)
 
     def payload_get(self) -> dict[str, object]:
         """Return the canonical protocol payload.
@@ -81,9 +74,8 @@ class CleanupInventory:
     instance_id_list: tuple[str, ...]
     kms_alias_name: str
     kms_key_arn_list: tuple[str, ...]
-    operation_identity: str
     retained_volume_id_list: tuple[str, ...]
-    schema_version: int = 2
+    schema_version: int = 3
 
     @classmethod
     def from_payload(cls, payload: object) -> Self:
@@ -105,7 +97,6 @@ class CleanupInventory:
             "instance_id_list",
             "kms_alias_name",
             "kms_key_arn_list",
-            "operation_identity",
             "retained_volume_id_list",
             "schema_version",
         }
@@ -123,7 +114,7 @@ class CleanupInventory:
         retained_volume_id_list = payload["retained_volume_id_list"]
         environment_name = payload["environment_name"]
         if (
-            payload["schema_version"] != 2
+            payload["schema_version"] != 3
             or isinstance(payload["schema_version"], bool)
             or not isinstance(bucket_name_list, list)
             or len(bucket_name_list) != 4
@@ -140,7 +131,6 @@ class CleanupInventory:
                 for name in field_name_set - list_field_name_set - {"schema_version"}
             )
             or _COMMON_PREFIX_PATTERN.fullmatch(payload["common_prefix"]) is None
-            or _OPERATION_IDENTITY_PATTERN.fullmatch(payload["operation_identity"]) is None
             or _ENVIRONMENT_NAME_PATTERN.fullmatch(environment_name) is None
             or payload["compute_stack_name"] != f"compute-{environment_name}"
             or payload["data_stack_name"] != f"data-{environment_name}"
@@ -159,9 +149,8 @@ class CleanupInventory:
             instance_id_list=tuple(sorted(payload["instance_id_list"])),
             kms_alias_name=payload["kms_alias_name"],
             kms_key_arn_list=tuple(sorted(payload["kms_key_arn_list"])),
-            operation_identity=payload["operation_identity"],
             retained_volume_id_list=tuple(sorted(payload["retained_volume_id_list"])),
-            schema_version=2,
+            schema_version=3,
         )
 
     def payload_get(self) -> dict[str, object]:

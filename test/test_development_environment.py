@@ -5411,62 +5411,6 @@ def test_root_cli_composes_the_exact_repository_root(
     ).exists()
 
 
-def test_task_lifecycle_acceptance_validates_cleanup_binding_before_mutation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Acceptance is a task AWS mutation and must use the sealed cleanup binding.
-
-    Args:
-        monkeypatch: Pytest mutation fixture.
-    """
-
-    event_list: list[str] = []
-
-    class _CleanupBinding:
-        """Record sealed cleanup-binding validation before AWS acceptance."""
-
-        def validate(self, *, common_prefix: str) -> None:
-            """Validate the cleanup binding contract.
-
-            Args:
-                common_prefix: Exact task common prefix.
-            """
-
-            event_list.append(f"binding:{common_prefix}")
-
-    class _Lifecycle:
-        """Record the acceptance event after cleanup-binding validation."""
-
-        def acceptance_run(self) -> None:
-            """Record acceptance after the cleanup binding validation event."""
-
-            event_list.append("acceptance")
-
-    class _Environment:
-        """Expose the cleanup-binding and lifecycle owners consumed by the CLI."""
-
-        cleanup_binding = _CleanupBinding()
-        lifecycle = _Lifecycle()
-
-        def __init__(self, **kwargs: object) -> None:
-            """Initialize the environment dependencies.
-
-            Args:
-                **kwargs: Provider keyword arguments.
-            """
-
-            del kwargs
-
-    monkeypatch.setattr(
-        development_environment_manage,
-        "DevelopmentEnvironment",
-        _Environment,
-    )
-
-    assert development_environment_manage.main(["lifecycle-acceptance", "--git-worktree", "task-prefix"]) == 0
-    assert event_list == ["binding:task-prefix", "acceptance"]
-
-
 def test_deploy_starts_the_environment_before_product_publication(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -19,6 +19,9 @@ class InventoryAbsenceProtocol(Protocol):
             inventory: Inventory.
         """
 
+    def absent_get(self, inventory: CleanupInventory) -> bool:
+        """Return whether the exact inventory resources are absent."""
+
 
 class StackAbsenceProtocol(Protocol):
     """Declare the stack absence interface."""
@@ -30,6 +33,9 @@ class StackAbsenceProtocol(Protocol):
             stack_name: Stack name.
         """
 
+    def absent_get(self, stack_name: str) -> bool:
+        """Return whether one exact stack is absent."""
+
 
 class BucketAbsenceProtocol(Protocol):
     """Declare the bucket absence interface."""
@@ -40,6 +46,9 @@ class BucketAbsenceProtocol(Protocol):
         Args:
             bucket_name: Bucket name.
         """
+
+    def absent_get(self, bucket_name: str) -> bool:
+        """Return whether one exact bucket is absent."""
 
 
 class CleanupAbsenceVerifier:
@@ -84,3 +93,16 @@ class CleanupAbsenceVerifier:
             self._storage.absence_validate(bucket_name)
         self._retained.absence_validate(inventory)
         self._kms.absence_validate(inventory)
+
+    def absent_get(self, inventory: CleanupInventory) -> bool:
+        """Return aggregate exact absence after observing every service owner."""
+
+        state_list = [
+            self._stack.absent_get(inventory.compute_stack_name),
+            self._stack.absent_get(inventory.data_stack_name),
+            self._compute.absent_get(inventory),
+            *[self._storage.absent_get(bucket_name) for bucket_name in inventory.bucket_name_list],
+            self._retained.absent_get(inventory),
+            self._kms.absent_get(inventory),
+        ]
+        return all(state_list)

@@ -97,7 +97,7 @@ def _args_parse(argv_list: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--git-worktree",
         default="",
-        help="Exact goal common prefix selecting its isolated task environment.",
+        help="Exact task common prefix selecting its isolated development environment.",
     )
     parser.add_argument(
         "--release",
@@ -186,16 +186,6 @@ def main(argv_list: list[str]) -> int:
         runner=CommandRunner(),
     )
     try:
-        if args.git_worktree and args.command in {
-            "apply",
-            "deploy",
-            "lifecycle-acceptance",
-            "replace",
-            "restore",
-            "start",
-            "stop",
-        }:
-            environment.cleanup_binding.validate(common_prefix=args.git_worktree)
         if args.command == "account-foundation-apply":
             environment.account_foundation_apply()
         elif args.command == "apply":

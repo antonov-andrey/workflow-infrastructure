@@ -104,11 +104,30 @@ class ComputeCleanup:
             inventory: Inventory.
         """
 
+        if not self.absent_get(inventory):
+            raise DevelopmentEnvironmentError("Task instance or Session Manager session still exists")
+
+    def absent_get(self, inventory: CleanupInventory) -> bool:
+        """Return exact current compute and Session Manager absence."""
+
+        absent = True
         for instance_id in inventory.instance_id_list:
-            if self.instance_state_get(instance_id) not in {"absent", "terminated"}:
-                raise DevelopmentEnvironmentError("Task instance still exists")
+            state = self.instance_state_get(instance_id)
+            if state not in {
+                "absent",
+                "pending",
+                "running",
+                "shutting-down",
+                "stopped",
+                "stopping",
+                "terminated",
+            }:
+                raise DevelopmentEnvironmentError("Task instance has an unsupported lifecycle state")
+            if state not in {"absent", "terminated"}:
+                absent = False
             if self.active_session_id_list_get(instance_id):
-                raise DevelopmentEnvironmentError("Task Session Manager sessions remain active")
+                absent = False
+        return absent
 
     def active_session_id_list_get(self, instance_id: str) -> list[str]:
         """Return a complete duplicate-free active Session Manager inventory.

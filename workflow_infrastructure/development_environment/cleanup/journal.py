@@ -5,15 +5,13 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 from typing import Mapping, Protocol
 
 from workflow_infrastructure.development_environment.cleanup.model import (
     CleanupInventory,
     CleanupRequest,
-)
-from workflow_infrastructure.development_environment.cleanup.protocol import (
-    CleanupBindingProtocol,
 )
 from workflow_infrastructure.development_environment.error import (
     DevelopmentEnvironmentError,
@@ -50,18 +48,18 @@ class CleanupJournalStore:
     def __init__(
         self,
         *,
-        binding: CleanupBindingProtocol,
         inventory_resolver: InventoryResolverProtocol,
+        project_root_path: Path,
     ) -> None:
         """Initialize the cleanup journal store dependencies.
 
         Args:
-            binding: Binding.
             inventory_resolver: Inventory resolver.
+            project_root_path: Exact workflow-infrastructure checkout root.
         """
 
-        self._binding = binding
         self._inventory_resolver = inventory_resolver
+        self._project_root_path = project_root_path.absolute()
 
     def load_or_create(self, request: CleanupRequest) -> tuple[Path, dict[str, object]]:
         """Load the same operation or durably create its immutable inventory.
@@ -77,15 +75,12 @@ class CleanupJournalStore:
         if path.exists():
             payload = self._load(path)
             inventory = CleanupInventory.from_payload(payload["inventory"])
-            if (
-                inventory.common_prefix != request.common_prefix
-                or inventory.operation_identity != request.operation_identity
-            ):
-                raise DevelopmentEnvironmentError("Task cleanup journal belongs to another operation")
+            if inventory.common_prefix != request.common_prefix:
+                raise DevelopmentEnvironmentError("Task cleanup journal belongs to another task")
             return path, payload
         inventory = self._inventory_resolver.resolve(request)
         payload: dict[str, object] = {
-            "schema_version": 2,
+            "schema_version": 3,
             "phase": "compute",
             "inventory": inventory.payload_get(),
         }
@@ -116,12 +111,38 @@ class CleanupJournalStore:
             The path.
         """
 
-        return (
-            self._binding.common_directory_get()
-            / "agent-workflows"
-            / "external-cleanup"
-            / f"{request.common_prefix}.json"
+        return self._common_directory_get() / "agent-workflows" / "external-cleanup" / f"{request.common_prefix}.json"
+
+    def _common_directory_get(self) -> Path:
+        """Return the physical Git common directory that owns the existing journal."""
+
+        environment = os.environ.copy()
+        for name in tuple(environment):
+            if name == "GIT_DIR" or name == "GIT_WORK_TREE" or name.startswith("GIT_CONFIG"):
+                environment.pop(name, None)
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self._project_root_path),
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ],
+            capture_output=True,
+            check=False,
+            env=environment,
+            text=True,
         )
+        if result.returncode != 0:
+            raise DevelopmentEnvironmentError("Task cleanup Git common directory is unavailable")
+        try:
+            common_directory = Path(result.stdout.strip()).resolve(strict=True)
+        except OSError as error:
+            raise DevelopmentEnvironmentError("Task cleanup Git common directory is unavailable") from error
+        if not common_directory.is_dir():
+            raise DevelopmentEnvironmentError("Task cleanup Git common directory is unavailable")
+        return common_directory
 
     @staticmethod
     def _load(path: Path) -> dict[str, object]:
@@ -141,7 +162,7 @@ class CleanupJournalStore:
         if (
             not isinstance(payload, dict)
             or set(payload) != {"inventory", "phase", "schema_version"}
-            or payload.get("schema_version") != 2
+            or payload.get("schema_version") != 3
             or payload.get("phase") not in PHASE_LIST
         ):
             raise DevelopmentEnvironmentError("Task cleanup journal has another shape")

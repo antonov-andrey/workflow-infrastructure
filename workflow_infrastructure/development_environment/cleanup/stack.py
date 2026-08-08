@@ -53,5 +53,10 @@ class StackCleanup:
             stack_name: Stack name.
         """
 
-        if self._stack.payload_get(stack_name, is_required=False):
+        if not self.absent_get(stack_name):
             raise DevelopmentEnvironmentError(f"Task stack {stack_name} still exists after deletion")
+
+    def absent_get(self, stack_name: str) -> bool:
+        """Return exact current CloudFormation absence for one stack."""
+
+        return not self._stack.payload_get(stack_name, is_required=False)

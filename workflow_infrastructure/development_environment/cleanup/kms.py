@@ -80,11 +80,16 @@ class KmsCleanup:
             inventory: Inventory.
         """
 
-        for key_arn in inventory.kms_key_arn_list:
-            if self._key_state_get(key_arn) not in {"PendingDeletion", "absent"}:
-                raise DevelopmentEnvironmentError("Task KMS key PendingDeletion proof is unavailable")
-        if self._relevant_alias_by_name_map_get(inventory):
-            raise DevelopmentEnvironmentError("Task KMS alias ownership still exists")
+        if not self.absent_get(inventory):
+            raise DevelopmentEnvironmentError("Task KMS key or alias retirement proof is unavailable")
+
+    def absent_get(self, inventory: CleanupInventory) -> bool:
+        """Return exact accepted-retirement state for every key and alias."""
+
+        key_state_list = [self._key_state_get(key_arn) for key_arn in inventory.kms_key_arn_list]
+        key_absent = all(state in {"PendingDeletion", "absent"} for state in key_state_list)
+        alias_absent = not self._relevant_alias_by_name_map_get(inventory)
+        return key_absent and alias_absent
 
     def _relevant_alias_by_name_map_get(self, inventory: CleanupInventory) -> dict[str, str]:
         """Return the exact task alias and every other custom alias targeting its key.

@@ -53,8 +53,13 @@ class VersionedBucketCleaner:
             bucket_name: Bucket name.
         """
 
-        if self._exists(bucket_name):
+        if not self.absent_get(bucket_name):
             raise DevelopmentEnvironmentError(f"Task bucket {bucket_name} absence is not proven")
+
+    def absent_get(self, bucket_name: str) -> bool:
+        """Return exact current absence for one versioned bucket."""
+
+        return not self._exists(bucket_name)
 
     def _exists(self, bucket_name: str) -> bool:
         """Report whether the exact versioned cleanup bucket still exists.
