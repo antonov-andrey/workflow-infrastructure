@@ -1322,6 +1322,30 @@ class _InventoryCleanup:
         assert inventory.common_prefix == COMMON_PREFIX
         self._operation_list.append(self._label)
 
+    def session_absence_validate(self, inventory: CleanupInventory, instance_id_list: list[str]) -> None:
+        """Record the final Session Manager absence readback.
+
+        Args:
+            inventory: Current task inventory.
+            instance_id_list: Invocation-owned instance identities.
+        """
+
+        assert self._label == "compute"
+        assert inventory.common_prefix == COMMON_PREFIX
+        self._operation_list.append(f"verify:session:{','.join(instance_id_list)}")
+
+    def session_list_terminate(self, inventory: CleanupInventory, instance_id_list: list[str]) -> None:
+        """Record final active and disconnected session termination.
+
+        Args:
+            inventory: Current task inventory.
+            instance_id_list: Invocation-owned instance identities.
+        """
+
+        assert self._label == "compute"
+        assert inventory.common_prefix == COMMON_PREFIX
+        self._operation_list.append(f"session:{','.join(instance_id_list)}")
+
     def absence_validate(self, inventory: CleanupInventory) -> None:
         """Record service-native absence proof for the inventory target.
 
@@ -1584,9 +1608,11 @@ def test_cleanup_restart_ignores_stale_progress_and_replays_live_owners(
         "bucket:bucket-d",
         "retained",
         "kms",
+        "session:i-0123456789abcdef0",
         "verify",
+        "verify:session:i-0123456789abcdef0",
     ]
-    assert inventory_resolver.resolve_count == 6
+    assert inventory_resolver.resolve_count == 7
     operation_list.clear()
     assert manager.destroy(request)["external_resources_absent"] is True
     assert operation_list == [
@@ -1598,9 +1624,11 @@ def test_cleanup_restart_ignores_stale_progress_and_replays_live_owners(
         "bucket:bucket-d",
         "retained",
         "kms",
+        "session:i-0123456789abcdef0",
         "verify",
+        "verify:session:i-0123456789abcdef0",
     ]
-    assert inventory_resolver.resolve_count == 12
+    assert inventory_resolver.resolve_count == 14
 
     operation_list.clear()
     retained = manager.inventory(request)
@@ -1621,6 +1649,129 @@ def test_cleanup_restart_ignores_stale_progress_and_replays_live_owners(
     verifier.absent = True
     assert manager.inventory(request)["external_resources_absent"] is True
     assert stale_progress_path.read_text(encoding="utf-8") == ('{"schema_version":2,"phase":"foreign-partial"}\n')
+
+
+def test_cleanup_terminates_late_disconnected_session_after_instance_leaves_inventory() -> None:
+    """Invocation-owned instance progress closes SSM after EC2 inventory drops the target."""
+
+    instance_id = "i-0123456789abcdef0"
+    session_id = "andrey-late-disconnected-session"
+
+    class _LiveState:
+        instance_visible = True
+        late_session_visible = False
+        session_target_argument_list: list[str] = []
+        terminated_session_id_list: list[str] = []
+
+    state = _LiveState()
+
+    class _LateSessionAws:
+        @staticmethod
+        def json_get(argument_list: list[str]) -> dict[str, object]:
+            assert argument_list[:3] == ["ssm", "describe-sessions", "--state"]
+            assert argument_list[3] == "Active"
+            assert argument_list[4:6] == ["--filters", f"key=Target,value={instance_id}"]
+            state.session_target_argument_list.append(argument_list[5])
+            if not state.late_session_visible:
+                return {"Sessions": []}
+            return {
+                "Sessions": [
+                    {
+                        "SessionId": session_id,
+                        "Status": "Disconnected",
+                        "Target": instance_id,
+                    }
+                ]
+            }
+
+        @staticmethod
+        def run(argument_list: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+            del check
+            if argument_list[:2] == ["ec2", "describe-instances"]:
+                if not state.instance_visible:
+                    return subprocess.CompletedProcess(
+                        argument_list,
+                        255,
+                        "",
+                        "An error occurred (InvalidInstanceID.NotFound) when calling the DescribeInstances "
+                        "operation: The instance does not exist",
+                    )
+                return subprocess.CompletedProcess(
+                    argument_list,
+                    0,
+                    json.dumps(
+                        {
+                            "Reservations": [
+                                {
+                                    "Instances": [
+                                        {
+                                            "InstanceId": instance_id,
+                                            "Placement": {"AvailabilityZone": "us-east-1a"},
+                                            "State": {"Name": "running"},
+                                            "Tags": _task_tag_list_get(),
+                                        }
+                                    ],
+                                    "OwnerId": "463564115167",
+                                }
+                            ]
+                        }
+                    ),
+                    "",
+                )
+            if tuple(argument_list[:2]) in {("ec2", "stop-instances"), ("ec2", "wait")}:
+                return subprocess.CompletedProcess(argument_list, 0, "{}", "")
+            if argument_list[:2] == ["ssm", "terminate-session"]:
+                assert argument_list == ["ssm", "terminate-session", "--session-id", session_id]
+                state.terminated_session_id_list.append(session_id)
+                state.late_session_visible = False
+                return subprocess.CompletedProcess(argument_list, 0, "{}", "")
+            raise AssertionError(argument_list)
+
+    class _ComputeStackCleanup:
+        @staticmethod
+        def delete(stack_name: str) -> None:
+            assert stack_name == _Identity.compute_stack_name
+            state.instance_visible = False
+            state.late_session_visible = True
+
+    base_inventory = replace(_cleanup_inventory_get(), instance_id_list=())
+
+    class _LiveInventoryResolver:
+        @staticmethod
+        def resolve(request: CleanupRequest) -> CleanupInventory:
+            assert request.common_prefix == COMMON_PREFIX
+            return replace(base_inventory, instance_id_list=(instance_id,) if state.instance_visible else ())
+
+    class _FinalVerifier:
+        @staticmethod
+        def validate(inventory: CleanupInventory) -> None:
+            assert inventory.instance_id_list == ()
+            assert not state.late_session_visible
+
+        @staticmethod
+        def absent_get(inventory: CleanupInventory) -> bool:
+            return not inventory.instance_id_list and not state.late_session_visible
+
+    operation_list: list[str] = []
+    manager = DevelopmentEnvironmentCleanupManager(
+        account=_Account(),
+        compute=ComputeCleanup(aws=_LateSessionAws(), stack_cleanup=_ComputeStackCleanup()),
+        identity=_Identity(),
+        inventory_resolver=_LiveInventoryResolver(),
+        kms=_KmsCleanup(operation_list),
+        retained=_InventoryCleanup(operation_list, "retained"),
+        stack=_StackCleanup(operation_list),
+        storage=_StorageCleanup(operation_list),
+        verifier=_FinalVerifier(),
+    )
+
+    assert manager.destroy(CleanupRequest(common_prefix=COMMON_PREFIX))["external_resources_absent"] is True
+    assert state.terminated_session_id_list == [session_id]
+    assert state.session_target_argument_list == [
+        f"key=Target,value={instance_id}",
+        f"key=Target,value={instance_id}",
+        f"key=Target,value={instance_id}",
+    ]
 
 
 def test_cleanup_restart_deletes_resource_that_became_visible_after_its_first_owner() -> None:
@@ -1658,6 +1809,16 @@ def test_cleanup_restart_deletes_resource_that_became_visible_after_its_first_ow
                 state.deleted_instance_id_list.extend(inventory.instance_id_list)
                 state.visible = False
 
+        @staticmethod
+        def session_absence_validate(inventory: CleanupInventory, instance_id_list: list[str]) -> None:
+            assert inventory.common_prefix == COMMON_PREFIX
+            assert instance_id_list == sorted(instance_id_list)
+
+        @staticmethod
+        def session_list_terminate(inventory: CleanupInventory, instance_id_list: list[str]) -> None:
+            assert inventory.common_prefix == COMMON_PREFIX
+            assert instance_id_list == sorted(instance_id_list)
+
     class _FreshVerifier:
         @staticmethod
         def validate(inventory: CleanupInventory) -> None:
@@ -1689,7 +1850,7 @@ def test_cleanup_restart_deletes_resource_that_became_visible_after_its_first_ow
 
     assert manager.destroy(request)["external_resources_absent"] is True
     assert state.deleted_instance_id_list == ["i-0123456789abcdef0"]
-    assert state.resolve_count == 12
+    assert state.resolve_count == 14
 
 
 def test_cleanup_inventory_rejects_primary_environment_before_discovery() -> None:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Mapping, Protocol
 
 from workflow_infrastructure.development_environment.aws import aws_cli_error_matches
@@ -56,7 +57,7 @@ class ComputeCleanup:
         for instance_id in inventory.instance_id_list:
             state = self._instance_state_get(inventory, instance_id)
             if state not in {"absent", "terminated"}:
-                self._session_list_terminate(inventory, instance_id)
+                self.session_list_terminate(inventory, [instance_id])
                 state = self._instance_state_get(inventory, instance_id)
             if state == "running":
                 self._aws.run(["ec2", "stop-instances", "--instance-ids", instance_id])
@@ -111,6 +112,34 @@ class ComputeCleanup:
         if not self.absent_get(inventory):
             raise DevelopmentEnvironmentError("Task instance or Session Manager session still exists")
 
+    def session_absence_validate(self, inventory: CleanupInventory, instance_id_list: list[str]) -> None:
+        """Require fresh active-session absence for exact previously owned instances.
+
+        Args:
+            inventory: Current task identity used to reject a now-foreign instance.
+            instance_id_list: Sorted instance identities attested during this cleanup run.
+        """
+
+        self._instance_id_list_validate(instance_id_list)
+        for instance_id in instance_id_list:
+            self._instance_state_get(inventory, instance_id)
+            if self.active_session_id_list_get(instance_id):
+                raise DevelopmentEnvironmentError("Task Session Manager session still exists")
+
+    def session_list_terminate(self, inventory: CleanupInventory, instance_id_list: list[str]) -> None:
+        """Terminate active and disconnected sessions for exact previously owned instances.
+
+        Args:
+            inventory: Current task identity used to reject a now-foreign instance.
+            instance_id_list: Sorted instance identities attested during this cleanup run.
+        """
+
+        self._instance_id_list_validate(instance_id_list)
+        for instance_id in instance_id_list:
+            self._instance_state_get(inventory, instance_id)
+            for session_id in self.active_session_id_list_get(instance_id):
+                self._aws.run(["ssm", "terminate-session", "--session-id", session_id])
+
     def absent_get(self, inventory: CleanupInventory) -> bool:
         """Return exact current compute and Session Manager absence."""
 
@@ -162,6 +191,7 @@ class ComputeCleanup:
                 not isinstance(item, Mapping)
                 or not isinstance(item.get("SessionId"), str)
                 or item.get("Target") != instance_id
+                or item.get("Status") not in {"Connected", "Connecting", "Disconnected", "Terminating"}
                 for item in session_list
             ):
                 raise DevelopmentEnvironmentError("Task Session Manager inventory is malformed")
@@ -175,6 +205,21 @@ class ComputeCleanup:
         if len(session_id_list) != len(set(session_id_list)):
             raise DevelopmentEnvironmentError("Task Session Manager inventory repeats a session")
         return session_id_list
+
+    def _instance_id_list_validate(self, instance_id_list: list[str]) -> None:
+        """Require one sorted duplicate-free subset of the invocation-owned identities.
+
+        Args:
+            instance_id_list: Instance identities retained by the cleanup workflow.
+        """
+
+        if (
+            not isinstance(instance_id_list, list)
+            or instance_id_list != sorted(instance_id_list)
+            or len(instance_id_list) != len(set(instance_id_list))
+            or any(re.fullmatch(r"i-[0-9a-f]{8,17}", instance_id) is None for instance_id in instance_id_list)
+        ):
+            raise DevelopmentEnvironmentError("Task cleanup instance progress is malformed")
 
     def _instance_state_get(self, inventory: CleanupInventory, instance_id: str) -> str:
         """Return one exact task-owned EC2 state or the synthetic absent state.
@@ -232,17 +277,3 @@ class ComputeCleanup:
         if not isinstance(state_name, str):
             raise DevelopmentEnvironmentError("Task instance state is malformed")
         return state_name
-
-    def _session_list_terminate(self, inventory: CleanupInventory, instance_id: str) -> None:
-        """Terminate every active SSM session bound to the retiring instance.
-
-        Args:
-            inventory: Fresh live task inventory.
-            instance_id: Exact instance identity.
-        """
-
-        for session_id in self.active_session_id_list_get(instance_id):
-            state = self._instance_state_get(inventory, instance_id)
-            if state in {"absent", "terminated"}:
-                raise DevelopmentEnvironmentError("Task instance disappeared before session termination")
-            self._aws.run(["ssm", "terminate-session", "--session-id", session_id])

@@ -31,6 +31,33 @@ class InventoryResolverProtocol(Protocol):
         """
 
 
+class ComputeCleanupProtocol(Protocol):
+    """Declare the compute and Session Manager cleanup interface."""
+
+    def delete(self, inventory: CleanupInventory) -> None:
+        """Delete the compute resources.
+
+        Args:
+            inventory: Inventory.
+        """
+
+    def session_absence_validate(self, inventory: CleanupInventory, instance_id_list: list[str]) -> None:
+        """Require fresh session absence for every invocation-owned instance.
+
+        Args:
+            inventory: Current task identity.
+            instance_id_list: Exact observed task-owned instance identities.
+        """
+
+    def session_list_terminate(self, inventory: CleanupInventory, instance_id_list: list[str]) -> None:
+        """Terminate sessions for every invocation-owned instance.
+
+        Args:
+            inventory: Current task identity.
+            instance_id_list: Exact observed task-owned instance identities.
+        """
+
+
 class InventoryCleanupProtocol(Protocol):
     """Declare the inventory cleanup interface."""
 
@@ -97,7 +124,7 @@ class DevelopmentEnvironmentCleanupManager:
         self,
         *,
         account: AccountVerifierProtocol,
-        compute: InventoryCleanupProtocol,
+        compute: ComputeCleanupProtocol,
         identity: EnvironmentIdentityProtocol,
         inventory_resolver: InventoryResolverProtocol,
         kms: KmsCleanupProtocol,
@@ -141,20 +168,24 @@ class DevelopmentEnvironmentCleanupManager:
         """
 
         self._request_validate(request)
-        self._compute.delete(self._inventory_get(request))
+        observed_instance_id_set: set[str] = set()
+        self._compute.delete(self._inventory_get(request, observed_instance_id_set=observed_instance_id_set))
 
-        inventory = self._inventory_get(request)
+        inventory = self._inventory_get(request, observed_instance_id_set=observed_instance_id_set)
         self._stack.delete(inventory.data_stack_name)
 
-        inventory = self._inventory_get(request)
+        inventory = self._inventory_get(request, observed_instance_id_set=observed_instance_id_set)
         for bucket_name in inventory.bucket_name_list:
             self._storage.delete(bucket_name, expected_owner=inventory.account_id)
 
-        self._retained.delete(self._inventory_get(request))
-        self._kms.retire(self._inventory_get(request))
+        self._retained.delete(self._inventory_get(request, observed_instance_id_set=observed_instance_id_set))
+        self._kms.retire(self._inventory_get(request, observed_instance_id_set=observed_instance_id_set))
 
-        inventory = self._inventory_get(request)
+        inventory = self._inventory_get(request, observed_instance_id_set=observed_instance_id_set)
+        self._compute.session_list_terminate(inventory, sorted(observed_instance_id_set))
+        inventory = self._inventory_get(request, observed_instance_id_set=observed_instance_id_set)
         self._verifier.validate(inventory)
+        self._compute.session_absence_validate(inventory, sorted(observed_instance_id_set))
         return {**request.payload_get(), "external_resources_absent": True}
 
     def inventory(self, request: CleanupRequest) -> dict[str, object]:
@@ -187,11 +218,17 @@ class DevelopmentEnvironmentCleanupManager:
             ),
         }
 
-    def _inventory_get(self, request: CleanupRequest) -> CleanupInventory:
+    def _inventory_get(
+        self,
+        request: CleanupRequest,
+        *,
+        observed_instance_id_set: set[str] | None = None,
+    ) -> CleanupInventory:
         """Resolve and attest one fresh live inventory for the next owner.
 
         Args:
             request: Validated operation request.
+            observed_instance_id_set: Invocation-local owned instance progress.
 
         Returns:
             Fresh task-scoped inventory.
@@ -199,6 +236,8 @@ class DevelopmentEnvironmentCleanupManager:
 
         inventory = self._inventory_resolver.resolve(request)
         self._inventory_identity_validate(inventory)
+        if observed_instance_id_set is not None:
+            observed_instance_id_set.update(inventory.instance_id_list)
         return inventory
 
     def _request_validate(self, request: CleanupRequest) -> None:
