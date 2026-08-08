@@ -7,6 +7,8 @@ from typing import Mapping
 from workflow_infrastructure.development_environment.aws import aws_cli_error_matches
 from workflow_infrastructure.development_environment.cleanup.aws_response import (
     json_object_get,
+    tag_map_get,
+    task_ownership_tag_validate,
 )
 from workflow_infrastructure.development_environment.cleanup.model import (
     CleanupInventory,
@@ -38,6 +40,8 @@ class KmsCleanup:
             inventory: Inventory.
         """
 
+        for key_arn in inventory.kms_key_arn_list:
+            self._key_state_get(inventory, key_arn)
         relevant_alias_by_name_map = self._relevant_alias_by_name_map_get(inventory)
         if not inventory.kms_key_arn_list:
             if relevant_alias_by_name_map:
@@ -50,14 +54,19 @@ class KmsCleanup:
         ):
             raise DevelopmentEnvironmentError("Task KMS alias ownership is ambiguous")
         if relevant_alias_by_name_map:
+            alias_target_key_id = relevant_alias_by_name_map[inventory.kms_alias_name]
+            alias_target_key_arn = next(
+                key_arn for key_arn in inventory.kms_key_arn_list if _key_id_get(key_arn) == alias_target_key_id
+            )
+            self._key_state_get(inventory, alias_target_key_arn)
             self._aws.run(["kms", "delete-alias", "--alias-name", inventory.kms_alias_name])
         for key_arn in inventory.kms_key_arn_list:
-            key_state = self._key_state_get(key_arn)
+            key_state = self._key_state_get(inventory, key_arn)
             if key_state == "absent":
                 continue
             if key_state == "Enabled":
                 self._aws.run(["kms", "disable-key", "--key-id", key_arn])
-                key_state = "Disabled"
+                key_state = self._key_state_get(inventory, key_arn)
             if key_state == "Disabled":
                 self._aws.run(
                     [
@@ -69,7 +78,7 @@ class KmsCleanup:
                         "7",
                     ]
                 )
-                key_state = self._key_state_get(key_arn)
+                key_state = self._key_state_get(inventory, key_arn)
             if key_state != "PendingDeletion":
                 raise DevelopmentEnvironmentError("Task KMS key did not enter PendingDeletion")
 
@@ -86,7 +95,7 @@ class KmsCleanup:
     def absent_get(self, inventory: CleanupInventory) -> bool:
         """Return exact accepted-retirement state for every key and alias."""
 
-        key_state_list = [self._key_state_get(key_arn) for key_arn in inventory.kms_key_arn_list]
+        key_state_list = [self._key_state_get(inventory, key_arn) for key_arn in inventory.kms_key_arn_list]
         key_absent = all(state in {"PendingDeletion", "absent"} for state in key_state_list)
         alias_absent = not self._relevant_alias_by_name_map_get(inventory)
         return key_absent and alias_absent
@@ -120,16 +129,20 @@ class KmsCleanup:
                 result[name] = target_key_id
         return result
 
-    def _key_state_get(self, key_arn: str) -> str:
-        """Read the exact lifecycle state of the task-owned KMS key.
+    def _key_state_get(self, inventory: CleanupInventory, key_arn: str) -> str:
+        """Re-attest and read the exact lifecycle state of the task-owned KMS key.
 
         Args:
+            inventory: Fresh live task inventory.
             key_arn: Exact KMS key ARN.
 
         Returns:
             Current AWS KMS key state.
         """
 
+        key_arn_prefix = f"arn:aws:kms:{inventory.region}:{inventory.account_id}:key/"
+        if not key_arn.startswith(key_arn_prefix) or not key_arn.removeprefix(key_arn_prefix):
+            raise DevelopmentEnvironmentError("Task KMS key belongs to another account or region")
         result = self._aws.run(
             ["kms", "describe-key", "--key-id", key_arn],
             check=False,
@@ -144,8 +157,20 @@ class KmsCleanup:
             raise DevelopmentEnvironmentError("Task KMS key state cannot be observed")
         payload = json_object_get(result.stdout, label="task KMS key")
         metadata = payload.get("KeyMetadata")
-        if not isinstance(metadata, Mapping) or metadata.get("Arn") != key_arn:
+        if (
+            not isinstance(metadata, Mapping)
+            or metadata.get("Arn") != key_arn
+            or metadata.get("AWSAccountId") != inventory.account_id
+            or metadata.get("KeyManager") != "CUSTOMER"
+        ):
             raise DevelopmentEnvironmentError("Task KMS key identity is malformed")
+        tag_payload = self._aws.json_get(["kms", "list-resource-tags", "--key-id", key_arn])
+        task_ownership_tag_validate(
+            tag_map_get(tag_payload.get("Tags"), key_name="TagKey", value_name="TagValue"),
+            common_prefix=inventory.common_prefix,
+            environment_name=inventory.environment_name,
+            label="KMS key",
+        )
         state = metadata.get("KeyState")
         if not isinstance(state, str) or not state:
             raise DevelopmentEnvironmentError("Task KMS key state is malformed")

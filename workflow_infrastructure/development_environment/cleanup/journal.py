@@ -7,12 +7,9 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
-from typing import Mapping, Protocol
+from typing import Mapping
 
-from workflow_infrastructure.development_environment.cleanup.model import (
-    CleanupInventory,
-    CleanupRequest,
-)
+from workflow_infrastructure.development_environment.cleanup.model import CleanupRequest
 from workflow_infrastructure.development_environment.error import (
     DevelopmentEnvironmentError,
 )
@@ -28,62 +25,36 @@ PHASE_LIST = (
 )
 
 
-class InventoryResolverProtocol(Protocol):
-    """Declare the inventory resolver interface."""
-
-    def resolve(self, request: CleanupRequest) -> CleanupInventory:
-        """Return the exact task inventory.
-
-        Args:
-            request: Validated operation request.
-
-        Returns:
-            The exact task inventory.
-        """
-
-
 class CleanupJournalStore:
-    """Load, bind, advance, and durably persist one cleanup operation."""
+    """Load, advance, and durably persist cleanup progress without resource authority."""
 
     def __init__(
         self,
         *,
-        inventory_resolver: InventoryResolverProtocol,
         project_root_path: Path,
     ) -> None:
         """Initialize the cleanup journal store dependencies.
 
         Args:
-            inventory_resolver: Inventory resolver.
             project_root_path: Exact workflow-infrastructure checkout root.
         """
 
-        self._inventory_resolver = inventory_resolver
         self._project_root_path = project_root_path.absolute()
 
     def load_or_create(self, request: CleanupRequest) -> tuple[Path, dict[str, object]]:
-        """Load the same operation or durably create its immutable inventory.
+        """Load the same operation or durably create its first progress phase.
 
         Args:
             request: Validated operation request.
 
         Returns:
-            The same operation or durably create its immutable inventory.
+            Journal path and current progress.
         """
 
         path = self._path_get(request)
         if path.exists():
-            payload = self._load(path)
-            inventory = CleanupInventory.from_payload(payload["inventory"])
-            if inventory.common_prefix != request.common_prefix:
-                raise DevelopmentEnvironmentError("Task cleanup journal belongs to another task")
-            return path, payload
-        inventory = self._inventory_resolver.resolve(request)
-        payload: dict[str, object] = {
-            "schema_version": 3,
-            "phase": "compute",
-            "inventory": inventory.payload_get(),
-        }
+            return path, self._load(path)
+        payload: dict[str, object] = {"phase": "compute"}
         atomic_json_write(path, payload)
         return path, payload
 
@@ -159,12 +130,7 @@ class CleanupJournalStore:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise DevelopmentEnvironmentError("Task cleanup journal is unavailable or malformed") from error
-        if (
-            not isinstance(payload, dict)
-            or set(payload) != {"inventory", "phase", "schema_version"}
-            or payload.get("schema_version") != 3
-            or payload.get("phase") not in PHASE_LIST
-        ):
+        if not isinstance(payload, dict) or set(payload) != {"phase"} or payload.get("phase") not in PHASE_LIST:
             raise DevelopmentEnvironmentError("Task cleanup journal has another shape")
         return payload
 

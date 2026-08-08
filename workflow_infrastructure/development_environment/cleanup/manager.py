@@ -7,6 +7,7 @@ from typing import Protocol
 
 from workflow_infrastructure.development_environment.cleanup.journal import (
     CleanupJournalStore,
+    PHASE_LIST,
 )
 from workflow_infrastructure.development_environment.cleanup.model import (
     CleanupInventory,
@@ -25,13 +26,13 @@ class InventoryResolverProtocol(Protocol):
     """Declare the inventory resolver interface."""
 
     def resolve(self, request: CleanupRequest) -> CleanupInventory:
-        """Resolve one exact immutable inventory.
+        """Resolve one exact fresh live inventory.
 
         Args:
             request: Validated operation request.
 
         Returns:
-            One exact immutable inventory.
+            One exact fresh live inventory.
         """
 
 
@@ -148,12 +149,17 @@ class DevelopmentEnvironmentCleanupManager:
 
         self._request_validate(request)
         journal_path, journal = self._journal.load_or_create(request)
-        inventory = CleanupInventory.from_payload(journal["inventory"])
+        for phase in PHASE_LIST[:-2]:
+            inventory = self._inventory_resolver.resolve(request)
+            self._inventory_identity_validate(inventory)
+            self._phase_run(phase, inventory)
+            if journal["phase"] == phase:
+                self._journal.advance(journal_path, journal)
+        inventory = self._inventory_resolver.resolve(request)
         self._inventory_identity_validate(inventory)
-        while journal["phase"] != "complete":
-            self._phase_run(journal["phase"], inventory)
-            self._journal.advance(journal_path, journal)
         self._verifier.validate(inventory)
+        if journal["phase"] == "verify":
+            self._journal.advance(journal_path, journal)
         return {**request.payload_get(), "external_resources_absent": True}
 
     def inventory(self, request: CleanupRequest) -> dict[str, object]:
@@ -206,8 +212,6 @@ class DevelopmentEnvironmentCleanupManager:
             self._retained.delete(inventory)
         elif phase == "kms":
             self._kms.retire(inventory)
-        elif phase == "verify":
-            self._verifier.validate(inventory)
         else:
             raise DevelopmentEnvironmentError("Task cleanup journal has an unsupported phase")
 
@@ -225,7 +229,7 @@ class DevelopmentEnvironmentCleanupManager:
         self._account.local_operator_context_validate()
 
     def _inventory_identity_validate(self, inventory: CleanupInventory) -> None:
-        """Require a durable inventory to remain inside the selected task scope.
+        """Require a fresh inventory to remain inside the selected task scope.
 
         Args:
             inventory: Inventory.

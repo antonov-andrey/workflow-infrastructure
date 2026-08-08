@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import io
 import json
 from pathlib import Path
@@ -284,9 +285,12 @@ class _ComputeAws:
                             "Instances": [
                                 {
                                     "InstanceId": "i-0123456789abcdef0",
+                                    "Placement": {"AvailabilityZone": "us-east-1a"},
                                     "State": {"Name": "terminated"},
+                                    "Tags": _task_tag_list_get(),
                                 }
-                            ]
+                            ],
+                            "OwnerId": "463564115167",
                         }
                     ]
                 }
@@ -301,6 +305,69 @@ def test_compute_cleanup_accepts_the_ec2_terminated_visibility_tombstone() -> No
     cleanup = ComputeCleanup(aws=_ComputeAws(), stack_cleanup=_Unused())
     cleanup.absence_validate(_cleanup_inventory_get())
     assert cleanup.absent_get(_cleanup_inventory_get())
+
+
+@pytest.mark.parametrize(
+    ("owner_id", "availability_zone", "task_owned", "error_pattern"),
+    [
+        ("463564115167", "us-east-1a", False, "another ownership identity"),
+        ("000000000000", "us-east-1a", True, "inventory is malformed"),
+        ("463564115167", "us-west-2a", True, "another region"),
+    ],
+)
+def test_compute_cleanup_rejects_foreign_instance_before_any_mutation(
+    owner_id: str,
+    availability_zone: str,
+    task_owned: bool,
+    error_pattern: str,
+) -> None:
+    """A stale instance ID cannot authorize SSM, stop, stack, or termination mutations."""
+
+    class _ForeignComputeAws:
+        mutation_argument_list: list[list[str]] = []
+
+        @staticmethod
+        def json_get(argument_list: list[str]) -> dict[str, object]:
+            raise AssertionError(argument_list)
+
+        def run(self, argument_list: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+            del check
+            if argument_list[:2] != ["ec2", "describe-instances"]:
+                self.mutation_argument_list.append(argument_list)
+                return subprocess.CompletedProcess(argument_list, 0, "{}", "")
+            tag_list = _task_tag_list_get()
+            if not task_owned:
+                tag_list = [item for item in tag_list if item["Key"] != "git-worktree"]
+            return subprocess.CompletedProcess(
+                argument_list,
+                0,
+                json.dumps(
+                    {
+                        "Reservations": [
+                            {
+                                "OwnerId": owner_id,
+                                "Instances": [
+                                    {
+                                        "InstanceId": "i-0123456789abcdef0",
+                                        "Placement": {"AvailabilityZone": availability_zone},
+                                        "State": {"Name": "running"},
+                                        "Tags": tag_list,
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                "",
+            )
+
+    aws = _ForeignComputeAws()
+    cleanup = ComputeCleanup(aws=aws, stack_cleanup=_Unused())
+
+    with pytest.raises(DevelopmentEnvironmentError, match=error_pattern):
+        cleanup.delete(_cleanup_inventory_get())
+
+    assert aws.mutation_argument_list == []
 
 
 def test_aws_absence_errors_require_exact_code_and_operation() -> None:
@@ -355,16 +422,31 @@ def test_aws_absence_errors_require_exact_code_and_operation() -> None:
 class _KmsAws:
     """Stateful KMS boundary for alias-fencing and delayed physical deletion."""
 
-    def __init__(self, *, alias_target_key_id: str | None, key_state: str) -> None:
+    def __init__(
+        self,
+        *,
+        alias_target_key_id: str | None,
+        account_id: str = "463564115167",
+        key_state: str,
+        key_manager: str = "CUSTOMER",
+        task_owned: bool = True,
+    ) -> None:
         """Initialize the KMS AWS dependencies.
 
         Args:
             alias_target_key_id: Exact alias target key identity.
+            account_id: Current key account identity.
             key_state: Key state.
+            key_manager: Current key manager type.
+            task_owned: Whether the current key retains exact task tags.
         """
 
         self.alias_target_key_id = alias_target_key_id
+        self.account_id = account_id
         self.key_state = key_state
+        self.key_manager = key_manager
+        self.task_owned = task_owned
+        self.mutation_argument_list: list[list[str]] = []
 
     def json_get(self, argument_list: list[str]) -> dict[str, object]:
         """Return the scripted KMS cleanup AWS response.
@@ -376,6 +458,11 @@ class _KmsAws:
             Decoded JSON object.
         """
 
+        if argument_list[:2] == ["kms", "list-resource-tags"]:
+            tag_list = _kms_task_tag_list_get()
+            if not self.task_owned:
+                tag_list = [item for item in tag_list if item["TagKey"] != "git-worktree"]
+            return {"Tags": tag_list}
         assert argument_list == ["kms", "list-aliases"]
         alias_list = []
         if self.alias_target_key_id is not None:
@@ -414,13 +501,26 @@ class _KmsAws:
                     {
                         "KeyMetadata": {
                             "Arn": "arn:aws:kms:us-east-1:463564115167:key/test",
+                            "AWSAccountId": self.account_id,
+                            "KeyManager": self.key_manager,
                             "KeyState": self.key_state,
                         }
                     }
                 ),
                 "",
             )
-        raise AssertionError(argument_list)
+        if argument_list[:2] == ["kms", "delete-alias"]:
+            self.mutation_argument_list.append(argument_list)
+            self.alias_target_key_id = None
+        elif argument_list[:2] == ["kms", "disable-key"]:
+            self.mutation_argument_list.append(argument_list)
+            self.key_state = "Disabled"
+        elif argument_list[:2] == ["kms", "schedule-key-deletion"]:
+            self.mutation_argument_list.append(argument_list)
+            self.key_state = "PendingDeletion"
+        else:
+            raise AssertionError(argument_list)
+        return subprocess.CompletedProcess(argument_list, 0, "{}", "")
 
 
 def _cleanup_inventory_get() -> CleanupInventory:
@@ -431,6 +531,7 @@ def _cleanup_inventory_get() -> CleanupInventory:
     """
 
     return CleanupInventory(
+        account_id="463564115167",
         bucket_name_list=("bucket-a", "bucket-b", "bucket-c", "bucket-d"),
         common_prefix=COMMON_PREFIX,
         compute_stack_name=_Identity.compute_stack_name,
@@ -439,18 +540,16 @@ def _cleanup_inventory_get() -> CleanupInventory:
         instance_id_list=("i-0123456789abcdef0",),
         kms_alias_name="alias/storage-w0123456789abcde",
         kms_key_arn_list=("arn:aws:kms:us-east-1:463564115167:key/test",),
+        region="us-east-1",
         retained_volume_id_list=("vol-0123456789abcdef0",),
     )
 
 
 def test_cleanup_inventory_rejects_mutation_identities_outside_its_closed_shape() -> None:
-    """A corrupted durable journal cannot broaden the AWS mutation scope."""
-
-    payload = _cleanup_inventory_get().payload_get()
-    payload["instance_id_list"] = ["primary-instance"]
+    """An invalid runtime identity cannot broaden the AWS mutation scope."""
 
     with pytest.raises(DevelopmentEnvironmentError, match="inventory is malformed"):
-        CleanupInventory.from_payload(payload)
+        replace(_cleanup_inventory_get(), instance_id_list=("primary-instance",))
 
 
 def test_kms_cleanup_accepts_physical_absence_after_pending_deletion() -> None:
@@ -469,6 +568,52 @@ def test_kms_cleanup_rejects_expected_alias_retargeting() -> None:
     cleanup = KmsCleanup(_KmsAws(alias_target_key_id="another-key", key_state="Enabled"))
     with pytest.raises(DevelopmentEnvironmentError, match="ownership is ambiguous"):
         cleanup.retire(_cleanup_inventory_get())
+
+
+def test_kms_cleanup_retires_only_the_freshly_reattested_task_key() -> None:
+    """Every KMS mutation is fenced by current key identity and task tags."""
+
+    aws = _KmsAws(alias_target_key_id="test", key_state="Enabled")
+    cleanup = KmsCleanup(aws)
+
+    cleanup.retire(_cleanup_inventory_get())
+
+    assert [argument_list[:2] for argument_list in aws.mutation_argument_list] == [
+        ["kms", "delete-alias"],
+        ["kms", "disable-key"],
+        ["kms", "schedule-key-deletion"],
+    ]
+    assert cleanup.absent_get(_cleanup_inventory_get())
+
+
+@pytest.mark.parametrize(
+    ("account_id", "key_manager", "task_owned", "error_pattern"),
+    [
+        ("463564115167", "CUSTOMER", False, "another ownership identity"),
+        ("000000000000", "CUSTOMER", True, "identity is malformed"),
+        ("463564115167", "AWS", True, "identity is malformed"),
+    ],
+)
+def test_kms_cleanup_rejects_foreign_key_before_any_mutation(
+    account_id: str,
+    key_manager: str,
+    task_owned: bool,
+    error_pattern: str,
+) -> None:
+    """A stale key ARN cannot authorize alias, disable, or deletion-schedule mutations."""
+
+    aws = _KmsAws(
+        account_id=account_id,
+        alias_target_key_id="test",
+        key_manager=key_manager,
+        key_state="Enabled",
+        task_owned=task_owned,
+    )
+
+    with pytest.raises(DevelopmentEnvironmentError, match=error_pattern):
+        KmsCleanup(aws).retire(_cleanup_inventory_get())
+
+    assert aws.mutation_argument_list == []
 
 
 class _Account:
@@ -535,6 +680,7 @@ class _CleanupInventoryAws:
         self,
         *,
         alias_key_arn: str = "",
+        foreign_kms_key_arn_list: tuple[str, ...] = (),
         instance_id_list: tuple[str, ...] = (),
         kms_key_arn_list: tuple[str, ...] = (),
         retained_volume_id_list: tuple[str, ...] = (),
@@ -543,12 +689,14 @@ class _CleanupInventoryAws:
 
         Args:
             alias_key_arn: Key targeted by the deterministic alias.
+            foreign_kms_key_arn_list: Account keys without this task's ownership tags.
             instance_id_list: Remaining instance identities.
             kms_key_arn_list: Remaining tagged KMS identities.
             retained_volume_id_list: Remaining retained-volume identities.
         """
 
         self.alias_key_arn = alias_key_arn
+        self.foreign_kms_key_arn_list = foreign_kms_key_arn_list
         self.instance_id_list = instance_id_list
         self.kms_key_arn_list = kms_key_arn_list
         self.retained_volume_id_list = retained_volume_id_list
@@ -584,13 +732,18 @@ class _CleanupInventoryAws:
                     for volume_id in self.retained_volume_id_list
                 ]
             }
-        if argument_list[:2] == ["resourcegroupstaggingapi", "get-resources"]:
+        if argument_list[:2] == ["kms", "list-keys"]:
             return {
-                "ResourceTagMappingList": [
-                    {"ResourceARN": key_arn, "Tags": _task_tag_list_get()} for key_arn in self.kms_key_arn_list
-                ]
+                "Keys": [
+                    {"KeyArn": key_arn, "KeyId": key_arn.rsplit("/", maxsplit=1)[-1]}
+                    for key_arn in (*self.kms_key_arn_list, *self.foreign_kms_key_arn_list)
+                ],
+                "Truncated": False,
             }
-        if argument_list[:2] == ["kms", "list-resource-tags"] and self.alias_key_arn:
+        if argument_list[:2] == ["kms", "list-resource-tags"]:
+            key_arn = argument_list[argument_list.index("--key-id") + 1]
+            if key_arn in self.foreign_kms_key_arn_list:
+                return {"Tags": []}
             return {"Tags": _kms_task_tag_list_get()}
         raise AssertionError(argument_list)
 
@@ -606,8 +759,55 @@ class _CleanupInventoryAws:
         """
 
         del check
+        if argument_list[:2] == ["ec2", "describe-instances"]:
+            instance_id = argument_list[-1]
+            return subprocess.CompletedProcess(
+                argument_list,
+                0,
+                json.dumps(
+                    {
+                        "Reservations": [
+                            {
+                                "OwnerId": "463564115167",
+                                "Instances": [
+                                    {
+                                        "InstanceId": instance_id,
+                                        "Placement": {"AvailabilityZone": "us-east-1a"},
+                                        "State": {"Name": "running"},
+                                        "Tags": _task_tag_list_get(),
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                "",
+            )
+        if argument_list[:2] == ["ec2", "describe-volumes"]:
+            volume_id = argument_list[-1]
+            return subprocess.CompletedProcess(
+                argument_list,
+                0,
+                json.dumps(
+                    {
+                        "Volumes": [
+                            {
+                                "VolumeId": volume_id,
+                                "AvailabilityZone": "us-east-1a",
+                                "Tags": _task_tag_list_get(name=f"retained-{_Identity.environment_name}"),
+                            }
+                        ]
+                    }
+                ),
+                "",
+            )
         assert argument_list[:2] == ["kms", "describe-key"]
-        if not self.alias_key_arn:
+        key_id = argument_list[-1]
+        key_arn = self.alias_key_arn if key_id.startswith("alias/") else key_id
+        known_key_arn_set = {*self.kms_key_arn_list, *self.foreign_kms_key_arn_list}
+        if self.alias_key_arn:
+            known_key_arn_set.add(self.alias_key_arn)
+        if not key_arn or (not key_id.startswith("alias/") and key_arn not in known_key_arn_set):
             return subprocess.CompletedProcess(
                 argument_list,
                 1,
@@ -617,7 +817,16 @@ class _CleanupInventoryAws:
         return subprocess.CompletedProcess(
             argument_list,
             0,
-            json.dumps({"KeyMetadata": {"Arn": self.alias_key_arn}}),
+            json.dumps(
+                {
+                    "KeyMetadata": {
+                        "Arn": key_arn,
+                        "AWSAccountId": "463564115167",
+                        "KeyManager": "CUSTOMER",
+                        "KeyState": "Enabled",
+                    }
+                }
+            ),
             "",
         )
 
@@ -703,10 +912,12 @@ def test_cleanup_inventory_unions_stack_outputs_with_every_tagged_orphan() -> No
     tagged_volume_id = "vol-1123456789abcdef0"
     stack_key_arn = "arn:aws:kms:us-east-1:463564115167:key/stack"
     tagged_key_arn = "arn:aws:kms:us-east-1:463564115167:key/tagged"
+    foreign_key_arn = "arn:aws:kms:us-east-1:463564115167:key/foreign"
     inventory = CleanupInventoryResolver(
         account_id="463564115167",
         aws=_CleanupInventoryAws(
             alias_key_arn=stack_key_arn,
+            foreign_kms_key_arn_list=(foreign_key_arn,),
             instance_id_list=(tagged_instance_id,),
             kms_key_arn_list=(tagged_key_arn,),
             retained_volume_id_list=(tagged_volume_id,),
@@ -728,6 +939,47 @@ def test_cleanup_inventory_unions_stack_outputs_with_every_tagged_orphan() -> No
     assert inventory.instance_id_list == (stack_instance_id, tagged_instance_id)
     assert inventory.kms_key_arn_list == (stack_key_arn, tagged_key_arn)
     assert inventory.retained_volume_id_list == (stack_volume_id, tagged_volume_id)
+
+
+def test_cleanup_inventory_fully_enumerates_regional_kms_keys_before_task_filtering() -> None:
+    """Final live proof cannot miss an exact-tagged task key on a later KMS page."""
+
+    first_key_arn = "arn:aws:kms:us-east-1:463564115167:key/first"
+    second_key_arn = "arn:aws:kms:us-east-1:463564115167:key/second"
+
+    class _PaginatedKmsInventoryAws(_CleanupInventoryAws):
+        list_key_argument_list: list[list[str]] = []
+
+        def json_get(self, argument_list: list[str]) -> dict[str, object]:
+            if argument_list[:2] != ["kms", "list-keys"]:
+                return super().json_get(argument_list)
+            self.list_key_argument_list.append(argument_list)
+            if "--marker" not in argument_list:
+                return {
+                    "Keys": [{"KeyArn": first_key_arn, "KeyId": "first"}],
+                    "Truncated": True,
+                    "NextMarker": "next-page",
+                }
+            assert argument_list[-2:] == ["--marker", "next-page"]
+            return {
+                "Keys": [{"KeyArn": second_key_arn, "KeyId": "second"}],
+                "Truncated": False,
+            }
+
+    aws = _PaginatedKmsInventoryAws(kms_key_arn_list=(first_key_arn, second_key_arn))
+    inventory = CleanupInventoryResolver(
+        account_id="463564115167",
+        aws=aws,
+        identity=_Identity(),
+        region="us-east-1",
+        stack=_CleanupInventoryStack(),
+    ).resolve(CleanupRequest(common_prefix=COMMON_PREFIX))
+
+    assert inventory.kms_key_arn_list == (first_key_arn, second_key_arn)
+    assert aws.list_key_argument_list == [
+        ["kms", "list-keys", "--no-paginate"],
+        ["kms", "list-keys", "--no-paginate", "--marker", "next-page"],
+    ]
 
 
 class _Unused:
@@ -757,6 +1009,7 @@ class _InventoryResolver:
         """
 
         self._inventory = inventory
+        self.resolve_count = 0
 
     def resolve(self, request: CleanupRequest) -> CleanupInventory:
         """Resolve the inventory resolver result.
@@ -769,6 +1022,7 @@ class _InventoryResolver:
         """
 
         assert request.common_prefix == self._inventory.common_prefix
+        self.resolve_count += 1
         return self._inventory
 
 
@@ -959,8 +1213,8 @@ class _Verifier:
         return self.absent
 
 
-def test_cleanup_absence_uses_service_native_owners() -> None:
-    """Final proof does not block on the eventually consistent tag index."""
+def test_cleanup_absence_uses_every_service_native_owner() -> None:
+    """A freshly enumerated task inventory still requires each service-native proof."""
 
     operation_list: list[str] = []
     inventory = _cleanup_inventory_get()
@@ -999,16 +1253,17 @@ def test_cleanup_absence_uses_service_native_owners() -> None:
     ]
 
 
-def test_cleanup_journal_resumes_each_phase_and_binds_natural_task_identity(
+def test_cleanup_journal_records_progress_only_and_every_resume_replays_live_owners(
     tmp_path: Path,
 ) -> None:
-    """A repeated hook resumes the same journal and never repeats completed phases.
+    """A repeated hook re-resolves and safely replays every idempotent cleanup owner.
 
     Args:
         tmp_path: Temporary directory path.
     """
 
     inventory = CleanupInventory(
+        account_id="463564115167",
         bucket_name_list=("bucket-a", "bucket-b", "bucket-c", "bucket-d"),
         common_prefix=COMMON_PREFIX,
         compute_stack_name=_Identity.compute_stack_name,
@@ -1017,6 +1272,7 @@ def test_cleanup_journal_resumes_each_phase_and_binds_natural_task_identity(
         instance_id_list=("i-0123456789abcdef0",),
         kms_alias_name="alias/storage-w0123456789abcde",
         kms_key_arn_list=("arn:aws:kms:us-east-1:463564115167:key/test",),
+        region="us-east-1",
         retained_volume_id_list=("vol-0123456789abcdef0",),
     )
     subprocess.run(["git", "init", "--initial-branch=main", str(tmp_path)], check=True, capture_output=True)
@@ -1029,7 +1285,6 @@ def test_cleanup_journal_resumes_each_phase_and_binds_natural_task_identity(
         identity=_Identity(),
         inventory_resolver=inventory_resolver,
         journal=CleanupJournalStore(
-            inventory_resolver=inventory_resolver,
             project_root_path=tmp_path,
         ),
         kms=_KmsCleanup(operation_list),
@@ -1054,11 +1309,22 @@ def test_cleanup_journal_resumes_each_phase_and_binds_natural_task_identity(
         "retained",
         "kms",
         "verify",
-        "verify",
     ]
+    assert inventory_resolver.resolve_count == 6
     operation_list.clear()
     assert manager.destroy(request)["external_resources_absent"] is True
-    assert operation_list == ["verify"]
+    assert operation_list == [
+        "compute",
+        f"stack:{_Identity.data_plane_stack_name}",
+        "bucket:bucket-a",
+        "bucket:bucket-b",
+        "bucket:bucket-c",
+        "bucket:bucket-d",
+        "retained",
+        "kms",
+        "verify",
+    ]
+    assert inventory_resolver.resolve_count == 12
 
     operation_list.clear()
     retained = manager.inventory(request)
@@ -1081,10 +1347,86 @@ def test_cleanup_journal_resumes_each_phase_and_binds_natural_task_identity(
 
     journal_path = tmp_path / ".git" / "agent-workflows" / "external-cleanup" / f"{COMMON_PREFIX}.json"
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
-    journal["inventory"]["common_prefix"] = "2026-08-01-another-task"
+    assert journal == {"phase": "complete"}
+    journal["phase"] = "foreign-phase"
     journal_path.write_text(json.dumps(journal), encoding="utf-8")
-    with pytest.raises(DevelopmentEnvironmentError, match="another task"):
+    with pytest.raises(DevelopmentEnvironmentError, match="another shape"):
         manager.destroy(request)
+
+
+def test_cleanup_resume_deletes_resource_that_became_visible_after_its_first_phase(tmp_path: Path) -> None:
+    """Final fresh enumeration blocks success and the next resume replays the owning phase."""
+
+    subprocess.run(["git", "init", "--initial-branch=main", str(tmp_path)], check=True, capture_output=True)
+    base_inventory = replace(
+        _cleanup_inventory_get(),
+        instance_id_list=(),
+        kms_key_arn_list=(),
+        retained_volume_id_list=(),
+    )
+
+    class _LiveState:
+        visible = False
+        resolve_count = 0
+        deleted_instance_id_list: list[str] = []
+
+    state = _LiveState()
+
+    class _LateInventoryResolver:
+        @staticmethod
+        def resolve(request: CleanupRequest) -> CleanupInventory:
+            assert request.common_prefix == COMMON_PREFIX
+            state.resolve_count += 1
+            if state.resolve_count == 2:
+                state.visible = True
+            return replace(
+                base_inventory,
+                instance_id_list=("i-0123456789abcdef0",) if state.visible else (),
+            )
+
+    class _LateCompute:
+        @staticmethod
+        def delete(inventory: CleanupInventory) -> None:
+            if inventory.instance_id_list:
+                state.deleted_instance_id_list.extend(inventory.instance_id_list)
+                state.visible = False
+
+    class _FreshVerifier:
+        @staticmethod
+        def validate(inventory: CleanupInventory) -> None:
+            if inventory.instance_id_list:
+                raise DevelopmentEnvironmentError("Fresh live task resource remains")
+
+        @staticmethod
+        def absent_get(inventory: CleanupInventory) -> bool:
+            return not inventory.instance_id_list
+
+    operation_list: list[str] = []
+    manager = DevelopmentEnvironmentCleanupManager(
+        account=_Account(),
+        compute=_LateCompute(),
+        identity=_Identity(),
+        inventory_resolver=_LateInventoryResolver(),
+        journal=CleanupJournalStore(project_root_path=tmp_path),
+        kms=_KmsCleanup(operation_list),
+        retained=_InventoryCleanup(operation_list, "retained"),
+        stack=_StackCleanup(operation_list),
+        storage=_StorageCleanup(operation_list),
+        verifier=_FreshVerifier(),
+    )
+    request = CleanupRequest(common_prefix=COMMON_PREFIX)
+
+    with pytest.raises(DevelopmentEnvironmentError, match="Fresh live task resource remains"):
+        manager.destroy(request)
+
+    journal_path = tmp_path / ".git" / "agent-workflows" / "external-cleanup" / f"{COMMON_PREFIX}.json"
+    assert json.loads(journal_path.read_text(encoding="utf-8")) == {"phase": "verify"}
+    assert state.deleted_instance_id_list == []
+
+    assert manager.destroy(request)["external_resources_absent"] is True
+    assert state.deleted_instance_id_list == ["i-0123456789abcdef0"]
+    assert state.resolve_count == 12
+    assert json.loads(journal_path.read_text(encoding="utf-8")) == {"phase": "complete"}
 
 
 def test_cleanup_inventory_rejects_primary_environment_before_discovery() -> None:

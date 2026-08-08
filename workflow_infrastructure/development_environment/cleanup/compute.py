@@ -7,6 +7,8 @@ from typing import Mapping, Protocol
 from workflow_infrastructure.development_environment.aws import aws_cli_error_matches
 from workflow_infrastructure.development_environment.cleanup.aws_response import (
     json_object_get,
+    tag_map_get,
+    task_ownership_tag_validate,
 )
 from workflow_infrastructure.development_environment.cleanup.model import (
     CleanupInventory,
@@ -52,8 +54,10 @@ class ComputeCleanup:
         """
 
         for instance_id in inventory.instance_id_list:
-            self._session_list_terminate(instance_id)
-            state = self.instance_state_get(instance_id)
+            state = self._instance_state_get(inventory, instance_id)
+            if state not in {"absent", "terminated"}:
+                self._session_list_terminate(inventory, instance_id)
+                state = self._instance_state_get(inventory, instance_id)
             if state == "running":
                 self._aws.run(["ec2", "stop-instances", "--instance-ids", instance_id])
                 self._aws.run(
@@ -76,7 +80,7 @@ class ComputeCleanup:
                 raise DevelopmentEnvironmentError("Task instance has an unsupported lifecycle state")
         self._stack_cleanup.delete(inventory.compute_stack_name)
         for instance_id in inventory.instance_id_list:
-            state = self.instance_state_get(instance_id)
+            state = self._instance_state_get(inventory, instance_id)
             if state in {"absent", "terminated"}:
                 continue
             if state != "shutting-down":
@@ -112,7 +116,7 @@ class ComputeCleanup:
 
         absent = True
         for instance_id in inventory.instance_id_list:
-            state = self.instance_state_get(instance_id)
+            state = self._instance_state_get(inventory, instance_id)
             if state not in {
                 "absent",
                 "pending",
@@ -172,10 +176,11 @@ class ComputeCleanup:
             raise DevelopmentEnvironmentError("Task Session Manager inventory repeats a session")
         return session_id_list
 
-    def instance_state_get(self, instance_id: str) -> str:
-        """Return one exact EC2 state or the synthetic absent state.
+    def _instance_state_get(self, inventory: CleanupInventory, instance_id: str) -> str:
+        """Return one exact task-owned EC2 state or the synthetic absent state.
 
         Args:
+            inventory: Fresh live task inventory.
             instance_id: Exact instance identity.
 
         Returns:
@@ -196,29 +201,48 @@ class ComputeCleanup:
             raise DevelopmentEnvironmentError("Task instance state cannot be observed")
         payload = json_object_get(result.stdout, label="task instance")
         reservation_list = payload.get("Reservations", [])
-        instance_list = [
-            instance
-            for reservation in reservation_list
-            if isinstance(reservation, Mapping)
-            for instance in reservation.get("Instances", [])
-            if isinstance(instance, Mapping)
-        ]
-        if not instance_list:
+        if reservation_list == []:
             return "absent"
-        if len(instance_list) != 1 or instance_list[0].get("InstanceId") != instance_id:
+        if not isinstance(reservation_list, list) or len(reservation_list) != 1:
             raise DevelopmentEnvironmentError("Task instance inventory is malformed")
-        state = instance_list[0].get("State")
+        reservation = reservation_list[0]
+        instance_list = reservation.get("Instances") if isinstance(reservation, Mapping) else None
+        if (
+            not isinstance(reservation, Mapping)
+            or reservation.get("OwnerId") != inventory.account_id
+            or not isinstance(instance_list, list)
+            or len(instance_list) != 1
+            or not isinstance(instance_list[0], Mapping)
+            or instance_list[0].get("InstanceId") != instance_id
+        ):
+            raise DevelopmentEnvironmentError("Task instance inventory is malformed")
+        instance = instance_list[0]
+        placement = instance.get("Placement")
+        availability_zone = placement.get("AvailabilityZone") if isinstance(placement, Mapping) else None
+        if not isinstance(availability_zone, str) or not availability_zone.startswith(inventory.region):
+            raise DevelopmentEnvironmentError("Task instance belongs to another region")
+        task_ownership_tag_validate(
+            tag_map_get(instance.get("Tags")),
+            common_prefix=inventory.common_prefix,
+            environment_name=inventory.environment_name,
+            label="EC2 instance",
+        )
+        state = instance.get("State")
         state_name = state.get("Name") if isinstance(state, Mapping) else None
         if not isinstance(state_name, str):
             raise DevelopmentEnvironmentError("Task instance state is malformed")
         return state_name
 
-    def _session_list_terminate(self, instance_id: str) -> None:
+    def _session_list_terminate(self, inventory: CleanupInventory, instance_id: str) -> None:
         """Terminate every active SSM session bound to the retiring instance.
 
         Args:
+            inventory: Fresh live task inventory.
             instance_id: Exact instance identity.
         """
 
         for session_id in self.active_session_id_list_get(instance_id):
+            state = self._instance_state_get(inventory, instance_id)
+            if state in {"absent", "terminated"}:
+                raise DevelopmentEnvironmentError("Task instance disappeared before session termination")
             self._aws.run(["ssm", "terminate-session", "--session-id", session_id])

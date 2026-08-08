@@ -226,7 +226,6 @@ class DevelopmentEnvironment:
             stack=self._stack,
         )
         cleanup_journal = CleanupJournalStore(
-            inventory_resolver=cleanup_inventory_resolver,
             project_root_path=project_root_path,
         )
         cleanup_stack = StackCleanup(aws=self._aws, stack=self._stack)

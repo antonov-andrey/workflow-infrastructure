@@ -1,4 +1,4 @@
-"""Closed request and durable inventory models for task cleanup."""
+"""Closed request and live inventory models for task cleanup."""
 
 from __future__ import annotations
 
@@ -64,8 +64,9 @@ class CleanupRequest:
 
 @dataclass(frozen=True, slots=True)
 class CleanupInventory:
-    """Exact task resource identities retained across cleanup interruption."""
+    """Exact task resource identities freshly attested from live AWS state."""
 
+    account_id: str
     bucket_name_list: tuple[str, ...]
     common_prefix: str
     compute_stack_name: str
@@ -74,95 +75,53 @@ class CleanupInventory:
     instance_id_list: tuple[str, ...]
     kms_alias_name: str
     kms_key_arn_list: tuple[str, ...]
+    region: str
     retained_volume_id_list: tuple[str, ...]
-    schema_version: int = 3
 
-    @classmethod
-    def from_payload(cls, payload: object) -> Self:
-        """Decode one exact durable cleanup inventory.
+    def __post_init__(self) -> None:
+        """Reject any runtime inventory outside the exact cleanup identity."""
 
-        Args:
-            payload: Structured operation payload.
-
-        Returns:
-            Validated current object.
-        """
-
-        field_name_set = {
-            "bucket_name_list",
-            "common_prefix",
-            "compute_stack_name",
-            "data_stack_name",
-            "environment_name",
-            "instance_id_list",
-            "kms_alias_name",
-            "kms_key_arn_list",
-            "retained_volume_id_list",
-            "schema_version",
-        }
-        if not isinstance(payload, dict) or set(payload) != field_name_set:
-            raise DevelopmentEnvironmentError("Task cleanup inventory has another shape")
-        list_field_name_set = {
-            "bucket_name_list",
-            "instance_id_list",
-            "kms_key_arn_list",
-            "retained_volume_id_list",
-        }
-        bucket_name_list = payload["bucket_name_list"]
-        instance_id_list = payload["instance_id_list"]
-        kms_key_arn_list = payload["kms_key_arn_list"]
-        retained_volume_id_list = payload["retained_volume_id_list"]
-        environment_name = payload["environment_name"]
+        identity_tuple_list = (
+            self.bucket_name_list,
+            self.instance_id_list,
+            self.kms_key_arn_list,
+            self.retained_volume_id_list,
+        )
         if (
-            payload["schema_version"] != 3
-            or isinstance(payload["schema_version"], bool)
-            or not isinstance(bucket_name_list, list)
-            or len(bucket_name_list) != 4
-            or any(not isinstance(item, str) or not item for item in bucket_name_list)
-            or len(set(bucket_name_list)) != 4
+            not isinstance(self.account_id, str)
+            or re.fullmatch(r"[0-9]{12}", self.account_id) is None
+            or not isinstance(self.region, str)
+            or re.fullmatch(r"[a-z]{2}(?:-[a-z0-9]+)+-[0-9]", self.region) is None
+            or not isinstance(self.bucket_name_list, tuple)
+            or len(self.bucket_name_list) != 4
             or any(
-                not isinstance(payload[name], list)
-                or any(not isinstance(item, str) or not item for item in payload[name])
-                or len(payload[name]) != len(set(payload[name]))
-                for name in list_field_name_set - {"bucket_name_list"}
+                not isinstance(identity_tuple, tuple)
+                or any(not isinstance(item, str) or not item for item in identity_tuple)
+                or tuple(sorted(identity_tuple)) != identity_tuple
+                or len(identity_tuple) != len(set(identity_tuple))
+                for identity_tuple in identity_tuple_list
             )
             or any(
-                not isinstance(payload[name], str) or not payload[name]
-                for name in field_name_set - list_field_name_set - {"schema_version"}
+                not isinstance(value, str) or not value
+                for value in (
+                    self.common_prefix,
+                    self.compute_stack_name,
+                    self.data_stack_name,
+                    self.environment_name,
+                    self.kms_alias_name,
+                )
             )
-            or _COMMON_PREFIX_PATTERN.fullmatch(payload["common_prefix"]) is None
-            or _ENVIRONMENT_NAME_PATTERN.fullmatch(environment_name) is None
-            or payload["compute_stack_name"] != f"compute-{environment_name}"
-            or payload["data_stack_name"] != f"data-{environment_name}"
-            or payload["kms_alias_name"] != f"alias/storage-{environment_name}"
-            or any(_EC2_INSTANCE_ID_PATTERN.fullmatch(item) is None for item in instance_id_list)
-            or any(_KMS_KEY_ARN_PATTERN.fullmatch(item) is None for item in kms_key_arn_list)
-            or any(_EBS_VOLUME_ID_PATTERN.fullmatch(item) is None for item in retained_volume_id_list)
+            or _COMMON_PREFIX_PATTERN.fullmatch(self.common_prefix) is None
+            or _ENVIRONMENT_NAME_PATTERN.fullmatch(self.environment_name) is None
+            or self.compute_stack_name != f"compute-{self.environment_name}"
+            or self.data_stack_name != f"data-{self.environment_name}"
+            or self.kms_alias_name != f"alias/storage-{self.environment_name}"
+            or any(_EC2_INSTANCE_ID_PATTERN.fullmatch(item) is None for item in self.instance_id_list)
+            or any(
+                _KMS_KEY_ARN_PATTERN.fullmatch(item) is None
+                or not item.startswith(f"arn:aws:kms:{self.region}:{self.account_id}:key/")
+                for item in self.kms_key_arn_list
+            )
+            or any(_EBS_VOLUME_ID_PATTERN.fullmatch(item) is None for item in self.retained_volume_id_list)
         ):
             raise DevelopmentEnvironmentError("Task cleanup inventory is malformed")
-        return cls(
-            bucket_name_list=tuple(sorted(bucket_name_list)),
-            common_prefix=payload["common_prefix"],
-            compute_stack_name=payload["compute_stack_name"],
-            data_stack_name=payload["data_stack_name"],
-            environment_name=payload["environment_name"],
-            instance_id_list=tuple(sorted(payload["instance_id_list"])),
-            kms_alias_name=payload["kms_alias_name"],
-            kms_key_arn_list=tuple(sorted(payload["kms_key_arn_list"])),
-            retained_volume_id_list=tuple(sorted(payload["retained_volume_id_list"])),
-            schema_version=3,
-        )
-
-    def payload_get(self) -> dict[str, object]:
-        """Return the canonical JSON representation.
-
-        Returns:
-            The canonical JSON representation.
-        """
-
-        payload = asdict(self)
-        payload["bucket_name_list"] = list(self.bucket_name_list)
-        payload["instance_id_list"] = list(self.instance_id_list)
-        payload["kms_key_arn_list"] = list(self.kms_key_arn_list)
-        payload["retained_volume_id_list"] = list(self.retained_volume_id_list)
-        return payload
